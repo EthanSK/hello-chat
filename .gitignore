@@ -1,24 +1,7 @@
-# Python
-__pycache__/
-*.py[cod]
-*.so
-
-# Virtual env
-.venv/
-
-# Environment files
-.env
-.env.local
-
-# macOS
+.build/
+.build.noindex/
+work/
 .DS_Store
-
-# Runtime output
-tmp/
-artifacts/
-*.log
-
-# Downloaded models (keep placeholder only)
-models/*
-!models/.gitkeep
-
+.outstanding-items/
+__pycache__/
+*.pyc

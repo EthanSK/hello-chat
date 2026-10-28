@@ -1,0 +1,17 @@
+FluidAudio v0.17.7, Fluid Inference
+https://github.com/FluidInference/FluidAudio/tree/v0.17.7
+Apache License 2.0; full license included as FluidAudio-LICENSE.txt.
+
+Parakeet Realtime EOU 120M, NVIDIA, Core ML conversion by Fluid Inference
+https://huggingface.co/FluidInference/parakeet-realtime-eou-120m-coreml
+Pinned revision: 40a23f4c0b333aa17ad8c0f2ea47ec2347f2f355, 160ms and 320ms variants
+NVIDIA Open Model License:
+https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/
+Original model: https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1
+
+Nemotron Speech Streaming EN 0.6B, NVIDIA, Core ML conversion by Fluid Inference
+https://huggingface.co/FluidInference/nemotron-speech-streaming-en-0.6b-coreml
+Pinned revision: e673531caa6d25ab7baf5a8c14c9b99ba1551838, 560ms variant
+NVIDIA Open Model License:
+https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/
+Original model: https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b
