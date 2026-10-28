@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>HelloChat</title>
+  <!-- Same geometry and colours as scripts/make-icon.swift, with the y axis flipped for SVG. -->
+  <rect x="28" y="28" width="968" height="968" rx="210" fill="#122633"/>
+  <rect x="170" y="234" width="684" height="550" rx="155" fill="#42D4AB"/>
+  <path d="M320 754 L260 894 L475 759 Z" fill="#42D4AB"/>
+  <g fill="#122633">
+    <rect x="300" y="454" width="48" height="100" rx="24"/>
+    <rect x="388" y="394" width="48" height="220" rx="24"/>
+    <rect x="476" y="339" width="48" height="330" rx="24"/>
+    <rect x="564" y="414" width="48" height="180" rx="24"/>
+    <rect x="652" y="449" width="48" height="110" rx="24"/>
+  </g>
+</svg>

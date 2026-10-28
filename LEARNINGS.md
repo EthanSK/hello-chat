@@ -8,3 +8,6 @@
 - Return promptly from AppKit termination callbacks, then clean up asynchronously; blocking the main actor can starve recognition and cleanup.
 - Recognition buffers, diagnostics, and transcript contexts are bounded. Tests cannot prove indefinite leak freedom or absence of false wakes.
 - Publication rename: HelloChat replaces Hey Chat. Preserve the signing identifier and process lock so privacy grants and single-instance ownership survive the rename. Migrate data without overwriting collisions. Resolve Codex by bundle identity and actual executable, not one developer's installation path.
+- Recorded checks should regenerate when the fixture generator changes. A continuous synthesized Hello Chat / Bye Chat recording exercises both commands; a short isolated synthesized Bye Chat was missed. Fixture success must not be presented as proof of quiet-room, isolated-phrase, accent, or real-microphone accuracy.
+- The legacy daily-backup format identifier and remote destination remain stable during branding migrations so existing receipts and remote history are preserved.
+- Generate icons and sharing images in explicit pixel-backed bitmap contexts. NSImage.lockFocus inherits display scale and can silently double the advertised image dimensions.

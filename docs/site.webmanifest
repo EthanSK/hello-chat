@@ -1,0 +1,14 @@
+{
+  "name": "HelloChat",
+  "short_name": "HelloChat",
+  "description": "Say Hello Chat to start Codex Voice, and Bye Chat to end it.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef4f1",
+  "theme_color": "#eef4f1",
+  "icons": [
+    { "src": "./icon.svg?v=867038e3444c", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./app-icon.png?v=4ee93a67d736", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
