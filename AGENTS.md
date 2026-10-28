@@ -8,3 +8,4 @@ Native macOS wake-phrase helper for Codex Voice. Previously Hey Chat; replaced t
 - Preserve the original com.ethansk.HeyChat signing identity and legacy instance lock for existing users. AppPaths owns data-folder migration.
 - Never automate real Codex Voice calls in tests. Inspect current call and recording state before authorized installation or restart.
 - docs/ is the public static site; keep installation and privacy claims aligned with actual artifacts.
+- Ethan wants HelloChat pushed after every completed change. After the appropriate checks, commit and push the task's in-scope changes to https://github.com/EthanSK/hello-chat, verify the remote commit, and report any push failure. This applies to code, tests, documentation and the website. Preserve unrelated work. User-requested — 2026-10-28.
