@@ -2,7 +2,7 @@ import Foundation
 
 @main enum TranscriptArchiveTests {
     static func main() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HeyChatArchiveTests-\(UUID())")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("HelloChatArchiveTests-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let archive = TranscriptArchive(directory: directory)
         let date = Date(timeIntervalSince1970: 1_792_300_000)
@@ -33,7 +33,12 @@ import Foundation
         // Throttling must persist continuous updates before an explicit stop.
         let automatic = TranscriptArchive(directory: directory.appendingPathComponent("automatic"))
         automatic.update("ongoing speech", model: "test", microphone: "test", at: date)
-        Thread.sleep(forTimeInterval: 1.2)
+        // The one-second throttle runs on a utility queue. Wait for its observable
+        // write with bounded scheduling slack; flushing here would hide regressions.
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        while files().count < 3 && ProcessInfo.processInfo.systemUptime < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
         precondition(files().count == 3, "Continuous speech is saved without waiting for silence or shutdown")
         print("Transcript archive: revision, phrase timing, finalization, day boundary, permissions and timed persistence passed")
     }
