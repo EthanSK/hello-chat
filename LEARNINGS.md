@@ -12,3 +12,5 @@
 - The legacy daily-backup format identifier and remote destination remain stable during branding migrations so existing receipts and remote history are preserved.
 - Generate icons and sharing images in explicit pixel-backed bitmap contexts. NSImage.lockFocus inherits display scale and can silently double the advertised image dimensions.
 - Test background transcript persistence by waiting for the file with a bounded deadline, without calling flush. A fixed sleep barely longer than the throttle can fail when the utility queue is delayed by other work.
+- A failed application-identity snapshot during Voice startup does not prove Codex quit. Correlate process start time and Codex's own window/call logs; a live call can coexist with HelloChat reporting "Codex closed while opening Voice."
+- Startup-error cleanup can request End while a native call is successfully opening, and an End request can time out while the call remains responsive. Preserve the failed snapshot and cleanup sequence before reproducing; do not infer call termination from a dispatched request.
