@@ -43,12 +43,15 @@ import Foundation
     }
     private let transport: Transport
     private let diagnostics: Diagnostics?
+    private let confirmationTimeout: TimeInterval
     private(set) var connected = false
     private(set) var lastError: String?
     private var pendingUntil: Date?
     private var ending: Task<Bool, Error>?
 
-    init(transport: Transport = .live, diagnostics: Diagnostics? = nil) { self.transport = transport; self.diagnostics = diagnostics }
+    init(transport: Transport = .live, diagnostics: Diagnostics? = nil, confirmationTimeout: TimeInterval = 15) {
+        self.transport = transport; self.diagnostics = diagnostics; self.confirmationTimeout = confirmationTimeout
+    }
 
     // nil means an exact End Voice control confirmed the call, but the native
     // presentation didn't expose its microphone state. Never infer an unmute.
@@ -63,9 +66,9 @@ import Foundation
         try Task.checkCancellation()
         // Electron can replace an AX node during a read. Retry a bounded,
         // incomplete negative result; never infer absence from a failed scan.
-        for _ in 0..<2 where state.pid != nil && state.accessibilityAllowed
+        for _ in 0..<2 where state.accessibilityAllowed
             && state.microphone == nil && !state.endControlAvailable
-            && !state.controlsComplete {
+            && (state.pid == nil || !state.controlsComplete) {
             try await Task.sleep(nanoseconds: 120_000_000)
             try Task.checkCancellation()
             state = await snapshot()
@@ -89,13 +92,13 @@ import Foundation
         if state.inputRunning {
             diagnostics?.record("voice.input_activity.ignored", info: ["controls_complete": String(state.controlsComplete)])
         }
-        let confirmationDeadline = Date().addingTimeInterval(15)
+        let confirmationDeadline = Date().addingTimeInterval(confirmationTimeout)
         if !state.endControlAvailable {
             guard state.controlsComplete else { throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.") }
             try transport.activate(pid)
             try await Task.sleep(nanoseconds: 200_000_000)
             try Task.checkCancellation()
-            pendingUntil = Date().addingTimeInterval(15)
+            pendingUntil = Date().addingTimeInterval(confirmationTimeout)
             // Ethan's "boot/start sound" belongs only to an actual new-call
             // request. Existing Voice (including muted or End-only) returns
             // above; elapsed time never decides whether its cue is suppressed.
@@ -110,6 +113,9 @@ import Foundation
             try await Task.sleep(nanoseconds: 300_000_000)
             let fresh = await snapshot()
             try Task.checkCancellation()
+            // A transient application lookup is unknown, not proof of exit.
+            // Keep waiting for this start without resending its toggle.
+            if fresh.pid == nil { continue }
             guard fresh.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
             if let microphone = fresh.microphone {
                 connected = true; pendingUntil = nil
@@ -146,6 +152,17 @@ import Foundation
     func stop() async {
         do { _ = try await end(); lastError = nil }
         catch { lastError = error.localizedDescription }
+    }
+
+    // Ethan's "24/7" reliability: failed confirmation must not tear down a
+    // working native call. Explicit cancellation (Bye Chat, off, or Quit)
+    // still cleans up an owned late opening through the existing stop path.
+    func recoverFromStartFailure(_ error: Error) async {
+        if error is CancellationError || Task.isCancelled { await stop() }
+        else {
+            pendingUntil = nil; connected = false
+            diagnostics?.record("voice.open.unconfirmed_preserved")
+        }
     }
 
     // A spoken end command may address a call opened directly in Codex. Adopt
@@ -252,7 +269,7 @@ import Foundation
     private func snapshot() async -> VoiceSnapshot {
         let starting = Diagnostics.now
         let state = await transport.snapshot()
-        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning)])
+        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning)])
         return state
     }
 }

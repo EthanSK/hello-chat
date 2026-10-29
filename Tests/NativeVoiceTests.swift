@@ -63,6 +63,62 @@ import Foundation
         }, send: { _, _ in fatalError("A recovered existing muted call must not be toggled") }, activate: { _ in }))
         let recoveredMicrophone = try await transient.start(onNewCall: { fatalError("Recovered existing call must not play a startup cue") })
         precondition(recoveredMicrophone == .muted && transientReads == 2, "Retry a transient incomplete read without toggling an existing call")
+
+        var lookupReads = 0
+        let missingInitialApp = NativeVoice(transport: .init(snapshot: {
+            lookupReads += 1
+            var value = state(.muted)
+            if lookupReads == 1 { value.pid = nil; value.microphone = nil; value.controlsComplete = false }
+            return value
+        }, send: { _, _ in fatalError("Recovered existing call must not receive Start or End") }, activate: { _ in }))
+        let recoveredInitialApp = try await missingInitialApp.start()
+        precondition(recoveredInitialApp == .muted && lookupReads == 2,
+                     "A transient initial application lookup recovers before deciding Voice is absent")
+
+        var startedWithMissingRead = false, openingReads = 0
+        var recoveryCommands: [String] = []
+        let recoveredOpening = NativeVoice(transport: .init(snapshot: {
+            guard startedWithMissingRead else { return state() }
+            openingReads += 1
+            var value = state(input: true)
+            if openingReads == 1 { value.pid = nil; value.controlsComplete = false }
+            else if openingReads == 2 { value.controlsComplete = false }
+            else { value.endControlAvailable = true }
+            return value
+        }, send: { command, _ in recoveryCommands.append(command); startedWithMissingRead = true }, activate: { _ in }))
+        let recoveredOpeningMic = try await recoveredOpening.start()
+        precondition(recoveredOpeningMic == nil && recoveredOpening.connected && openingReads == 3
+                     && recoveryCommands == [VoiceBridge.startCommand],
+                     "Missing application and incomplete controls during opening recover without another Start or cleanup End")
+
+        var timeoutStarted = false, timeoutRecovered = false
+        var timeoutCommands: [String] = []
+        let timedOutOpening = NativeVoice(transport: .init(snapshot: {
+            if timeoutRecovered { return state(.listening) }
+            var value = state()
+            if timeoutStarted { value.pid = nil; value.controlsComplete = false }
+            return value
+        }, send: { command, _ in timeoutCommands.append(command); timeoutStarted = true }, activate: { _ in }), confirmationTimeout: 0.05)
+        do { _ = try await timedOutOpening.start(); fatalError("Unknown opening must remain bounded") }
+        catch { await timedOutOpening.recoverFromStartFailure(error) }
+        await timedOutOpening.stop()
+        precondition(timeoutCommands == [VoiceBridge.startCommand] && !timedOutOpening.connected,
+                     "An opening timeout releases stale ownership without ending a possibly working call")
+        timeoutRecovered = true
+        _ = try await timedOutOpening.start()
+        precondition(timedOutOpening.connected && timeoutCommands == [VoiceBridge.startCommand],
+                     "The next wake adopts the late successful call without creating another chat")
+
+        var replacementStarted = false, replacementCommands: [String] = []
+        let replacedOpening = NativeVoice(transport: .init(snapshot: {
+            var value = state()
+            if replacementStarted { value.pid = 456; value.endControlAvailable = true }
+            return value
+        }, send: { command, _ in replacementCommands.append(command); replacementStarted = true }, activate: { _ in }))
+        do { _ = try await replacedOpening.start(); fatalError("A different process cannot confirm our opening") }
+        catch { await replacedOpening.recoverFromStartFailure(error) }
+        await replacedOpening.stop()
+        precondition(replacementCommands == [VoiceBridge.startCommand], "A changed Codex process must not receive cleanup End")
         current = state(allowed: false)
         do { try await voice.start(); fatalError("Missing Accessibility must fail before sending") }
         catch is BridgeError { }
@@ -100,7 +156,7 @@ import Foundation
         }, activate: { _ in }))
         let opening = Task { @MainActor in
             do { try await cancelled.start() }
-            catch { await cancelled.stop() }
+            catch { await cancelled.recoverFromStartFailure(error) }
         }
         try await Task.sleep(nanoseconds: 250_000_000)
         opening.cancel()
@@ -121,7 +177,7 @@ import Foundation
         }, activate: { _ in }))
         let sending = Task { @MainActor in
             do { try await inFlight.start() }
-            catch { await inFlight.stop() }
+            catch { await inFlight.recoverFromStartFailure(error) }
         }
         try await Task.sleep(nanoseconds: 250_000_000)
         sending.cancel()

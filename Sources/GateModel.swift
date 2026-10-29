@@ -425,7 +425,7 @@ import SwiftUI
             scheduleMute()
         } catch {
             Diagnostics.shared.failure("voice.open.failed", error)
-            await voice.stop()
+            await voice.recoverFromStartFailure(error)
             guard generation == token, enabled else { return }
             showListening()
             if !(error is CancellationError) { self.error = error.localizedDescription }

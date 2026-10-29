@@ -29,13 +29,15 @@ struct VoiceBridge {
     static let bindingsURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/keybindings.json")
 
     static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96) -> VoiceSnapshot {
-        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
+        let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
+        let applications = candidates
             .filter { !$0.isTerminated && codexProcess($0.processIdentifier) }
         let app = applications.count == 1 ? applications[0] : nil
         let pids = inputPIDs()
         let voice = app?.bundleURL.map { bundle in pids.contains { executable($0)?.hasPrefix(bundle.path + "/Contents/") == true } } ?? false
         let recorder = pids.contains { executable($0)?.hasPrefix("/Applications/AgentFlow.app/Contents/") == true }
-        let controls = readMicrophone ? voiceControls(app?.processIdentifier, maximumDepth: maximumDepth) : Controls()
+        var controls = readMicrophone ? voiceControls(app?.processIdentifier, maximumDepth: maximumDepth) : Controls()
+        if app == nil { controls.failure = "application_lookup:\(candidates.count)/\(applications.count)" }
         return VoiceSnapshot(pid: app?.processIdentifier, inputRunning: voice, recorderRunning: recorder,
                              microphone: controls.microphone, accessibilityAllowed: AXIsProcessTrusted(), endControlAvailable: controls.end != nil,
                              controlsComplete: controls.complete, scanNodes: controls.nodes, scanTimeouts: controls.timeouts, scanDepth: controls.depth, scanFailure: controls.failure)
