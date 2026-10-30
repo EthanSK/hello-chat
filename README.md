@@ -179,8 +179,13 @@ This repository previously held [HeyBoy](https://github.com/EthanSK/hello-chat/t
 
 ## Licence
 
-HelloChat's source is under the [MIT licence](LICENSE). FluidAudio is under the Apache License 2.0, and the Parakeet and Nemotron models are under the NVIDIA Open Model License; see [`Resources/THIRD-PARTY-NOTICES.txt`](Resources/THIRD-PARTY-NOTICES.txt). HelloChat isn't affiliated with OpenAI. Codex and ChatGPT are OpenAI's.
+HelloChat's first-party source is under [the no-sale terms](LICENSE). FluidAudio is under the Apache License 2.0, and the Parakeet and Nemotron models are under the NVIDIA Open Model License; see [`Resources/THIRD-PARTY-NOTICES.txt`](Resources/THIRD-PARTY-NOTICES.txt). HelloChat isn't affiliated with OpenAI. Codex and ChatGPT are OpenAI's.
 
 ## Maintaining the Website
 
 The static GitHub Pages site lives in `docs/`. After changing its CSS, JavaScript, or the app icon, run `python3 scripts/prepare-site.py` on macOS to regenerate the sharing image and content-derived asset cache keys. `python3 scripts/prepare-site.py --check` verifies freshness without changing files.
+
+
+## License
+
+Source-available under [Ethan Source-Available No-Sale Terms 1.0](LICENSE). You can use and modify the covered code, including internally at work, and share it without charge. Selling the software, modified versions, paid access, or bundles requires a separate commercial license. Earlier licenses and third-party rights remain in force. See [scope and release policy](LICENSING.md).
