@@ -79,7 +79,7 @@ These checks use fixed recordings and text. They don't show how well HelloChat h
 
 The main window has three sections:
 
-- **Listening**: **Listen for wake phrase**, the current status, **Speech model** and the microphone level.
+- **Listening**: **Listen for wake phrase**, editable **Start Voice** and **End Voice** phrases, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
 - **Heard (local model)**: the latest local transcript. A wake phrase match is green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that Voice started.
 - **Codex Voice**: Voice status, the latest event and **Start Voice in Codex** / **End Voice in Codex**.
 

@@ -216,7 +216,7 @@ struct HelloChatApp: App {
                 .background(InitialWindowPlacement())
                 .onAppear { delegate.model = model; delegate.refreshPlayback() }
         }
-        .defaultSize(width: 520, height: 600)
+        .defaultSize(width: 474, height: 630)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appSettings) {
@@ -313,9 +313,11 @@ struct MainView: View {
                 Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
                     .disabled(model.busy && !preparing && !model.enabled)
                     .accessibilityIdentifier("listeningToggle")
-                LabeledContent("Start Voice", value: model.wakePhrase)
+                TextField("Start Voice", text: $model.wakePhrase)
+                    .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("wakePhraseLabel")
-                LabeledContent("End Voice", value: model.sleepPhrase)
+                TextField("End Voice", text: $model.sleepPhrase)
+                    .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("endPhraseLabel")
                 LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
                     .accessibilityIdentifier("listeningStatus")

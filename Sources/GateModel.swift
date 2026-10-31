@@ -267,6 +267,7 @@ import SwiftUI
         listener.contextualPhrases = [wakePhrase, sleepPhrase]
         matcher.reset()
         standaloneWake.reset()
+        if status == "Listening" || status == "Off" { showListening() }
         phraseUpdateTask?.cancel()
         if speechModel == .appleLocal, enabled {
             phraseUpdateTask = Task { [weak self] in
@@ -352,6 +353,9 @@ import SwiftUI
     private func showListening() {
         status = enabled ? "Listening" : "Off"
         detail = enabled ? "Say \(wakePhrase) to turn Voice on." : "Start listening for \(wakePhrase)."
+        if enabled, voice.connected {
+            detail = microphone == nil ? "Voice is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end Voice."
+        }
         voiceText = voice.connected ? "Check Codex Voice" : "Codex Voice is off"
         if !voice.connected { microphone = .muted }
     }
