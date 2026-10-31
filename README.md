@@ -90,7 +90,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Section | Contents |
 | --- | --- |
 | Microphone | **System default** or a named input, which stays selected by device. If it's disconnected, listening stops with an error instead of switching microphones. |
-| Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop immediately. |
+| Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
 | Phrases | **Start Voice** and **End Voice** phrases, **Allow small spelling differences** (on by default), **End Voice after silence** and **Check speech recognition**. |
 | Resources | HelloChat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |

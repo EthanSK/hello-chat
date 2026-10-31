@@ -313,6 +313,10 @@ struct MainView: View {
                 Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
                     .disabled(model.busy && !preparing && !model.enabled)
                     .accessibilityIdentifier("listeningToggle")
+                LabeledContent("Start Voice", value: model.wakePhrase)
+                    .accessibilityIdentifier("wakePhraseLabel")
+                LabeledContent("End Voice", value: model.sleepPhrase)
+                    .accessibilityIdentifier("endPhraseLabel")
                 LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
                     .accessibilityIdentifier("listeningStatus")
                 Text(model.detail).foregroundStyle(.secondary)
@@ -433,7 +437,7 @@ struct SettingsView: View {
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
                     .accessibilityIdentifier("automaticListening")
-                Text("Starts listening 2 minutes after connecting power and an external display. Unplug either to stop immediately.")
+                Text("Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. You can turn listening on yourself at any time.")
                     .foregroundStyle(.secondary)
                 DockStatus(dock: model.dock)
             }

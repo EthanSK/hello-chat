@@ -34,8 +34,18 @@ import Foundation
         let existing = ListeningPreferences(defaults: UserDefaults(suiteName: suite)!)
         precondition(existing.automatic && existing.manualEnabled)
         var existingPolicy = ListeningPolicy()
+        for power in [false, true] {
+            for display in [false, true] {
+                precondition(existingPolicy.shouldListen(automatic: true, onPower: power,
+                    externalDisplay: display, manualEnabled: existing.manualEnabled),
+                    "A remembered manual On works with automatic docking enabled, including after restart")
+            }
+        }
+        existingPolicy.pause()
+        precondition(existingPolicy.shouldListen(automatic: true, onPower: false,
+            externalDisplay: false, manualEnabled: true), "Dock events and pauses cannot override manual On")
         precondition(!existingPolicy.shouldListen(automatic: true, onPower: false,
-            externalDisplay: false, manualEnabled: existing.manualEnabled))
+            externalDisplay: false, manualEnabled: false), "Manual Off stops an undocked manual override")
         precondition(existingPolicy.shouldListen(automatic: true, onPower: true,
             externalDisplay: true, manualEnabled: false), "Dock mode keeps its existing startup behavior")
 

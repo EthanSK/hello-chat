@@ -27,7 +27,9 @@ struct ListeningPolicy {
         let eligible = onPower && externalDisplay
         if eligible != previousEligible { paused = false }
         previousEligible = eligible
-        return automatic ? eligible && !paused : manualEnabled
+        // Ethan's docking "suggestion" can start listening automatically, but
+        // must never lock out an explicit, remembered manual On choice.
+        return manualEnabled || (automatic && eligible && !paused)
     }
 }
 

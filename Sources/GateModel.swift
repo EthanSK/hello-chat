@@ -33,11 +33,10 @@ import SwiftUI
     @Published private(set) var manualListeningEnabled = ListeningPreferences().manualEnabled {
         didSet { listeningPreferences.manualEnabled = manualListeningEnabled }
     }
-    // Ethan's existing dock mode still shows actual capture and keeps its
-    // session-only manual pause. Normal mode shows the remembered toggle state,
-    // even while playback temporarily prevents capture.
+    // Manual On is remembered independently of docking and playback pauses.
+    // An automatic dock start also appears On, without saving a manual override.
     var listeningToggleOn: Bool {
-        automaticListening ? enabled || (busy && status == "Starting") : manualListeningEnabled
+        manualListeningEnabled || enabled || (busy && status == "Starting")
     }
     @Published var automaticListening = ListeningPreferences().automatic {
         didSet {
@@ -169,8 +168,8 @@ import SwiftUI
         guard !quitting else { cancelAutomaticStart(reason: "quitting"); return }
         let shouldListen = policy.shouldListen(automatic: automaticListening, onPower: dock.onPower,
             externalDisplay: dock.externalDisplays > 0, manualEnabled: manualListeningEnabled)
-        guard automaticListening else {
-            cancelAutomaticStart(reason: "automatic_disabled_or_quitting")
+        guard automaticListening, !manualListeningEnabled else {
+            cancelAutomaticStart(reason: "manual_listening")
             if shouldListen, !enabled, !busy, listeningTask == nil {
                 listeningTask = Task { await turnOn() }
             } else if status == "Waiting to listen" || status == "Waiting for dock" { showListening() }
@@ -180,7 +179,7 @@ import SwiftUI
             // Dock policy owns local capture only; it does not hang up a native conversation.
             Diagnostics.shared.record("dock.listening.stopped", info: ["onPower": String(dock.onPower), "externalDisplays": String(dock.externalDisplays)])
             stopLocal(); busy = false
-            status = "Waiting for dock"; detail = "Connect power and an external display to listen."
+            status = "Waiting for dock"; detail = "Turn listening on now, or connect power and an external display to start automatically."
         } else if shouldListen, !enabled, !busy {
             guard let remaining = dockDelay.remaining(shouldListen: true, now: Diagnostics.now) else { return }
             guard remaining > 0 else {
@@ -329,9 +328,6 @@ import SwiftUI
         guard playbackAllowed else { resumeAfterPlaybackPause = true; return }
         guard !enabled, !busy, !quitting else { return }
         cancelAutomaticStart(reason: "starting")
-        guard !automaticListening || dock.eligible else {
-            status = "Waiting for dock"; detail = "Connect power and an external display to listen."; return
-        }
         busy = true; error = nil; status = "Starting"; detail = "Preparing local speech recognition."
         let token = UUID(); generation = token
         defer { if generation == token { busy = false } }
