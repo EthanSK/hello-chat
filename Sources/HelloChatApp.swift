@@ -313,10 +313,10 @@ struct MainView: View {
                 Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
                     .disabled(model.busy && !preparing && !model.enabled)
                     .accessibilityIdentifier("listeningToggle")
-                TextField("Start Voice", text: $model.wakePhrase)
+                TextField("Start wake phrase", text: $model.wakePhrase)
                     .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("wakePhraseLabel")
-                TextField("End Voice", text: $model.sleepPhrase)
+                TextField("End phrase", text: $model.sleepPhrase)
                     .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("endPhraseLabel")
                 LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
@@ -336,7 +336,7 @@ struct MainView: View {
                 }
             }
             Section("Heard (local model)") {
-                HeardTranscript(text: model.transcript, phrase: model.wakePhrase, similar: model.similarPhrases,
+                HeardTranscript(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase, similar: model.similarPhrases,
                                 enabled: model.enabled)
                     .equatable()
                     .textSelection(.enabled)
@@ -377,11 +377,12 @@ struct MainView: View {
 struct HeardTranscript: View, Equatable {
     let text: String
     let phrase: String
+    let endPhrase: String
     let similar: Bool
     let enabled: Bool
     private var styled: AttributedString {
         var result = AttributedString()
-        for run in PhraseHighlights.runs(in: text, phrase: phrase, similar: similar) {
+        for run in PhraseHighlights.runs(in: text, phrase: phrase, endPhrase: endPhrase, similar: similar) {
             var part = AttributedString(run.text)
             if let kind = run.kind {
                 let color: Color = kind == .exact ? .green : (kind == .dictionary ? .orange : .purple)
@@ -405,16 +406,17 @@ struct PhraseHighlightPreviewApp: App {
         Window("HelloChat · \(AppVersion.display)", id: "phrase-preview") {
             Form {
                 Section("Heard (local model)") {
-                    HeardTranscript(text: "Hello, Chat! Can you help? As well chat. Harlow Chat. Ordinary words stay unchanged.",
-                                    phrase: "Hello Chat", similar: true, enabled: true)
-                    HeardTranscript(text: "HelloChatt — HelloChat.", phrase: "HelloChat", similar: true, enabled: true)
+                    HeardTranscript(text: "Hello, this is a test. What's going on? Hello chat. Bye chat by chat why does the end voice end phrase not highlight",
+                                    phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true, enabled: true)
+                    HeardTranscript(text: "Start Lantern. End Lantern. Hello Chat and Bye Chat stay unchanged with custom phrases.",
+                                    phrase: "Start Lantern", endPhrase: "End Lantern", similar: true, enabled: true)
                 }
             }
             .formStyle(.grouped).textSelection(.enabled)
             .frame(minWidth: 380, minHeight: 220)
             .background(InitialWindowPlacement())
         }
-        .defaultSize(width: 520, height: 280)
+        .defaultSize(width: 560, height: 400)
     }
 }
 
@@ -444,8 +446,8 @@ struct SettingsView: View {
                 DockStatus(dock: model.dock)
             }
             Section("Phrases") {
-                TextField("Start Voice", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
-                TextField("End Voice", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
+                TextField("Start wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
+                TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
                 Text("Say the start phrase to talk to Chat, including after other speech. Clear mentions of the phrase are ignored. The end phrase also cancels Voice while connecting.")
                     .foregroundStyle(.secondary)
                 Toggle("Allow small spelling differences", isOn: $model.similarPhrases)

@@ -4,8 +4,8 @@ import Foundation
     static func main() {
         var checks = 0
         func check(_ value: Bool, _ message: String) { precondition(value, message); checks += 1 }
-        func runs(_ text: String, _ phrase: String = "Hello Chat", _ similar: Bool = true, limit: Int = 600) -> [PhraseHighlights.Run] {
-            PhraseHighlights.runs(in: text, phrase: phrase, similar: similar, limit: limit)
+        func runs(_ text: String, _ phrase: String = "Hello Chat", _ similar: Bool = true, end: String = "", limit: Int = 600) -> [PhraseHighlights.Run] {
+            PhraseHighlights.runs(in: text, phrase: phrase, endPhrase: end, similar: similar, limit: limit)
         }
         let original = "🎙️ Café: Hello, CHAT! As well chat. HelloChad — ordinary words."
         let styled = runs(original)
@@ -31,6 +31,22 @@ import Foundation
         check(runs("High At", "High At", false).first?.kind == .exact, "An exact custom phrase remains available")
         check(runs("").isEmpty && runs("Hello Chat", limit: 0).isEmpty, "Empty and zero viewport")
         check(runs("... 👋").map(\.text).joined() == "... 👋", "No token input preserved")
+        let screenshot = "Hello, this is a test. What's going on? Hello chat. Bye chat by chat why does the end voice end phrase not highlight"
+        let both = runs(screenshot, end: "Bye Chat")
+        check(both.map(\.text).joined() == screenshot, "Both command highlights preserve the exact screenshot transcript")
+        let commands = both.filter { $0.kind != nil }
+        check(commands.map(\.text) == ["Hello chat", "Bye chat", "by chat"], "Wake, exact end and misheard end all highlight")
+        check(commands.map(\.kind) == [.exact, .exact, .dictionary], "Closing aliases use the detector's end-only dictionary")
+        check(runs("Bye, CHAT! ByteChat. by charts.", end: "Bye Chat").filter { $0.kind != nil }.map(\.kind) == [.exact, .dictionary, .dictionary], "End variants share exact and dictionary colours")
+        check(runs("Bye Chat by chat", "Hello Chat", false, end: "Bye Chat").filter { $0.kind != nil }.map(\.text) == ["Bye Chat"], "Exact-only mode excludes end aliases")
+        check(runs("pie charts and by that", end: "Bye Chat").allSatisfy { $0.kind == nil }, "Ordinary end lookalikes stay neutral")
+        check(runs("Start Lantern. End Lantern. Hello Chat. Bye Chat.", "Start Lantern", end: "End Lantern").filter { $0.kind != nil }.map(\.text) == ["Start Lantern", "End Lantern"], "Both saved custom phrases replace defaults")
+        check(runs("Bye Chat", end: "Different phrase").allSatisfy { $0.kind == nil }, "Changing the saved end phrase removes its old highlight")
+        check(runs("Bye Chat", end: "Bye Chat", limit: 5).allSatisfy { $0.kind == nil }, "A clipped end phrase is never highlighted as complete")
+        let overlap = runs("Bye Chat", "Bye Chatt", end: "Bye Chat")
+        check(overlap.map(\.text).joined() == "Bye Chat" && overlap.count == 1 && overlap.first?.kind == .exact, "Exact end wins an overlapping fuzzy wake without duplicating text")
+        check(runs("Hello Chat", end: "Hello Chat").filter { $0.kind != nil }.count == 1, "Identical temporary field values highlight once")
+        check(runs("Hello Chat", "Hello", false, end: "Hello Chat").filter { $0.kind != nil }.map(\.text) == ["Hello Chat"], "Longer exact custom phrase wins a shared prefix")
         print("\(checks) phrase highlight checks passed")
     }
 }

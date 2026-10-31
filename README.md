@@ -79,8 +79,8 @@ These checks use fixed recordings and text. They don't show how well HelloChat h
 
 The main window has three sections:
 
-- **Listening**: **Listen for wake phrase**, editable **Start Voice** and **End Voice** phrases, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
-- **Heard (local model)**: the latest local transcript. A wake phrase match is green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that Voice started.
+- **Listening**: **Listen for wake phrase**, editable **Start wake phrase** and **End phrase** fields, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
+- **Heard (local model)**: the latest local transcript. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
 - **Codex Voice**: Voice status, the latest event and **Start Voice in Codex** / **End Voice in Codex**.
 
 By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
@@ -91,7 +91,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | --- | --- |
 | Microphone | **System default** or a named input, which stays selected by device. If it's disconnected, listening stops with an error instead of switching microphones. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
-| Phrases | **Start Voice** and **End Voice** phrases, **Allow small spelling differences** (on by default), **End Voice after silence** and **Check speech recognition**. |
+| Phrases | **Start wake phrase** and **End phrase**, **Allow small spelling differences** (on by default), **End Voice after silence** and **Check speech recognition**. |
 | Resources | HelloChat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |
 | Transcript Archive | **Save transcripts** (on by default) and the archive location. |
