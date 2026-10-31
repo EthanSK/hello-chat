@@ -28,7 +28,7 @@ struct VoiceBridge {
     static let privateMuteKey = "Command+Control+Option+Shift+F16"
     static let bindingsURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/keybindings.json")
 
-    static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96) -> VoiceSnapshot {
+    static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96, requireEnd: Bool = false) -> VoiceSnapshot {
         let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
         let applications = candidates
             .filter { !$0.isTerminated && codexProcess($0.processIdentifier) }
@@ -36,7 +36,7 @@ struct VoiceBridge {
         let pids = inputPIDs()
         let voice = app?.bundleURL.map { bundle in pids.contains { executable($0)?.hasPrefix(bundle.path + "/Contents/") == true } } ?? false
         let recorder = pids.contains { executable($0)?.hasPrefix("/Applications/AgentFlow.app/Contents/") == true }
-        var controls = readMicrophone ? voiceControls(app?.processIdentifier, maximumDepth: maximumDepth) : Controls()
+        var controls = readMicrophone ? voiceControls(app?.processIdentifier, requireEnd: requireEnd, maximumDepth: maximumDepth) : Controls()
         if app == nil { controls.failure = "application_lookup:\(candidates.count)/\(applications.count)" }
         return VoiceSnapshot(pid: app?.processIdentifier, inputRunning: voice, recorderRunning: recorder,
                              microphone: controls.microphone, accessibilityAllowed: AXIsProcessTrusted(), endControlAvailable: controls.end != nil,
@@ -53,12 +53,12 @@ struct VoiceBridge {
     static func isEndVoiceLabel(_ label: String) -> Bool {
         ["end voice", "end voice chat", "stop voice chat"].contains(label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
     }
-    // Send the user's explicit stop only after finding a current native End
+    // Send the user's explicit stop only after finding a current native Voice
     // control in the live window tree. Detached Electron AX objects can still
     // report enabled/visible/End after a call closes, so never cache them.
     // Codex's configured "Toggle voice chat" shortcut starts OR stops Voice.
     // AXPress can acknowledge without invoking Electron's button handler.
-    // Send the proven shortcut only after revalidating an active End control.
+    // Send the proven shortcut only after revalidating an active Voice control.
     static func requestActiveEnd(record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws -> pid_t? {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
         let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
@@ -66,23 +66,25 @@ struct VoiceBridge {
         guard !apps.isEmpty else { return nil }
         guard apps.count == 1 else { throw BridgeError.message("Couldn't identify the active Codex window.") }
         let app = apps[0], pid = app.processIdentifier
-        func currentEnd() throws -> AXUIElement? {
+        func currentVoice() throws -> Bool {
             let controls = voiceControls(pid, requireEnd: true)
-            guard let found = controls.end, usableEnd(found, pid: pid) else {
-                guard controls.complete else { throw BridgeError.message("Couldn't find End Voice in Codex.") }
-                // Process input alone may belong to dictation or a residual
-                // stream. A complete absent Voice tree authorizes no action.
-                return nil
-            }
-            return found
+            record?("voice.end.controls_checked", ["nodes": Double(controls.nodes), "timeouts": Double(controls.timeouts)],
+                    ["complete": String(controls.complete), "failure": controls.failure])
+            if let found = controls.end, usableEnd(found, pid: pid) { return true }
+            // Some live Voice presentations expose only their microphone.
+            // That fresh native control identifies the current call too; End
+            // never depends on which call HelloChat originally started.
+            if let microphone = controls.microphoneButton, usableMicrophone(microphone, pid: pid) { return true }
+            guard controls.complete else { throw BridgeError.message("Couldn't find Voice controls in Codex.") }
+            return false
         }
-        guard try currentEnd() != nil else { return nil }
+        guard try currentVoice() else { return nil }
         if Thread.isMainThread { app.activate(options: []) }
         else { _ = DispatchQueue.main.sync { app.activate(options: []) } }
         Thread.sleep(forTimeInterval: 0.2)
         // Activation can replace/close the call. Read live membership again;
         // checking attributes of the earlier object does not establish it.
-        guard try currentEnd() != nil else { return nil }
+        guard try currentVoice() else { return nil }
         try post(command: startCommand, pid: pid)
         record?("voice.end.toggle_sent", [:], ["control": "fresh_tree"])
         return pid
@@ -96,6 +98,16 @@ struct VoiceBridge {
               attribute("AXHidden", element) as? Bool != true else { return false }
         return [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute]
             .contains { (attribute($0, element) as? String).map(isEndVoiceLabel) == true }
+    }
+    private static func usableMicrophone(_ element: AXUIElement, pid: pid_t) -> Bool {
+        AXUIElementSetMessagingTimeout(element, 0.04)
+        var owner: pid_t = 0
+        guard AXUIElementGetPid(element, &owner) == .success, owner == pid,
+              attribute(kAXRoleAttribute, element) as? String == kAXButtonRole,
+              attribute(kAXEnabledAttribute, element) as? Bool != false,
+              attribute("AXHidden", element) as? Bool != true else { return false }
+        return [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute]
+            .contains { (attribute($0, element) as? String).flatMap(MicrophoneState.accessibilityLabel) != nil }
     }
     static func endCall(pid: pid_t, record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws {
         let controls = voiceControls(pid, requireEnd: true)
@@ -122,6 +134,7 @@ struct VoiceBridge {
     }
     private struct Controls {
         var microphone: MicrophoneState?
+        var microphoneButton: AXUIElement?
         var end: AXUIElement?
         var endLabel: String?
         var complete = false
@@ -138,7 +151,7 @@ struct VoiceBridge {
     private static func voiceControls(_ pid: pid_t?, requireEnd: Bool = false, maximumDepth: Int = 96) -> Controls {
         guard let pid, AXIsProcessTrusted(), codexProcess(pid) else { return Controls() }
         let root = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(root, 0.04)
+        AXUIElementSetMessagingTimeout(root, 0.25)
         var result = Controls()
         var readFailed = false
         func read(_ name: String, _ element: AXUIElement, required: Bool = true) -> CFTypeRef? {
@@ -156,6 +169,18 @@ struct VoiceBridge {
         var queue: [(AXUIElement, Int)] = (windows.isEmpty ? [root] : windows).map { ($0, 0) }
         var seen = Set<Identity>()
         let deadline = Date().addingTimeInterval(2)
+        func inspectButton(_ element: AXUIElement) {
+            for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
+                if let label = read(name, element) as? String {
+                    if let state = MicrophoneState.accessibilityLabel(label) {
+                        result.microphone = state; result.microphoneButton = element
+                    }
+                    if isEndVoiceLabel(label) {
+                        result.end = element; result.endLabel = label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                }
+            }
+        }
         var i = 0
         while i < queue.count && seen.count < 12000 && Date() < deadline {
             let (element, depth) = queue[i]; i += 1
@@ -167,18 +192,34 @@ struct VoiceBridge {
             AXUIElementSetMessagingTimeout(element, 0.04)
             let role = read(kAXRoleAttribute, element) as? String
             if role == kAXButtonRole {
-                for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
-                    if let label = read(name, element) as? String {
-                        if let state = MicrophoneState.accessibilityLabel(label) { result.microphone = state }
-                        if isEndVoiceLabel(label) {
-                            result.end = element; result.endLabel = label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-                        }
-                    }
-                }
+                inspectButton(element)
                 // A snapshot only needs one exact Voice control to establish
                 // state. Don't keep scanning a large chat for an absent End
                 // button after the microphone was already identified.
                 if result.end != nil || (!requireEnd && result.microphone != nil) { result.complete = true; return result }
+            }
+            if role == "AXWebArea" {
+                // Chromium's native button search skips chat text, including
+                // long/offscreen conversations that exhaust a node-by-node scan.
+                let limit = 1000
+                let predicate: [String: Any] = ["AXSearchKey": "AXButtonSearchKey", "AXResultsLimit": limit,
+                    "AXDirection": "AXDirectionNext", "AXVisibleOnly": false]
+                AXUIElementSetMessagingTimeout(element, 0.25)
+                var value: CFTypeRef?
+                let status = AXUIElementCopyParameterizedAttributeValue(element,
+                    "AXUIElementsForSearchPredicate" as CFString, predicate as CFDictionary, &value)
+                if status == .success, let buttons = value as? [AXUIElement], buttons.count < limit {
+                    for button in buttons {
+                        guard Date() < deadline else { result.failure = "deadline"; return result }
+                        inspectButton(button)
+                        if result.end != nil || (!requireEnd && result.microphone != nil) { result.complete = true; return result }
+                    }
+                    continue
+                }
+                // A failed/truncated native search can fall back to traversal,
+                // but can never prove that a Voice call is absent.
+                readFailed = true
+                if result.failure.isEmpty { result.failure = "button_search:\(status.rawValue)" }
             }
             if [kAXStaticTextRole, kAXImageRole, kAXButtonRole].contains(role ?? "") { continue }
             let children = read("AXChildrenInNavigationOrder", element, required: false) as? [AXUIElement]

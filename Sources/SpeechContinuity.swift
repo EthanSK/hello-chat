@@ -1,5 +1,17 @@
 import Foundation
 
+// Changing recording ownership invalidates both queued audio and an inference
+// already in flight. Reset once at the first new frame, without reloading models.
+struct SpeechContextBoundary {
+    private var cutoff = -Double.infinity
+    private var resetPending = false
+    mutating func invalidate(at time: Double) { cutoff = time; resetPending = true }
+    func accepts(capturedAt time: Double) -> Bool { time >= cutoff }
+    mutating func takeReset() -> Bool {
+        let value = resetPending; resetPending = false; return value
+    }
+}
+
 // Watch frame progress, never recognized words: silence is valid live audio.
 // One recovery per session prevents a stalled source from spamming restarts.
 struct AudioProgressWatchdog {

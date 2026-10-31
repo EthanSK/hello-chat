@@ -155,10 +155,18 @@ import CoreAudio
             RunLoop.main.run()
             return
         }
-        if CommandLine.arguments.contains("--check-voice-controls") {
+        if CommandLine.arguments.contains("--check-agent-flow") {
+            Task { @MainActor in
+                let monitor = AgentFlowRecordingMonitor()
+                print("{\"phrasesPaused\":\(monitor.suppressesPhrases)}")
+                exit(0)
+            }
+            RunLoop.main.run(); return
+        }
+        if CommandLine.arguments.contains("--check-voice-controls") || CommandLine.arguments.contains("--check-end-controls") {
             // Read-only diagnostic: never activates Codex or sends a shortcut.
             for depth in [32, 96] {
-                let state = VoiceBridge.snapshot(maximumDepth: depth)
+                let state = VoiceBridge.snapshot(maximumDepth: depth, requireEnd: CommandLine.arguments.contains("--check-end-controls"))
                 var info = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(state))) as? [String: Any] ?? [:]
                 info["maximumDepth"] = depth
                 if let json = try? JSONSerialization.data(withJSONObject: info, options: .sortedKeys) { print(String(decoding: json, as: UTF8.self)) }
@@ -302,69 +310,67 @@ struct MainView: View {
     private var voiceOn: Bool { model.voice.connected }
     private var connecting: Bool { model.status == "Connecting" }
     var body: some View {
-        Form {
-            if let error = model.error {
-                Section {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red).textSelection(.enabled)
-                        .accessibilityIdentifier("errorMessage")
-                }
-            }
-            Section("Listening (say it twice if detection is wonky)") {
-                Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
-                    .disabled(model.busy && !preparing && !model.enabled)
-                    .accessibilityIdentifier("listeningToggle")
-                TextField("Wake phrase", text: $model.wakePhrase)
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityIdentifier("wakePhraseLabel")
-                TextField("End phrase", text: $model.sleepPhrase)
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityIdentifier("endPhraseLabel")
-                LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
-                    .accessibilityIdentifier("listeningStatus")
-                Text(model.detail).foregroundStyle(.secondary)
-                Picker("Speech model", selection: $model.speechModel) {
-                    ForEach(SpeechModel.allCases) { choice in
-                        Text(choice.title).tag(choice)
+        GeometryReader { viewport in
+            Form {
+                if let error = model.error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red).textSelection(.enabled)
+                            .accessibilityIdentifier("errorMessage")
                     }
                 }
-                .disabled(model.busy || model.checkingSpeech || model.changingModel)
-                .accessibilityIdentifier("speechModelPicker")
-                NativeMeter(meter: model.meter, active: model.detectionRunning)
-                Text(model.speechModel.detail).foregroundStyle(.secondary)
-                if !model.micAllowed {
-                    Button("Allow Microphone") { model.requestAudioPermissions() }
+                Section("Listening (say it twice if detection is wonky)") {
+                    Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
+                        .disabled(model.busy && !preparing && !model.enabled)
+                        .accessibilityIdentifier("listeningToggle")
+                    TextField("Wake phrase", text: $model.wakePhrase)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("wakePhraseLabel")
+                    TextField("End phrase", text: $model.sleepPhrase)
+                        .multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("endPhraseLabel")
+                    LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
+                        .accessibilityIdentifier("listeningStatus")
+                    Text(model.phrasesPausedForAgentFlow ? "Phrases paused for Agent Flow." : model.detail)
+                        .foregroundStyle(.secondary)
+                    Picker("Speech model", selection: $model.speechModel) {
+                        ForEach(SpeechModel.allCases) { choice in
+                            Text(choice.title).tag(choice)
+                        }
+                    }
+                    .disabled(model.busy || model.checkingSpeech || model.changingModel)
+                    .accessibilityIdentifier("speechModelPicker")
+                    NativeMeter(meter: model.meter, active: model.detectionRunning)
+                    Text(model.speechModel.detail).foregroundStyle(.secondary)
+                    if !model.micAllowed {
+                        Button("Allow Microphone") { model.requestAudioPermissions() }
+                    }
+                }
+                Section("Heard (local model)") {
+                    TranscriptPane(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
+                                   similar: model.similarPhrases, enabled: model.enabled,
+                                   viewportHeight: viewport.size.height, scale: zoom.scale)
+                }
+                Section("Codex Voice") {
+                    LabeledContent("Status", value: connecting ? "Opening…" : (voiceOn ? "On" : "Off"))
+                        .accessibilityIdentifier("voiceStatus")
+                    Text(voiceOn ? "Say \(model.sleepPhrase) to end Voice." : "Say \(model.wakePhrase) to start Voice. No need to turn it on first.")
+                        .foregroundStyle(.secondary)
+                    Button(connecting ? "Cancel" : (voiceOn ? "End Voice in Codex" : "Start Voice in Codex")) {
+                        if voiceOn || connecting { model.manualMute() } else { model.manualTalk() }
+                    }
+                    .disabled(model.busy && !connecting)
+                    .accessibilityIdentifier("voiceButton")
+                    if !model.lastEvent.isEmpty {
+                        Text(model.lastEvent).foregroundStyle(.secondary).accessibilityIdentifier("lastEvent")
+                    }
                 }
             }
-            Section("Heard (local model)") {
-                HeardTranscript(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase, similar: model.similarPhrases,
-                                enabled: model.enabled)
-                    .equatable()
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
-                    .accessibilityIdentifier("heardText")
-                if let date = model.lastHeardAt {
-                    Text(date, style: .time).foregroundStyle(.secondary)
-                }
-            }
-            Section("Codex Voice") {
-                LabeledContent("Status", value: connecting ? "Opening…" : (voiceOn ? "On" : "Off"))
-                    .accessibilityIdentifier("voiceStatus")
-                Text(voiceOn ? "Say \(model.sleepPhrase) to end Voice." : "Say \(model.wakePhrase) to start Voice. No need to turn it on first.")
-                    .foregroundStyle(.secondary)
-                Button(connecting ? "Cancel" : (voiceOn ? "End Voice in Codex" : "Start Voice in Codex")) {
-                    if voiceOn || connecting { model.manualMute() } else { model.manualTalk() }
-                }
-                .disabled(model.busy && !connecting)
-                .accessibilityIdentifier("voiceButton")
-                if !model.lastEvent.isEmpty {
-                    Text(model.lastEvent).foregroundStyle(.secondary).accessibilityIdentifier("lastEvent")
-                }
-            }
+            .formStyle(.grouped)
+            .font(.system(size: 13 * zoom.scale))
+            .controlSize(zoom.scale >= 1.3 ? .large : .regular)
+            .coordinateSpace(name: TranscriptPane.coordinateSpace)
         }
-        .formStyle(.grouped)
-        .font(.system(size: 13 * zoom.scale))
-        .controlSize(zoom.scale >= 1.3 ? .large : .regular)
         .frame(minWidth: 380, minHeight: 380)
         .toolbar {
             ToolbarItemGroup {
@@ -375,32 +381,6 @@ struct MainView: View {
     }
 }
 
-struct HeardTranscript: View, Equatable {
-    let text: String
-    let phrase: String
-    let endPhrase: String
-    let similar: Bool
-    let enabled: Bool
-    private var styled: AttributedString {
-        var result = AttributedString()
-        for run in PhraseHighlights.runs(in: text, phrase: phrase, endPhrase: endPhrase, similar: similar) {
-            var part = AttributedString(run.text)
-            if let kind = run.kind {
-                let color: Color = kind == .exact ? .green : (kind == .dictionary ? .orange : .purple)
-                part.foregroundColor = color
-                part.backgroundColor = color.opacity(0.12)
-                part.inlinePresentationIntent = .stronglyEmphasized
-            }
-            result.append(part)
-        }
-        return result
-    }
-    var body: some View {
-        if text.isEmpty {
-            Text(enabled ? "Nothing heard yet" : "Start listening to see what's heard")
-        } else { Text(styled) }
-    }
-}
 
 struct PhraseHighlightPreviewApp: App {
     var body: some Scene {

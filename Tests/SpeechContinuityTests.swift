@@ -2,6 +2,16 @@ import Foundation
 
 @main struct SpeechContinuityTests {
     static func main() async {
+        var boundary = SpeechContextBoundary()
+        precondition(boundary.accepts(capturedAt: 0) && !boundary.takeReset())
+        boundary.invalidate(at: 10)
+        precondition(!boundary.accepts(capturedAt: 9), "Discard audio captured during Agent Flow recording")
+        precondition(boundary.accepts(capturedAt: 10) && boundary.takeReset())
+        precondition(!boundary.takeReset(), "Reset only once before fresh audio")
+        boundary.invalidate(at: 12)
+        precondition(!boundary.accepts(capturedAt: 11), "Reject an old inference that finishes after the ownership change")
+        boundary.invalidate(at: 15)
+        precondition(!boundary.accepts(capturedAt: 14) && boundary.accepts(capturedAt: 15))
         var silent = AudioProgressWatchdog(now: 0)
         for time in stride(from: 1.0, through: 120.0, by: 1) {
             silent.captured(at: time); silent.processed(at: time)

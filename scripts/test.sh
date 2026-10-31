@@ -5,6 +5,10 @@ build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
 swiftc -swift-version 5 -parse-as-library Sources/SpeechModel.swift Tests/SpeechModelTests.swift -o "$build_dir/SpeechModelTests" -framework AVFoundation
 "$build_dir/SpeechModelTests"
+swiftc -swift-version 5 -parse-as-library Sources/TranscriptViewport.swift Tests/TranscriptViewportTests.swift -o "$build_dir/TranscriptViewportTests"
+"$build_dir/TranscriptViewportTests"
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/VoiceBridge.swift Sources/AgentFlowRecordingMonitor.swift Tests/AgentFlowRecordingTests.swift -o "$build_dir/AgentFlowRecordingTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
+"$build_dir/AgentFlowRecordingTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/AppInstanceLock.swift Tests/AppInstanceTests.swift -o "$build_dir/AppInstanceTests"
 "$build_dir/AppInstanceTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/VoiceBridge.swift Tests/CoreTests.swift -o "$build_dir/CoreTests" -framework AppKit -framework ApplicationServices -framework CoreAudio

@@ -34,6 +34,8 @@ import CoreAudio
     private var cleanup: Task<Void, Never>?
     private var progress = AudioProgressWatchdog(now: Diagnostics.now)
     private var watchdog: Task<Void, Never>?
+    private var contextBoundary = SpeechContextBoundary()
+    func discardPendingRecognition() { contextBoundary.invalidate(at: Diagnostics.now) }
     private struct Frame {
         let buffer: AVAudioPCMBuffer
         let sequence: UInt64
@@ -179,20 +181,27 @@ import CoreAudio
                 for await frame in stream {
                     try Task.checkCancellation()
                     guard let self, self.session == token else { break }
-                    if continuity.hasGap(sequence: frame.sequence) {
-                        gaps += 1
-                        self.diagnostics?.record("speech.audio_gap")
-                        self.onDelay?()
+                    guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
+                    let gap = continuity.hasGap(sequence: frame.sequence)
+                    let boundaryReset = self.contextBoundary.takeReset()
+                    if boundaryReset || gap {
+                        if !boundaryReset {
+                            gaps += 1
+                            self.diagnostics?.record("speech.audio_gap")
+                            self.onDelay?()
+                        }
                         let resetting = Diagnostics.now
                         try await worker.resetForDiscontinuity()
                         guard self.session == token else { break }
-                        self.onSession?(); self.onRecovery?()
-                        self.diagnostics?.record("speech.recovered", numbers: ["ms": (Diagnostics.now - resetting) * 1000])
+                        self.onSession?()
+                        if !boundaryReset { self.onRecovery?() }
+                        self.diagnostics?.record(boundaryReset ? "speech.context.discarded" : "speech.recovered", numbers: ["ms": (Diagnostics.now - resetting) * 1000])
                     }
                     let consuming = Diagnostics.now
                     let queuedMS = (consuming - frame.capturedAt) * 1000
                     let result = try await worker.consume(frame.buffer)
                     guard self.session == token else { break }
+                    guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
                     let processMS = (Diagnostics.now - consuming) * 1000
                     frames += 1; queueMax = max(queueMax, queuedMS); processMax = max(processMax, processMS); processTotal += processMS
                     audioTotal += Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate

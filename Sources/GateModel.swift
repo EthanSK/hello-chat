@@ -14,7 +14,6 @@ import SwiftUI
     @Published private(set) var microphone: MicrophoneState? = .muted
     let meter = AudioMeter()
     @Published private(set) var transcript = ""
-    @Published private(set) var lastHeardAt: Date?
     @Published private(set) var archiveError: String?
     @Published var saveTranscripts = UserDefaults.standard.object(forKey: "saveTranscripts") as? Bool ?? true {
         didSet {
@@ -23,6 +22,7 @@ import SwiftUI
         }
     }
     @Published private(set) var detectionRunning = false
+    @Published private(set) var phrasesPausedForAgentFlow = false
     @Published private(set) var checkingSpeech = false
     @Published private(set) var speechCheckText = ""
     @Published private(set) var computeText = "Local speech · Neural Engine + CPU"
@@ -71,6 +71,7 @@ import SwiftUI
     @Published private(set) var lastEvent = ""
     @Published private(set) var micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     let voice = NativeVoice(diagnostics: .shared)
+    private let agentFlow = AgentFlowRecordingMonitor()
     private let feedback = FeedbackSounds()
     private let listener = SpeechListener()
     private var matcher = PhraseMatcher()
@@ -99,6 +100,14 @@ import SwiftUI
 
     init() {
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
+        phrasesPausedForAgentFlow = agentFlow.suppressesPhrases
+        agentFlow.onChange = { [weak self] value in
+            guard let self else { return }
+            self.phrasesPausedForAgentFlow = value
+            self.matcher.reset(); self.standaloneWake.reset()
+            self.listener.discardPendingRecognition()
+            Diagnostics.shared.record("phrases.agent_flow", info: ["paused": String(value)])
+        }
         do { try ShortcutLease().restore() } catch { self.error = "Could not restore Voice shortcut: \(error.localizedDescription)" }
         listener.onSession = { [weak self] in
             self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.detectionRunning = true
@@ -115,7 +124,7 @@ import SwiftUI
         }
         listener.onRecovery = { [weak self] in
             guard let self else { return }
-            self.transcript = ""; self.lastHeardAt = nil
+            self.transcript = ""
             self.lastEvent = "Listening resumed after an audio delay"
             self.detail = self.microphone == .listening ? "Say \(self.sleepPhrase) to end Voice." : "Say \(self.wakePhrase) to start Voice."
         }
@@ -220,7 +229,7 @@ import SwiftUI
         phraseUpdateTask?.cancel()
         listener.model = speechModel
         updateComputeLabel()
-        transcript = ""; lastHeardAt = nil; matcher.reset(); error = nil
+        transcript = ""; matcher.reset(); error = nil
         if enabled, !checkingSpeech {
             changingModel = true
             detail = "Preparing local speech recognition."
@@ -252,7 +261,7 @@ import SwiftUI
                 listener.stop(); detectionRunning = false; error = nil
                 try await listener.start()
                 guard inputGeneration == token, enabled else { return }
-                transcript = ""; lastHeardAt = nil; matcher.reset()
+                transcript = ""; matcher.reset()
                 detectionRunning = true
                 status = "Listening"
                 detail = voice.connected ? (microphone == nil ? "Voice is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end Voice.") : "Say \(wakePhrase) to turn Voice on."
@@ -341,7 +350,7 @@ import SwiftUI
             try await SpeechListener.authorize()
             guard generation == token, !quitting, playbackAllowed else { return }
             refreshPermissions(); updatePhrases(); matcher.reset()
-            transcript = ""; lastHeardAt = nil; lastEvent = ""
+            transcript = ""; lastEvent = ""
             try await listener.start()
             guard generation == token, !quitting else { listener.stop(); return }
             enabled = true; detectionRunning = true
@@ -486,15 +495,17 @@ import SwiftUI
     }
     private func heard(_ text: String) {
         guard enabled else { return }
-        standaloneWake.update(text, at: Diagnostics.now)
         if saveTranscripts { archive.update(text, model: speechModel.rawValue, microphone: inputs.selectedName) }
         if transcript != text {
-            transcript = text; lastHeardAt = Date()
+            transcript = text
             if microphone == .listening { scheduleMute() }
         }
+        guard !phrasesPausedForAgentFlow else { return }
+        standaloneWake.update(text, at: Diagnostics.now)
         guard !PhraseMatcher.words(wakePhrase).isEmpty, !PhraseMatcher.words(sleepPhrase).isEmpty,
               PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase),
-              matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases) == .sleep else { return }
+              matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases) == .sleep,
+              agentFlow.confirmAllowsPhrases() else { return }
         standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
         Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
         // Ethan's "buy chat" / Bye Chat gets an immediate detection cue even
@@ -507,9 +518,10 @@ import SwiftUI
         }
     }
     private func checkStandaloneWake() {
-        guard enabled, detectionRunning,
+        guard enabled, detectionRunning, !phrasesPausedForAgentFlow,
               standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases,
-                                  requireModelEnd: speechModel.hasNativeUtteranceEnd) else { return }
+                                  requireModelEnd: speechModel.hasNativeUtteranceEnd),
+              agentFlow.confirmAllowsPhrases() else { return }
         Diagnostics.shared.record("phrase.wake.detected", info: ["contextChecked": "true", "busy": String(busy)])
         if busy { lastEvent = "Heard \(wakePhrase) · finishing the current Voice action" }
         else { beginVoice(trigger: "Heard \(wakePhrase)") }

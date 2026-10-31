@@ -80,12 +80,14 @@ These checks use fixed recordings and text. They don't show how well HelloChat h
 The main window has three sections:
 
 - **Listening**: **Listen for wake phrase**, editable **Wake phrase** and **End phrase** fields, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
-- **Heard (local model)**: the latest local transcript. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
+- **Heard (local model)**: the latest local transcript in its own scrolling panel. The panel fits the visible window when there is room, follows new words while you are at the bottom, and lets you scroll back without being pulled down. There is no timestamp row. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
 - **Codex Voice**: Voice status, the latest event and **Start Voice in Codex** / **End Voice in Codex**.
 
 Waking waits until you finish speaking: Parakeet uses its built-in end-of-utterance (EOU) signal; Nemotron and Apple Speech require at least 0.6 seconds of quiet audio and a stable transcript. This can add a short delay and depends on the microphone level in a noisy room. The end phrase still acts immediately.
 
 By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
+
+While Agent Flow is recording, HelloChat ignores wake and end phrases. Its listening toggle and manual Voice controls remain available.
 
 The menu bar has **Start listening** / **Stop listening** and the same Voice controls. **Settings…** (⌘,) has:
 
