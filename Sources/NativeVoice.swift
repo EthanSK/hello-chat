@@ -55,9 +55,14 @@ import Foundation
 
     // nil means an exact End Voice control confirmed the call, but the native
     // presentation didn't expose its microphone state. Never infer an unmute.
-    @discardableResult func start(onNewCall: () -> Void = {}) async throws -> MicrophoneState? {
+    @discardableResult func start(onRequestAccepted: () -> Void = {}) async throws -> MicrophoneState? {
+        try Task.checkCancellation()
         let starting = Diagnostics.now
         diagnostics?.record("voice.open.requested")
+        // Ethan wants the start sound to acknowledge each accepted wake, even
+        // when it reuses an open call. This confirms detection, not connection.
+        // Do it before the potentially slow native-control scan, exactly once.
+        onRequestAccepted()
         lastError = nil
         // A wake must establish ownership from fresh controls. In particular,
         // an End-only presentation doesn't tell us whether its mic is muted.
@@ -99,10 +104,6 @@ import Foundation
             try await Task.sleep(nanoseconds: 200_000_000)
             try Task.checkCancellation()
             pendingUntil = Date().addingTimeInterval(confirmationTimeout)
-            // Ethan's "boot/start sound" belongs only to an actual new-call
-            // request. Existing Voice (including muted or End-only) returns
-            // above; elapsed time never decides whether its cue is suppressed.
-            onNewCall()
             do { try await transport.send(VoiceBridge.startCommand, pid) }
             catch { pendingUntil = nil; throw error }
             diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000])

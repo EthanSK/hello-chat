@@ -12,9 +12,16 @@ import AppKit
         }
     }
     func play(_ cue: Cue) {
-        guard UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true else { return }
+        guard UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true else {
+            Diagnostics.shared.record("feedback.skipped", info: ["cue": cue.rawValue, "reason": "disabled"])
+            return
+        }
+        guard let sound = sounds[cue] else {
+            Diagnostics.shared.record("feedback.skipped", info: ["cue": cue.rawValue, "reason": "missing_resource"])
+            return
+        }
         sounds.values.forEach { $0.stop() }
-        let played = sounds[cue]?.play() ?? false
+        let played = sound.play()
         Diagnostics.shared.record("feedback.play", info: ["cue": cue.rawValue, "started": String(played)])
     }
 }

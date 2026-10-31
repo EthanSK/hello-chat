@@ -6,6 +6,26 @@ import Foundation
             VoiceSnapshot(pid: 123, inputRunning: input || mic != nil, recorderRunning: false,
                           microphone: mic, accessibilityAllowed: allowed)
         }
+        let cancelledBeforeStart = NativeVoice(transport: .init(
+            snapshot: { fatalError("A cancelled request must not scan native controls") },
+            send: { _, _ in fatalError("A cancelled request must not send commands") },
+            activate: { _ in fatalError("A cancelled request must not activate Codex") }))
+        let preCancelled = Task { @MainActor in
+            do {
+                _ = try await cancelledBeforeStart.start(onRequestAccepted: {
+                    fatalError("An already-cancelled request must not play a cue")
+                })
+                fatalError("Cancelled start unexpectedly succeeded")
+            } catch is CancellationError { }
+        }
+        preCancelled.cancel()
+        try await preCancelled.value
+        var acknowledgedBeforeRead = false
+        let immediateFeedback = NativeVoice(transport: .init(snapshot: {
+            precondition(acknowledgedBeforeRead, "A slow native-control read must not delay the wake acknowledgement")
+            return state(.listening)
+        }, send: { _, _ in fatalError("Existing Voice needs no toggle") }, activate: { _ in }))
+        _ = try await immediateFeedback.start(onRequestAccepted: { acknowledgedBeforeRead = true })
         var current = state()
         var sent: [String] = []
         let voice = NativeVoice(transport: .init(snapshot: { current }, send: { command, _ in
@@ -13,9 +33,9 @@ import Foundation
             if command == VoiceBridge.muteCommand { current = state(.listening) }
             else { current = current.microphone == nil ? state(.listening) : state() }
         }, activate: { _ in }))
-        var newCallCues = 0
-        try await voice.start(onNewCall: { newCallCues += 1 })
-        precondition(newCallCues == 1, "New native Voice gets its start cue")
+        var startCues = 0
+        try await voice.start(onRequestAccepted: { startCues += 1 })
+        precondition(startCues == 1, "New native Voice gets its start cue")
         try await voice.setMicrophone(.listening)
         precondition(voice.connected && sent == [VoiceBridge.startCommand], "Start native call once")
         async let first: Void = voice.stop()
@@ -26,18 +46,18 @@ import Foundation
         precondition(sent.count == 2, "Repeated stop must not reopen a call")
         current = state(.muted)
         let beforeMutedWake = sent.count
-        let openedMicrophone = try await voice.start(onNewCall: { newCallCues += 1 })
+        let openedMicrophone = try await voice.start(onRequestAccepted: { startCues += 1 })
         precondition(openedMicrophone == .muted, "Start returns fresh state so callers can skip a redundant snapshot when already listening")
         precondition(sent.count == beforeMutedWake, "Hello Chat adopts an existing muted call without sending the new-chat shortcut")
         try await voice.setMicrophone(.listening)
         precondition(Array(sent.dropFirst(beforeMutedWake)) == [VoiceBridge.muteCommand], "Hello Chat sends only unmute for an existing muted native call")
-        precondition(newCallCues == 1, "Existing muted Voice is unmuted without another boot sound")
+        precondition(startCues == 2, "An accepted wake acknowledges reuse and unmute without a new-call shortcut")
         let beforeRepeatedWake = sent.count
-        let alreadyListening = try await voice.start(onNewCall: { newCallCues += 1 })
+        let alreadyListening = try await voice.start(onRequestAccepted: { startCues += 1 })
         precondition(alreadyListening == .listening, "Repeated Hello Chat sees the same unmuted Voice call")
         try await voice.setMicrophone(.listening)
         precondition(sent.count == beforeRepeatedWake, "Repeated Hello Chat neither creates another chat nor remutes the current call")
-        precondition(newCallCues == 1, "Existing listening Voice remains quiet without a fixed expiry timer")
+        precondition(startCues == 3, "An accepted wake acknowledges an already-listening call without toggling it")
         await voice.stop()
         current = state(input: true)
         let beforeResidualStart = sent.count
@@ -61,7 +81,9 @@ import Foundation
             if transientReads == 1 { value = state(input: true); value.controlsComplete = false }
             return value
         }, send: { _, _ in fatalError("A recovered existing muted call must not be toggled") }, activate: { _ in }))
-        let recoveredMicrophone = try await transient.start(onNewCall: { fatalError("Recovered existing call must not play a startup cue") })
+        var recoveredCues = 0
+        let recoveredMicrophone = try await transient.start(onRequestAccepted: { recoveredCues += 1 })
+        precondition(recoveredCues == 1, "Snapshot retries must not replay the acknowledgement")
         precondition(recoveredMicrophone == .muted && transientReads == 2, "Retry a transient incomplete read without toggling an existing call")
 
         var lookupReads = 0
@@ -193,7 +215,9 @@ import Foundation
         }, activate: { _ in fatalError("Existing End-only call must not activate a start") }))
         _ = try await endOnly.start() // Establish a stale cached connected flag.
         endOnlyState = state(); endOnlyState.endControlAvailable = true
-        let unknownMicrophone = try await endOnly.start(onNewCall: { fatalError("End-only active Voice must not play a startup cue") })
+        var endOnlyCues = 0
+        let unknownMicrophone = try await endOnly.start(onRequestAccepted: { endOnlyCues += 1 })
+        precondition(endOnlyCues == 1, "An accepted End-only reuse still acknowledges the wake")
         precondition(unknownMicrophone == nil && endOnly.connected,
                      "Exact existing End confirms Voice while preserving unknown microphone state and sending nothing")
 

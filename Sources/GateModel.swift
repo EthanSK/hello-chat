@@ -447,7 +447,7 @@ import SwiftUI
         do {
             // Refresh native state on each explicit wake, including after a
             // call was closed in Codex, rather than trusting our cached state.
-            let openedMicrophone = try await voice.start(onNewCall: { [weak self] in self?.feedback.play(.wake) })
+            let openedMicrophone = try await voice.start(onRequestAccepted: { [weak self] in self?.feedback.play(.wake) })
             try Task.checkCancellation()
             guard enabled, generation == token else { return }
             if let openedMicrophone, openedMicrophone != .listening { try await voice.setMicrophone(.listening) }
