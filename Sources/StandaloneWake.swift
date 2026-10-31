@@ -1,9 +1,9 @@
 import Foundation
 
-// Historical name: this used to require a whole isolated utterance. A direct
-// address may now follow other speech; only clear discussion of the phrase is
-// filtered. Audio pauses help scope context but never gate a wake on silence.
+// A direct address may follow other speech. Ethan's "EOU afterwards" means
+// wait for the completed utterance before checking it, keeping mention filtering.
 struct StandaloneWake {
+    static let endSilenceSeconds = 0.6
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     private var context: [String] = []
     private var sentenceStarts: [Int] = []
@@ -15,12 +15,14 @@ struct StandaloneWake {
     private var revision = 0
     private var checkedRevision = -1
     private var configuration = ""
+    private var endedRevision: Int?
 
     mutating func reset() { self = StandaloneWake() }
     mutating func resetContext() {
         context = []; sentenceStarts = []; audioBoundary = 0
-        consumed = 0; revision += 1
+        consumed = 0; revision += 1; endedRevision = nil; quiet = 0
     }
+    mutating func utteranceEnded() { endedRevision = revision }
     mutating func audio(level: Double, seconds: Double) {
         if level < 0.02 { quiet += seconds }
         else {
@@ -43,12 +45,17 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool) -> Bool {
-        let key = "\(phrase)|\(similar)"
+    mutating func poll(at time: Double, phrase: String, similar: Bool, requireModelEnd: Bool = false) -> Bool {
+        let key = "\(phrase)|\(similar)|\(requireModelEnd)"
         if configuration != key { configuration = key; checkedRevision = -1 }
-        // Check each settled revision once, rather than re-scanning on every
-        // audio frame. No model, network request or extra microphone is needed.
-        guard heardSpeech, time - changedAt >= 0.45, checkedRevision != revision else { return false }
+        // Parakeet supplies its native EOU. Nemotron/Apple use the existing
+        // audio level and stable text as a local silence-based equivalent.
+        guard heardSpeech, checkedRevision != revision else { return false }
+        if requireModelEnd {
+            guard endedRevision == revision else { return false }
+        } else {
+            guard quiet >= Self.endSilenceSeconds, time - changedAt >= 0.45 else { return false }
+        }
         checkedRevision = revision
         let candidates = matches(phrase: phrase, similar: similar)
         let directAddress = candidates.enumerated().contains { index, match in

@@ -10,8 +10,7 @@ import Foundation
             var detector = StandaloneWake()
             detector.audio(level: 0.2, seconds: 0.1)
             detector.update(text, at: 1)
-            // Deliberately leave the microphone noisy: a quiet room is optional.
-            detector.audio(level: 0.2, seconds: 0.8)
+            detector.audio(level: 0, seconds: 0.8)
             expect(detector.poll(at: 1.6, phrase: phrase, similar: similar) == expected, text)
             expect(!detector.poll(at: 2, phrase: phrase, similar: similar), "Do not replay: \(text)")
         }
@@ -49,14 +48,20 @@ import Foundation
         check("High At", expected: true, phrase: "High At", similar: false)
         check("it's too high at low speed. Hello Chat", expected: true)
         var detector = StandaloneWake()
-        func update(_ text: String, _ at: Double) { detector.update(text, at: at) }
-        func poll(_ at: Double) -> Bool { detector.poll(at: at, phrase: "Hello Chat", similar: true) }
+        func update(_ text: String, _ at: Double) {
+            detector.audio(level: 0.2, seconds: 0.1)
+            detector.update(text, at: at)
+        }
+        func poll(_ at: Double) -> Bool {
+            detector.audio(level: 0, seconds: 0.7)
+            return detector.poll(at: at, phrase: "Hello Chat", similar: true)
+        }
         detector.audio(level: 0.2, seconds: 0.1); update("Hello Chat", 1)
         expect(!poll(1.2), "Wait briefly for a stable phrase")
         update("Hello Chat is the phrase", 1.3)
         expect(!poll(2), "Cancel a partial address revised into an obvious mention")
         update("Hello Chat is the phrase. Hello Chat", 3)
-        expect(poll(3.6), "An address after a mention still wakes without audio silence")
+        expect(poll(3.6), "An address after a mention still wakes when its utterance ends")
         update("Hello Chat was the phrase. Hello Chat", 4)
         expect(!poll(4.6), "An earlier-word correction must not repeat the wake")
         update("Hello Chat was the phrase. Hello Chat. Hello Chad", 5)
@@ -105,8 +110,31 @@ import Foundation
         expect(poll(3.6), "A genuinely later greeting still works after weak-wake cancellation")
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("As well chat", 1)
+        detector.audio(level: 0, seconds: 0.7)
         expect(detector.poll(at: 2, phrase: "As Well Chat", similar: false),
                "Exact custom wake phrases are unaffected by default alias routing")
+        detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
+        update("Hello Chat", 1)
+        detector.audio(level: 0.2, seconds: 1)
+        expect(!detector.poll(at: 2, phrase: "Hello Chat", similar: true), "Stable text cannot wake while speech continues")
+        detector.audio(level: 0, seconds: 0.59)
+        expect(!detector.poll(at: 2.6, phrase: "Hello Chat", similar: true), "A shorter pause is not a completed utterance")
+        detector.audio(level: 0, seconds: 0.02)
+        expect(detector.poll(at: 2.7, phrase: "Hello Chat", similar: true), "Nemotron wakes after the completed pause")
+        expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true), "One completed utterance wakes only once")
+        detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
+        update("Hello Chat", 1); detector.audio(level: 0, seconds: 2)
+        expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true, requireModelEnd: true), "Parakeet waits for native EOU even in a quiet room")
+        detector.utteranceEnded()
+        expect(detector.poll(at: 3, phrase: "Hello Chat", similar: true, requireModelEnd: true), "Native EOU authorizes the current transcript")
+        update("Hello Chat Hello Chat", 4)
+        expect(!detector.poll(at: 5, phrase: "Hello Chat", similar: true, requireModelEnd: true), "A previous EOU cannot authorize later words")
+        detector.utteranceEnded()
+        expect(detector.poll(at: 5, phrase: "Hello Chat", similar: true, requireModelEnd: true), "A new native EOU permits a later wake")
+        detector.resetContext(); update("Hello Chat", 6)
+        expect(!detector.poll(at: 7, phrase: "Hello Chat", similar: true, requireModelEnd: true), "Session resets discard old EOU evidence")
+        detector.utteranceEnded(); update("Hello Chat is the phrase", 7)
+        expect(!detector.poll(at: 8, phrase: "Hello Chat", similar: true, requireModelEnd: true), "A late correction invalidates earlier completion evidence")
         let started = Date()
         for _ in 0..<100_000 { precondition(!poll(4), "Idle frames do not repeat a wake") }
         print("Context-aware wake: \(checks) checks passed; 100000 idle polls in \(Date().timeIntervalSince(started))s")

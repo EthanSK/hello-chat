@@ -23,6 +23,7 @@ import CoreAudio
             var context = StandaloneWake()
             context.audio(level: 0.2, seconds: 0.1)
             context.update("I said hello chat", at: 1)
+            context.audio(level: 0, seconds: 0.8)
             let mentionIgnored = !context.poll(at: 2, phrase: "Hello Chat", similar: true)
             let ordinarySpeechIgnored = PhraseMatcher.matches(in: PhraseMatcher.words("it's too high at low speed"),
                 phrase: "Hello Chat", similar: true).isEmpty
@@ -49,7 +50,7 @@ import CoreAudio
             Task { @MainActor in
                 let result = await SpeechCheck().run(url: url, model: selectedModel, standalone: CommandLine.arguments.contains("--check-standalone-recording"))
                 let report: [String: Any] = ["model": selectedModel.rawValue, "text": result.text, "segments": result.segments, "detections": result.detections,
-                    "gaps": result.gaps, "resets": result.resets,
+                    "gaps": result.gaps, "resets": result.resets, "utteranceEnds": result.utteranceEnds,
                     "cpuSeconds": result.cpuSeconds, "audioSeconds": result.audioSeconds,
                     "memoryMB": ResourceUsage.footprintMB(), "anePlanShare": selectedModel.neuralPlacementKnown ? result.neuralShare as Any : NSNull()]
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) { print(String(decoding: data, as: UTF8.self)) }
@@ -313,7 +314,7 @@ struct MainView: View {
                 Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
                     .disabled(model.busy && !preparing && !model.enabled)
                     .accessibilityIdentifier("listeningToggle")
-                TextField("Start wake phrase", text: $model.wakePhrase)
+                TextField("Wake phrase", text: $model.wakePhrase)
                     .multilineTextAlignment(.trailing)
                     .accessibilityIdentifier("wakePhraseLabel")
                 TextField("End phrase", text: $model.sleepPhrase)
@@ -446,9 +447,9 @@ struct SettingsView: View {
                 DockStatus(dock: model.dock)
             }
             Section("Phrases") {
-                TextField("Start wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
+                TextField("Wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
                 TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
-                Text("Say the start phrase to talk to Chat, including after other speech. Clear mentions of the phrase are ignored. The end phrase also cancels Voice while connecting.")
+                Text("Say the wake phrase, then finish speaking to talk to Chat. Clear mentions of the phrase are ignored. The end phrase acts immediately, including while Voice is connecting.")
                     .foregroundStyle(.secondary)
                 Toggle("Allow small spelling differences", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
@@ -493,6 +494,7 @@ struct SettingsView: View {
             }
             Section("Diagnostics") { DiagnosticsView() }
             Section("Appearance") {
+                WindowDisplaySettings()
                 LabeledContent("Zoom") {
                     HStack {
                         Button("−") { zoom.decrease() }.disabled(!zoom.canDecrease).accessibilityLabel("Zoom Out")
@@ -605,8 +607,7 @@ struct InitialWindowPlacement: NSViewRepresentable {
         private var placed = false
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard let window, !placed,
-                  let screen = NSScreen.screens.first(where: { $0.localizedName == "Built-in Retina Display" }) else { return }
+            guard let window, !placed, let screen = WindowDisplay.preferredScreen else { return }
             placed = true
             DispatchQueue.main.async {
                 let bounds = screen.visibleFrame.insetBy(dx: screen.visibleFrame.width * 0.1, dy: screen.visibleFrame.height * 0.1)

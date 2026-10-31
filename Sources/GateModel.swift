@@ -106,6 +106,7 @@ import SwiftUI
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds in self?.standaloneWake.audio(level: level, seconds: seconds) }
         listener.onFrame = { [weak self] in self?.checkStandaloneWake() }
+        listener.onUtteranceEnd = { [weak self] in self?.standaloneWake.utteranceEnded() }
         listener.onLevel = { [weak self] in self?.meter.level = $0 }
         listener.onError = { [weak self] text in self?.failListening(text) }
         listener.onDelay = { [weak self] in
@@ -507,7 +508,8 @@ import SwiftUI
     }
     private func checkStandaloneWake() {
         guard enabled, detectionRunning,
-              standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases) else { return }
+              standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases,
+                                  requireModelEnd: speechModel.hasNativeUtteranceEnd) else { return }
         Diagnostics.shared.record("phrase.wake.detected", info: ["contextChecked": "true", "busy": String(busy)])
         if busy { lastEvent = "Heard \(wakePhrase) · finishing the current Voice action" }
         else { beginVoice(trigger: "Heard \(wakePhrase)") }

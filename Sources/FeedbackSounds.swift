@@ -7,7 +7,7 @@ import AppKit
         for cue in [Cue.wake, .ended] {
             if let url = Bundle.main.url(forResource: cue.rawValue, withExtension: "wav", subdirectory: "Sounds"),
                let sound = NSSound(contentsOf: url, byReference: false) {
-                sound.volume = 0.35; sounds[cue] = sound
+                sound.volume = cue == .wake ? 0.7 : 0.35; sounds[cue] = sound
             }
         }
     }

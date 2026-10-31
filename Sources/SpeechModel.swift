@@ -17,6 +17,7 @@ enum SpeechModel: String, CaseIterable, Identifiable, Sendable {
         self == .appleLocal ? "On-device Apple speech. Neural Engine placement isn't exposed by Apple." : "Local Core ML · Neural Engine + CPU · GPU off"
     }
     var neuralPlacementKnown: Bool { self != .appleLocal }
+    var hasNativeUtteranceEnd: Bool { self == .parakeet320 || self == .parakeet160 }
     var directory: URL? {
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("LocalSpeech", isDirectory: true) else { return nil }
         switch self {
@@ -29,9 +30,15 @@ enum SpeechModel: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+struct SpeechUpdate {
+    var text: String?
+    var reset = false
+    var utteranceEnded = false
+}
+
 protocol SpeechBackend: Actor {
     func prepare(directory: URL) async throws -> Double
-    func consume(_ mono: AVAudioPCMBuffer) async throws -> (text: String?, reset: Bool)
+    func consume(_ mono: AVAudioPCMBuffer) async throws -> SpeechUpdate
     func finish() async throws -> String
     func resetForDiscontinuity() async throws
     func close() async

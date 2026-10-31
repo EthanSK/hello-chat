@@ -17,13 +17,17 @@ actor NeuralSpeech: SpeechBackend {
     private var recentAudio: [AVAudioPCMBuffer] = []
     private var recentSeconds = 0.0
     private var previousText = ""
+    private var completedUtterance = false
+    private var utteranceHasText = false
 
     init(model: SpeechModel = .parakeet320) {
         self.model = model
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuAndNeuralEngine
         self.configuration = configuration
-        manager = model == .nemotron560 ? nil : StreamingEouAsrManager(configuration: configuration, chunkSize: model == .parakeet160 ? .ms160 : .ms320)
+        manager = model == .nemotron560 ? nil : StreamingEouAsrManager(configuration: configuration,
+            chunkSize: model == .parakeet160 ? .ms160 : .ms320,
+            eouDebounceMs: .max)
         nemotron = model == .nemotron560 ? StreamingNemotronAsrManager(configuration: configuration, requestedChunkSize: .ms560) : nil
     }
 
@@ -58,7 +62,7 @@ actor NeuralSpeech: SpeechBackend {
         try await process(buffer)
     }
 
-    func consume(_ mono: AVAudioPCMBuffer) async throws -> (text: String?, reset: Bool) {
+    func consume(_ mono: AVAudioPCMBuffer) async throws -> SpeechUpdate {
         try Task.checkCancellation()
         var reset = false
         let duration = Double(mono.frameLength) / mono.format.sampleRate
@@ -69,7 +73,7 @@ actor NeuralSpeech: SpeechBackend {
             recentSeconds -= Double(old.frameLength) / old.format.sampleRate
         }
         let beginsAfterPause = onset.consumed(seconds: duration, quiet: quiet)
-        if beginsAfterPause {
+        if beginsAfterPause || (completedUtterance && !quiet) {
             // Re-prime at an utterance onset after a long quiet gap. Retain a
             // short lead-in so a quiet first consonant is never gated away.
             let leadIn = recentAudio
@@ -85,9 +89,19 @@ actor NeuralSpeech: SpeechBackend {
         }
         rollover.consumed(seconds: duration, quiet: quiet)
         let text = await partial()
-        guard !text.isEmpty, text != previousText else { return (nil, reset) }
-        previousText = text
-        return (text, reset)
+        if let manager, !utteranceHasText, !text.isEmpty {
+            // The SDK latches EOU until reset. Silent priming / waiting must
+            // not spend that one-shot signal before any words are recognized.
+            await manager.setUtteranceEndDebounce(milliseconds: Int(StandaloneWake.endSilenceSeconds * 1000))
+            utteranceHasText = true
+        }
+        var ended = false
+        if let manager, !completedUtterance, !text.isEmpty, await manager.eouDetected {
+            completedUtterance = true; ended = true
+        }
+        let changed = !text.isEmpty && text != previousText
+        if changed { previousText = text }
+        return SpeechUpdate(text: changed ? text : nil, reset: reset, utteranceEnded: ended)
     }
     func finish() async throws -> String {
         try await prime()
@@ -99,16 +113,17 @@ actor NeuralSpeech: SpeechBackend {
         if let manager { await manager.reset() }
         if let nemotron { await nemotron.reset() }
         resampler.reset()
+        if let manager { await manager.setUtteranceEndDebounce(milliseconds: .max) }
         try await prime()
         rollover = SpeechRollover(); previousText = ""
-        onset = SpeechOnset(); recentAudio.removeAll(); recentSeconds = 0
+        onset = SpeechOnset(); recentAudio.removeAll(); recentSeconds = 0; completedUtterance = false; utteranceHasText = false
     }
     func close() async {
         resampler.reset()
         if let manager { await manager.cleanup() }
         if let nemotron { await nemotron.cleanup() }
         recentAudio.removeAll(); recentSeconds = 0; previousText = ""
-        rollover = SpeechRollover(); onset = SpeechOnset()
+        rollover = SpeechRollover(); onset = SpeechOnset(); completedUtterance = false; utteranceHasText = false
     }
 
     private func process(_ input: AVAudioPCMBuffer) async throws {
@@ -121,6 +136,11 @@ actor NeuralSpeech: SpeechBackend {
         return await nemotron!.getPartialTranscript()
     }
     static var modelDirectory: URL? { Bundle.main.resourceURL?.appendingPathComponent("LocalSpeech", isDirectory: true) }
+}
+
+// Isolated configuration keeps the SDK actor's public setting on its actor.
+private extension StreamingEouAsrManager {
+    func setUtteranceEndDebounce(milliseconds: Int) { eouDebounceMs = milliseconds }
 }
 
 // Keep only the checked scalar result, not a second loaded model/plan. It is

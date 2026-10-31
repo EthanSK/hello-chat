@@ -59,7 +59,7 @@ actor AppleLocalSpeech: SpeechBackend {
         if final { finalized = latest }
     }
     private func failed(_ error: Error, token: UUID) { if token == generation { failure = error } }
-    func consume(_ mono: AVAudioPCMBuffer) async throws -> (text: String?, reset: Bool) {
+    func consume(_ mono: AVAudioPCMBuffer) async throws -> SpeechUpdate {
         try Task.checkCancellation()
         if let failure { throw failure }
         let seconds = Double(mono.frameLength) / mono.format.sampleRate
@@ -89,13 +89,13 @@ actor AppleLocalSpeech: SpeechBackend {
             if case .dropped = continuation.yield(AnalyzerInput(buffer: buffer)) {
                 // Never silently feed discontinuous audio to the analyzer.
                 try await resetForDiscontinuity()
-                return (nil, true)
+                return SpeechUpdate(text: nil, reset: true)
             }
         }
         await Task.yield()
-        guard latest != emitted, !latest.isEmpty else { return (nil, reset) }
+        guard latest != emitted, !latest.isEmpty else { return SpeechUpdate(text: nil, reset: reset) }
         emitted = latest
-        return (latest, reset)
+        return SpeechUpdate(text: latest, reset: reset)
     }
     func finish() async throws -> String {
         continuation?.finish()

@@ -79,9 +79,11 @@ These checks use fixed recordings and text. They don't show how well HelloChat h
 
 The main window has three sections:
 
-- **Listening**: **Listen for wake phrase**, editable **Start wake phrase** and **End phrase** fields, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
+- **Listening**: **Listen for wake phrase**, editable **Wake phrase** and **End phrase** fields, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
 - **Heard (local model)**: the latest local transcript. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
 - **Codex Voice**: Voice status, the latest event and **Start Voice in Codex** / **End Voice in Codex**.
+
+Waking waits until you finish speaking: Parakeet uses its built-in end-of-utterance (EOU) signal; Nemotron and Apple Speech require at least 0.6 seconds of quiet audio and a stable transcript. This can add a short delay and depends on the microphone level in a noisy room. The end phrase still acts immediately.
 
 By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
 
@@ -91,19 +93,19 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | --- | --- |
 | Microphone | **System default** or a named input, which stays selected by device. If it's disconnected, listening stops with an error instead of switching microphones. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
-| Phrases | **Start wake phrase** and **End phrase**, **Allow small spelling differences** (on by default), **End Voice after silence** and **Check speech recognition**. |
+| Phrases | **Wake phrase** and **End phrase**, **Allow small spelling differences** (on by default), **End Voice after silence** and **Check speech recognition**. |
 | Resources | HelloChat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |
 | Transcript Archive | **Save transcripts** (on by default) and the archive location. |
 | Diagnostics | Timing and error logs, which exclude recognised words. |
-| Appearance | Zoom. **View → Zoom In / Zoom Out / Actual Size** works too. |
+| Appearance | **Open windows on** remembers your display choice and uses an available display when disconnected. Zoom. **View → Zoom In / Zoom Out / Actual Size** works too. |
 
 ## Speech Models
 
 | Model | Notes |
 | --- | --- |
 | Parakeet EOU · 320 ms | Default. NVIDIA's Parakeet Realtime EOU 120M, converted to Core ML by Fluid Inference. |
-| Parakeet EOU · 160 ms | Lower latency. It missed more words in earlier recorded checks. |
+| Parakeet EOU · 160 ms | Lower latency, with more recognition mistakes in recorded checks, including a false wake on a phrase mention and a missed end phrase. Prefer 320 ms or Nemotron for reliability. |
 | Nemotron · 560 ms | NVIDIA's larger Nemotron Speech Streaming EN 0.6B. |
 | Apple Speech · local | macOS 26 only, using English speech assets already installed on your Mac. If they're missing, HelloChat shows an error instead of downloading them. |
 

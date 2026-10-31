@@ -12,6 +12,7 @@ struct SpeechCheckResult {
     var segments: [String] = []
     var gaps = 0
     var resets = 0
+    var utteranceEnds = 0
 }
 @MainActor final class SpeechCheck {
     func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .parakeet320, standalone: Bool = false) async -> SpeechCheckResult {
@@ -26,6 +27,7 @@ struct SpeechCheckResult {
         var detections: [[String: Any]] = []
         var segments: [String] = []
         var gaps = 0, sessions = 0
+        var utteranceEnds = 0
         listener.onDelay = { gaps += 1 }
         listener.onSession = {
             sessions += 1
@@ -35,17 +37,26 @@ struct SpeechCheckResult {
         }
         listener.onComputePlan = { share = $0 }
         listener.onAudioActivity = { level, seconds in standaloneWake.audio(level: level, seconds: seconds) }
+        listener.onUtteranceEnd = {
+            utteranceEnds += 1
+            standaloneWake.utteranceEnded()
+        }
         listener.onFrame = { [weak listener] in
-            if standalone, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar) {
+            if standalone, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar,
+                                               requireModelEnd: model.hasNativeUtteranceEnd) {
                 commands.append(.wake)
                 detections.append(["command": "wake", "elapsed_ms": (Diagnostics.now - started) * 1000,
-                                   "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false])
+                                   "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false,
+                                   "completion": model.hasNativeUtteranceEnd ? "model_eou" : "audio_silence"])
             }
         }
         listener.onText = { [weak listener] value in
             text = value
             standaloneWake.update(value, at: Diagnostics.now)
             if let command = matcher.consume(value, wake: standalone ? "" : "Hello Chat", sleep: "Bye Chat", similar: similar) {
+                if standalone, command == .sleep {
+                    standaloneWake.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: similar)
+                }
                 commands.append(command)
                 detections.append(["command": command == .wake ? "wake" : "end", "elapsed_ms": (Diagnostics.now - started) * 1000,
                                    "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false])
@@ -62,7 +73,7 @@ struct SpeechCheckResult {
             listener.stop(); listener.onText = nil; listener.onSession = nil
             await listener.waitUntilStopped()
             return .init(text: failure ?? text, commands: failure == nil ? commands : [], neuralShare: share,
-                         cpuSeconds: Self.cpuTime() - cpuStart, audioSeconds: audioSeconds, detections: detections, segments: segments + [text], gaps: gaps, resets: max(0, sessions - 1))
+                         cpuSeconds: Self.cpuTime() - cpuStart, audioSeconds: audioSeconds, detections: detections, segments: segments + [text], gaps: gaps, resets: max(0, sessions - 1), utteranceEnds: utteranceEnds)
         } catch {
             listener.stop(); listener.onText = nil; listener.onSession = nil
             await listener.waitUntilStopped()

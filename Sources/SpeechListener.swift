@@ -11,6 +11,7 @@ import CoreAudio
     var onWaiting: (() -> Void)?
     var onAudioActivity: ((Double, Double) -> Void)?
     var onFrame: (() -> Void)?
+    var onUtteranceEnd: (() -> Void)?
     var onComputePlan: ((Double) -> Void)?
     var model: SpeechModel = .parakeet320
     var contextualPhrases = ["Hello Chat", "Bye Chat"]
@@ -199,6 +200,10 @@ import CoreAudio
                     if result.reset { self.diagnostics?.record("speech.context.reset"); self.onSession?() }
                     self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate)
                     if let text = result.text { textUpdates += 1; self.onText?(text) }
+                    if result.utteranceEnded {
+                        self.diagnostics?.record("speech.utterance.ended", info: ["source": "model_eou"])
+                        self.onUtteranceEnd?()
+                    }
                     self.progress.processed(at: Diagnostics.now)
                     self.onFrame?()
                     if Diagnostics.now - summaryAt >= 5 {
