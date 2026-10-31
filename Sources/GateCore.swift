@@ -104,6 +104,10 @@ struct PhraseMatcher {
     private static let observedEndVariants: Set<String> = ["bythecharts"]
     private static let ordinaryWakePhrases: Set<String> = [
         "allowchat", "hihat", "hihats", "highhat", "highhats", "yellowhat", "yellowhats", "hellnochat",
+        // "High at" joins to highat, which the generated dictionary can split
+        // as hi + ghat (a one-letter Chat edit). Keep ordinary speech excluded
+        // here so wake detection and phrase highlighting use the same rule.
+        "highat",
         "hellchat", "hellchats", "hellchad", "hellchatt", "hellchart", "hellcharts"]
     private static let ordinaryEndPhrases: Set<String> = [
         "piechart", "piecharts", "barchart", "barcharts", "bythat", "byethat", "buythat",

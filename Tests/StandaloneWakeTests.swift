@@ -31,7 +31,8 @@ import Foundation
                      "I said hello chance", "the hello chance detection", "Hello Janet", "An unrelated sentence", "",
                      "in the hood thing can you highlight something that matches hello chat either in exact match or one of the dictionary",
                      "something matching Hello Chat", "maybe he'll chat that's doing the",
-                     "maybe he’ll chat that's doing the", "he'll chat", "hellchat", "he'll chats", "he'll chad"] {
+                     "maybe he’ll chat that's doing the", "he'll chat", "hellchat", "he'll chats", "he'll chad",
+                     "high at", "it's too high at low speed", "was it high at or what"] {
             check(text, expected: false)
         }
         check("Hello Chad", expected: false, similar: false)
@@ -45,6 +46,8 @@ import Foundation
             check(text, expected: false)
         }
         check("Computer Listen can you help me", expected: true, phrase: "Computer Listen")
+        check("High At", expected: true, phrase: "High At", similar: false)
+        check("it's too high at low speed. Hello Chat", expected: true)
         var detector = StandaloneWake()
         func update(_ text: String, _ at: Double) { detector.update(text, at: at) }
         func poll(_ at: Double) -> Bool { detector.poll(at: at, phrase: "Hello Chat", similar: true) }

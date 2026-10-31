@@ -67,11 +67,14 @@ import Foundation
                        "help chat", "yellow chair", "yellow chance", "hello Janet", "make a pie chart",
                        "bar charts", "why chat", "by that", "bye that", "buy that", "my chat", "we chat",
                        "be that", "you don't need to be that good at what you do",
-                       "allow chat", "hi hat", "high hat", "yellow hats", "buy hats",
+                       "allow chat", "hi hat", "high hat", "high at", "highat", "hi ghat",
+                       "it's too high at low speed", "was it high at or what", "yellow hats", "buy hats",
                        "how are you", "buy a chart", "by chance", "bye chance", "UI settings", "just chat"] {
             var none = PhraseMatcher()
             check(none.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "Keep two recognizable command parts: \(phrase)")
         }
+        check(PhraseMatcher.equivalent("high at", to: "High At", similar: false),
+              "Ordinary-word exclusions must not override an exact custom wake phrase")
         var nested = PhraseMatcher()
         check(nested.consume("good bye chat", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .sleep, "Good bye is one end")
         check(nested.consume("goodbye chat", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "Joined revision must not replay")

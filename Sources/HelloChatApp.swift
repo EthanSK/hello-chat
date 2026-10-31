@@ -24,13 +24,16 @@ import CoreAudio
             context.audio(level: 0.2, seconds: 0.1)
             context.update("I said hello chat", at: 1)
             let mentionIgnored = !context.poll(at: 2, phrase: "Hello Chat", similar: true)
+            let ordinarySpeechIgnored = PhraseMatcher.matches(in: PhraseMatcher.words("it's too high at low speed"),
+                phrase: "Hello Chat", similar: true).isEmpty
             let variants = PhraseMatcher.defaultVariantCounts
             let report: [String: Any] = ["wakeSpellings": variants.wake, "endSpellings": variants.end,
                 "weakWakeSpellings": variants.weakWake, "screenshotWakes": wakes,
-                "screenshotCannotEnd": safeEnd, "mentionIgnored": mentionIgnored]
+                "screenshotCannotEnd": safeEnd, "mentionIgnored": mentionIgnored,
+                "ordinarySpeechIgnored": ordinarySpeechIgnored]
             let data = try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
             print(String(decoding: data, as: UTF8.self))
-            exit(wakes && safeEnd && mentionIgnored ? 0 : 1)
+            exit(wakes && safeEnd && mentionIgnored && ordinarySpeechIgnored ? 0 : 1)
         }
         let selectedModel: SpeechModel
         if let index = CommandLine.arguments.firstIndex(of: "--model") {
