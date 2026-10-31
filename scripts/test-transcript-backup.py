@@ -202,7 +202,9 @@ class TranscriptBackupTests(unittest.TestCase):
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
         config = installer.configuration(Path('/home/test'), Path('/project/backup.py'), Path('/private/rclone.conf'), 'heychat:transcripts')
         self.assertEqual(config['ProgramArguments'], ['/usr/bin/python3', '/project/backup.py', '--rclone-config', '/private/rclone.conf', '--destination', 'heychat:transcripts'])
-        self.assertEqual(config['StartInterval'], 86400)
+        self.assertEqual(config['StartCalendarInterval'], {'Hour': 5, 'Minute': 45})
+        self.assertNotIn('StartInterval', config)
+        self.assertNotIn('RunAtLoad', config)
         self.assertTrue(config['LowPriorityIO'])
 
 

@@ -140,7 +140,7 @@ python3 scripts/install-transcript-backup.py --install \
   --destination 'remote:HelloChat Backup/Transcripts'
 ```
 
-The job runs at login and then daily, only while the Mac is on power. It uploads one immutable JSON snapshot per changed UTC day with `rclone copy`, so it never deletes remote files, and it never uploads audio. With `--rclone-config`, it uses only that file and fails if it's missing. Without options, it uses rclone's default configuration and `gdrive:HelloChat Backup/Transcripts`. Consider your own Google client ID, following [rclone's guidance](https://rclone.org/drive/#making-your-own-client-id), to avoid shared quota errors.
+The job runs daily at 05:45 local time, only while the Mac is on power; it does not start at login. If the Mac is asleep at the scheduled time, macOS starts the job after it wakes. It uploads one immutable JSON snapshot per changed UTC day with `rclone copy`, so it never deletes remote files, and it never uploads audio. With `--rclone-config`, it uses only that file and fails if it's missing. Without options, it uses rclone's default configuration and `gdrive:HelloChat Backup/Transcripts`. Consider your own Google client ID, following [rclone's guidance](https://rclone.org/drive/#making-your-own-client-id), to avoid shared quota errors.
 
 ### Start at Login
 

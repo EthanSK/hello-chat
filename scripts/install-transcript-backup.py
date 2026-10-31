@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the independent daily, AC-only HelloChat Drive backup LaunchAgent."""
+"""Install HelloChat's independent AC-only Drive backup at 05:45 local time."""
 import argparse
 import os
 from pathlib import Path
@@ -20,8 +20,7 @@ def configuration(home, script, rclone_config=None, destination=None):
     return {
         "Label": LABEL,
         "ProgramArguments": arguments,
-        "StartInterval": 86400,
-        "RunAtLoad": True,
+        "StartCalendarInterval": {"Hour": 5, "Minute": 45},  # Keep backups overnight at a fixed time, rather than drifting or starting again at login.
         "ProcessType": "Background",
         "Nice": 10,
         "LowPriorityIO": True,
