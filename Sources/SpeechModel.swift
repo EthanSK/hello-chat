@@ -3,7 +3,11 @@ import Foundation
 
 // Stable persisted identities. Packaging and live recognition share this layout.
 enum SpeechModel: String, CaseIterable, Identifiable, Sendable {
-    case parakeet320, parakeet160, nemotron560, appleLocal
+    case nemotron560, parakeet320, parakeet160, appleLocal
+    static let defaultModel: SpeechModel = .nemotron560
+    static func saved(in preferences: UserDefaults = .standard) -> SpeechModel {
+        SpeechModel(rawValue: preferences.string(forKey: "speechModel") ?? "") ?? defaultModel
+    }
     var id: String { rawValue }
     var title: String {
         switch self {

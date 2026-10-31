@@ -43,7 +43,7 @@ import CoreAudio
                 fputs("Unknown speech model.\n", stderr); exit(2)
             }
             selectedModel = model
-        } else { selectedModel = .parakeet320 }
+        } else { selectedModel = .defaultModel }
         if let index = CommandLine.arguments.firstIndex(of: "--check-recording") ?? CommandLine.arguments.firstIndex(of: "--check-standalone-recording") {
             guard index + 1 < CommandLine.arguments.count else { exit(2) }
             let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
@@ -168,7 +168,7 @@ import CoreAudio
         if CommandLine.arguments.contains("--status") {
             let state = VoiceBridge.snapshot(readMicrophone: false)
             var info = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(state))) as? [String: Any] ?? [:]
-            let savedModel = SpeechModel(rawValue: UserDefaults.standard.string(forKey: "speechModel") ?? "") ?? .parakeet320
+            let savedModel = SpeechModel.saved()
             info["recognition"] = savedModel.title
             info["neuralEngineAvailable"] = MLComputeDevice.allComputeDevices.contains { if case .neuralEngine = $0 { return true }; return false }
             info["microphonePermission"] = AVCaptureDevice.authorizationStatus(for: .audio).rawValue

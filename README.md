@@ -104,10 +104,12 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 | Model | Notes |
 | --- | --- |
-| Parakeet EOU · 320 ms | Default. NVIDIA's Parakeet Realtime EOU 120M, converted to Core ML by Fluid Inference. |
+| Nemotron · 560 ms | Default. NVIDIA's larger Nemotron Speech Streaming EN 0.6B. |
+| Parakeet EOU · 320 ms | NVIDIA's Parakeet Realtime EOU 120M, converted to Core ML by Fluid Inference. |
 | Parakeet EOU · 160 ms | Lower latency, with more recognition mistakes in recorded checks, including a false wake on a phrase mention and a missed end phrase. Prefer 320 ms or Nemotron for reliability. |
-| Nemotron · 560 ms | NVIDIA's larger Nemotron Speech Streaming EN 0.6B. |
 | Apple Speech · local | macOS 26 only, using English speech assets already installed on your Mac. If they're missing, HelloChat shows an error instead of downloading them. |
+
+New installations select Nemotron first. Existing saved model choices are preserved.
 
 The three Core ML models run with `cpuAndNeuralEngine`, so GPU is excluded. Before listening, HelloChat requires a Neural Engine and checks that Core ML's compute plan puts most of the encoder there. That's a compiler estimate, not measured utilisation: the CPU still handles audio, decoding and part of the model, and there's no Neural Engine-only mode. Apple doesn't expose where Apple Speech runs, so its Neural Engine use is unverified, and its work happens in a system service outside HelloChat's own CPU and memory figures.
 

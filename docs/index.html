@@ -75,7 +75,7 @@
               <span></span><span></span><span></span><span></span><span></span>
             </div>
             <p class="cue" id="cue" aria-hidden="true"></p>
-            <p class="listening"><span class="listen-dot" aria-hidden="true"></span>Listening · Parakeet EOU · 320 ms</p>
+            <p class="listening"><span class="listen-dot" aria-hidden="true"></span>Listening · Nemotron · 560 ms</p>
           </div>
         </div>
 
@@ -186,7 +186,7 @@
           <h3>On Your Mac</h3>
           <ul>
             <li>Listens to the microphone you choose, only while listening is on.</li>
-            <li>Recognises speech locally, by default with a bundled Parakeet model through Core ML on CPU and Neural Engine, with GPU off.</li>
+            <li>Recognises speech locally, by default with the bundled Nemotron model through Core ML on CPU and Neural Engine, with GPU off.</li>
             <li>Doesn’t save audio.</li>
             <li>Saves transcripts of what it heard as JSON with rough phrase timestamps. This is on by default; turn off Save transcripts in Settings → Transcript Archive to stop.</li>
             <li>Keeps listening while Voice is on, so it can hear Bye Chat. Transcripts can include your side of the conversation and background speech.</li>
@@ -211,12 +211,12 @@
         <div class="more-body">
           <p>Choose one with Speech model in the main window. All four run on your Mac. The three Core ML models are bundled, so the app is about 1.09 GB.</p>
           <dl class="models">
+            <dt>Nemotron · 560 ms</dt>
+            <dd>The default: NVIDIA’s larger Nemotron Speech Streaming 0.6B model, run locally through Core ML and FluidAudio 0.17.7.</dd>
             <dt>Parakeet EOU · 320 ms</dt>
-            <dd>The default: NVIDIA’s Parakeet Realtime EOU 120M, converted to Core ML by Fluid Inference and run through FluidAudio 0.17.7.</dd>
+            <dd>NVIDIA’s Parakeet Realtime EOU 120M, converted to Core ML by Fluid Inference.</dd>
             <dt>Parakeet EOU · 160 ms</dt>
             <dd>Lower latency. It missed more words in earlier recorded checks.</dd>
-            <dt>Nemotron · 560 ms</dt>
-            <dd>NVIDIA’s larger Nemotron Speech Streaming 0.6B model.</dd>
             <dt>Apple Speech · local</dt>
             <dd>macOS 26 only, using English speech assets already installed on your Mac. Apple doesn’t expose where it runs, so Neural Engine use is unverified. If the assets are missing, HelloChat shows an error instead of downloading them.</dd>
           </dl>

@@ -47,7 +47,7 @@ import SwiftUI
             dockDelay.invalidateStartup(); policy.resume(); applyAutomaticListening()
         }
     }
-    @Published var speechModel = SpeechModel(rawValue: UserDefaults.standard.string(forKey: "speechModel") ?? "") ?? .parakeet320 {
+    @Published var speechModel = SpeechModel.saved() {
         didSet {
             guard speechModel != oldValue else { return }
             UserDefaults.standard.set(speechModel.rawValue, forKey: "speechModel")

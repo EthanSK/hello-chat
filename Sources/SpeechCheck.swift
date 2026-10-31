@@ -15,7 +15,7 @@ struct SpeechCheckResult {
     var utteranceEnds = 0
 }
 @MainActor final class SpeechCheck {
-    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .parakeet320, standalone: Bool = false) async -> SpeechCheckResult {
+    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false) async -> SpeechCheckResult {
         let listener = SpeechListener(diagnostics: nil)
         listener.model = model
         var matcher = PhraseMatcher()

@@ -20,7 +20,7 @@ actor NeuralSpeech: SpeechBackend {
     private var completedUtterance = false
     private var utteranceHasText = false
 
-    init(model: SpeechModel = .parakeet320) {
+    init(model: SpeechModel = .defaultModel) {
         self.model = model
         let configuration = MLModelConfiguration()
         configuration.computeUnits = .cpuAndNeuralEngine

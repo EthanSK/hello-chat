@@ -13,7 +13,7 @@ import CoreAudio
     var onFrame: (() -> Void)?
     var onUtteranceEnd: (() -> Void)?
     var onComputePlan: ((Double) -> Void)?
-    var model: SpeechModel = .parakeet320
+    var model: SpeechModel = .defaultModel
     var contextualPhrases = ["Hello Chat", "Bye Chat"]
     var inputDevice: (() throws -> AudioDeviceID)?
     var onConfigurationChange: (() -> Void)?
