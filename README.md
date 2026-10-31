@@ -83,6 +83,8 @@ The main window has three sections:
 - **Heard (local model)**: the latest local transcript. A wake phrase match is green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that Voice started.
 - **Codex Voice**: Voice status, the latest event and **Start Voice in Codex** / **End Voice in Codex**.
 
+By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
+
 The menu bar has **Start listening** / **Stop listening** and the same Voice controls. **Settings…** (⌘,) has:
 
 | Section | Contents |

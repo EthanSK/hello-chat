@@ -310,7 +310,7 @@ struct MainView: View {
                 }
             }
             Section("Listening (say it twice if detection is wonky)") {
-                Toggle("Listen for wake phrase", isOn: Binding(get: { model.enabled || preparing }, set: { _ in model.toggle() }))
+                Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
                     .disabled(model.busy && !preparing && !model.enabled)
                     .accessibilityIdentifier("listeningToggle")
                 LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
@@ -577,7 +577,7 @@ struct MenuView: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Text(model.status)
-        Button(model.enabled ? "Stop listening" : "Start listening") { model.toggle() }
+        Button(model.listeningToggleOn ? "Stop listening" : "Start listening") { model.toggle() }
             .disabled(model.busy && !model.enabled)
         Button(model.status == "Connecting" ? "Cancel" : (model.microphone == .listening ? "End Voice in Codex" : "Start Voice in Codex")) {
             if model.microphone == .listening || model.status == "Connecting" { model.manualMute() } else { model.manualTalk() }

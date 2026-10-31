@@ -2,16 +2,32 @@ import AppKit
 import Combine
 import IOKit.ps
 
+// Keep the user's listening-toggle choice separate from live capture. Playback
+// pauses, input errors and quitting must not save those temporary stops as Off.
+// Docking remains opt-in; existing users keep their saved automatic setting.
+struct ListeningPreferences {
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    var automatic: Bool {
+        get { defaults.bool(forKey: "automaticListening") }
+        nonmutating set { defaults.set(newValue, forKey: "automaticListening") }
+    }
+    var manualEnabled: Bool {
+        get { defaults.bool(forKey: "listeningEnabled") }
+        nonmutating set { defaults.set(newValue, forKey: "listeningEnabled") }
+    }
+}
+
 struct ListeningPolicy {
     private(set) var paused = false
     private var previousEligible = false
     mutating func pause() { paused = true }
     mutating func resume() { paused = false }
-    mutating func shouldListen(automatic: Bool, onPower: Bool, externalDisplay: Bool) -> Bool {
+    mutating func shouldListen(automatic: Bool, onPower: Bool, externalDisplay: Bool, manualEnabled: Bool = false) -> Bool {
         let eligible = onPower && externalDisplay
         if eligible != previousEligible { paused = false }
         previousEligible = eligible
-        return automatic && eligible && !paused
+        return automatic ? eligible && !paused : manualEnabled
     }
 }
 

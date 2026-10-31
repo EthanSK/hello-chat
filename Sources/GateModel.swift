@@ -29,9 +29,22 @@ import SwiftUI
     @Published private(set) var computeDetail = "Checking local model…"
     let inputs = MicrophoneInputs()
     let dock = DockMonitor()
-    @Published var automaticListening = UserDefaults.standard.bool(forKey: "automaticListening") {
+    private let listeningPreferences = ListeningPreferences()
+    @Published private(set) var manualListeningEnabled = ListeningPreferences().manualEnabled {
+        didSet { listeningPreferences.manualEnabled = manualListeningEnabled }
+    }
+    // Ethan's existing dock mode still shows actual capture and keeps its
+    // session-only manual pause. Normal mode shows the remembered toggle state,
+    // even while playback temporarily prevents capture.
+    var listeningToggleOn: Bool {
+        automaticListening ? enabled || (busy && status == "Starting") : manualListeningEnabled
+    }
+    @Published var automaticListening = ListeningPreferences().automatic {
         didSet {
-            UserDefaults.standard.set(automaticListening, forKey: "automaticListening")
+            listeningPreferences.automatic = automaticListening
+            if oldValue, !automaticListening {
+                manualListeningEnabled = enabled || (busy && status == "Starting") || resumeAfterPlaybackPause
+            }
             dockDelay.invalidateStartup(); policy.resume(); applyAutomaticListening()
         }
     }
@@ -122,7 +135,7 @@ import SwiftUI
         inputs.onRouteChange = { [weak self] in self?.restartMicrophone(settle: true) }
         listener.onConfigurationChange = { [weak self] in self?.restartMicrophone(settle: true) }
         dock.onChange = { [weak self] in
-            guard let self else { return }
+            guard let self, self.automaticListening else { return }
             self.dockDelay.invalidateStartup()
             self.applyAutomaticListening()
         }
@@ -146,17 +159,21 @@ import SwiftUI
         if !allowed {
             resumeAfterPlaybackPause = enabled || listeningTask != nil
             stopLocal(); busy = false; status = "Off"; detail = ""
-        } else if !automaticListening, resumeAfterPlaybackPause {
+        } else if !automaticListening, resumeAfterPlaybackPause, manualListeningEnabled {
             resumeAfterPlaybackPause = false
             listeningTask = Task { await turnOn() }
         } else { resumeAfterPlaybackPause = false; applyAutomaticListening() }
     }
     private func applyAutomaticListening() {
         guard playbackAllowed else { cancelAutomaticStart(reason: "playback_paused"); return }
-        let shouldListen = policy.shouldListen(automatic: automaticListening, onPower: dock.onPower, externalDisplay: dock.externalDisplays > 0)
-        guard automaticListening, !quitting else {
+        guard !quitting else { cancelAutomaticStart(reason: "quitting"); return }
+        let shouldListen = policy.shouldListen(automatic: automaticListening, onPower: dock.onPower,
+            externalDisplay: dock.externalDisplays > 0, manualEnabled: manualListeningEnabled)
+        guard automaticListening else {
             cancelAutomaticStart(reason: "automatic_disabled_or_quitting")
-            if status == "Waiting to listen" { showListening() }
+            if shouldListen, !enabled, !busy, listeningTask == nil {
+                listeningTask = Task { await turnOn() }
+            } else if status == "Waiting to listen" || status == "Waiting for dock" { showListening() }
             return
         }
         if !dock.eligible {
@@ -297,8 +314,13 @@ import SwiftUI
         }
     }
     func toggle() {
-        if enabled || (busy && status == "Starting") { policy.pause(); turnOff() }
-        else if !busy { policy.resume(); listeningTask = Task { await turnOn() } }
+        if listeningToggleOn {
+            manualListeningEnabled = false
+            policy.pause(); turnOff()
+        } else if !busy {
+            manualListeningEnabled = true
+            policy.resume(); listeningTask = Task { await turnOn() }
+        }
     }
 
     // Starting wake detection is local only. Do not open a remote Voice call
@@ -377,6 +399,7 @@ import SwiftUI
     func manualTalk() {
         if enabled { beginVoice(trigger: "Voice turned on with button") }
         else if !busy {
+            manualListeningEnabled = true
             listeningTask = Task {
                 await turnOn()
                 beginVoice(trigger: "Voice turned on with button")

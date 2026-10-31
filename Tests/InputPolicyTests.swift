@@ -4,6 +4,41 @@ import Foundation
 
 @main struct InputPolicyTests {
     @MainActor static func main() throws {
+        let suite = "HelloChat.ListeningPreferencesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = ListeningPreferences(defaults: defaults)
+        precondition(!preferences.automatic && !preferences.manualEnabled,
+                     "A fresh install neither requires a dock nor starts capture without the toggle")
+        for enabled in [true, false, true] {
+            preferences.manualEnabled = enabled
+            defaults.synchronize()
+            let restarted = ListeningPreferences(defaults: UserDefaults(suiteName: suite)!)
+            precondition(restarted.manualEnabled == enabled, "Both toggle choices survive a fresh preferences instance")
+            var manual = ListeningPolicy()
+            for power in [false, true] {
+                for display in [false, true] {
+                    precondition(manual.shouldListen(automatic: restarted.automatic, onPower: power,
+                        externalDisplay: display, manualEnabled: restarted.manualEnabled) == enabled,
+                        "Normal listening follows the saved toggle on battery and without any external screen")
+                }
+            }
+            manual.pause()
+            precondition(manual.shouldListen(automatic: false, onPower: false,
+                externalDisplay: false, manualEnabled: restarted.manualEnabled) == enabled,
+                "A temporary runtime pause must not rewrite the saved choice")
+        }
+        // Existing installations already own this key. Loading the new manual
+        // preference must neither migrate nor disable their opt-in dock mode.
+        defaults.set(true, forKey: "automaticListening")
+        let existing = ListeningPreferences(defaults: UserDefaults(suiteName: suite)!)
+        precondition(existing.automatic && existing.manualEnabled)
+        var existingPolicy = ListeningPolicy()
+        precondition(!existingPolicy.shouldListen(automatic: true, onPower: false,
+            externalDisplay: false, manualEnabled: existing.manualEnabled))
+        precondition(existingPolicy.shouldListen(automatic: true, onPower: true,
+            externalDisplay: true, manualEnabled: false), "Dock mode keeps its existing startup behavior")
+
         let builtIn = MicrophoneInput(id: 1, uid: "builtin", name: "MacBook Pro Microphone")
         let usb = MicrophoneInput(id: 2, uid: "usb", name: "USB")
         let devices = [builtIn, usb]
