@@ -309,7 +309,7 @@ struct MainView: View {
                         .accessibilityIdentifier("errorMessage")
                 }
             }
-            Section("Listening") {
+            Section("Listening (say it twice if detection is wonky)") {
                 Toggle("Listen for wake phrase", isOn: Binding(get: { model.enabled || preparing }, set: { _ in model.toggle() }))
                     .disabled(model.busy && !preparing && !model.enabled)
                     .accessibilityIdentifier("listeningToggle")
