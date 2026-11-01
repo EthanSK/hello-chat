@@ -1,3 +1,5 @@
+// Speech preparation's isolated concurrency and rollover fixtures, compiled by
+// scripts/test.sh without loading models or capturing microphone input.
 import Foundation
 
 actor LoadProbe {
@@ -34,7 +36,9 @@ actor LoadProbe {
         }
         while await probe.active == 0 { await Task.yield() }
         let cancelled = Task<Void, Error> {
-            try await gate.withPermit { fatalError("A cancelled preparation must not load models") }
+            // Explicit Void avoids Swift 6.3 inferring Never through this
+            // generic async operation and failing to diagnose the expression.
+            try await gate.withPermit { () async throws -> Void in fatalError("A cancelled preparation must not load models") }
         }
         try await Task.sleep(for: .milliseconds(10))
         cancelled.cancel()
