@@ -7,6 +7,19 @@ import Foundation
         guard condition() else { fatalError(message) }
     }
     static func main() throws {
+        for phrase in ["Bye Chat", "ByteChat", "B-Y chat", "by chat, by chat", "ByteChat. Bye charts!"] {
+            check(PhraseMatcher.isStandaloneEnd(phrase, phrase: "Bye Chat", similar: true), "Standalone stop survives Agent Flow: \(phrase)")
+        }
+        for phrase in ["", "ByteChat didn't dismiss it", "the app should close with ByteChat", "I said by chat", "bye chat thanks", "hello chat"] {
+            check(!PhraseMatcher.isStandaloneEnd(phrase, phrase: "Bye Chat", similar: true), "Dictated mentions remain suppressed: \(phrase)")
+        }
+        check(!PhraseMatcher.isStandaloneEnd("ByteChat", phrase: "Bye Chat", similar: false), "Exact mode remains exact while dictating")
+        check(PhraseMatcher.isStandaloneEnd("stop listening stop listening", phrase: "Stop Listening", similar: false), "Custom repeated stop remains supported")
+        check(VoiceBridge.endDeliveryCommand(bindings: [["command": VoiceBridge.endCommand, "key": "Ctrl+Alt+Shift+V"]]) == VoiceBridge.endCommand, "Prefer the user's dedicated End shortcut")
+        let unassignedEndBindings: [[[String: Any]]] = [[], [["command": VoiceBridge.endCommand, "key": NSNull()]], [["command": VoiceBridge.endCommand, "key": " "]]]
+        for bindings in unassignedEndBindings {
+            check(VoiceBridge.endDeliveryCommand(bindings: bindings) == VoiceBridge.startCommand, "Unassigned End keeps the guarded legacy toggle")
+        }
         for phrase in ["Bye Chat", "ByeChat", "bye chad", "by chat", "bychat", "Byte Chat", "ByteChat", "B-Y Chat", "B Y Chat", "B.Y. Chat", "buy chat", "by charts", "Bye Charts", "Buy Charts", "ByteCharts", "by chats", "bye chart"] {
             var endMatcher = PhraseMatcher()
             check(endMatcher.consume(phrase, wake: "Hey Chat", sleep: "Bye Chat", similar: true) == .sleep, "Configured Bye Chat end phrase: \(phrase)")

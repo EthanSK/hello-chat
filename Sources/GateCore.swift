@@ -232,6 +232,19 @@ struct PhraseMatcher {
         }
         return result
     }
+    // While Ethan dictates into Agent Flow, only a standalone "ByteChat" /
+    // "by chat" (including repetitions) may interrupt Voice. Talking about
+    // the phrase must not end the call. Reuse the same dictionary as detection.
+    static func isStandaloneEnd(_ text: String, phrase: String, similar: Bool) -> Bool {
+        let tokens = words(text)
+        guard !tokens.isEmpty else { return false }
+        var covered = 0
+        for match in matches(in: tokens, phrase: phrase, similar: similar, ending: true) {
+            guard match.start == covered else { return false }
+            covered = match.end
+        }
+        return covered == tokens.count
+    }
     mutating func consume(_ text: String, wake: String, sleep: String, similar: Bool = false) -> PhraseCommand? {
         let tokens = Self.words(text)
         var latest: (end: Int, command: PhraseCommand, ordinal: Int)?

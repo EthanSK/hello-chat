@@ -53,6 +53,21 @@ struct VoiceBridge {
     static func isEndVoiceLabel(_ label: String) -> Bool {
         ["end voice", "end voice chat", "stop voice chat"].contains(label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
     }
+    // Prefer Codex's dedicated End action when configured. The legacy toggle
+    // remains a compatibility fallback and always requires a fresh active call.
+    static func endDeliveryCommand(bindings: [[String: Any]]) -> String {
+        bindings.contains { binding in
+            binding["command"] as? String == endCommand &&
+            (binding["key"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        } ? endCommand : startCommand
+    }
+    private static func postEnd(pid: pid_t, record: ((String, [String: Double], [String: String]) -> Void)?, control: String) throws {
+        let bindings = try JSONSerialization.jsonObject(with: Data(contentsOf: bindingsURL)) as? [[String: Any]] ?? []
+        let command = endDeliveryCommand(bindings: bindings)
+        try post(command: command, pid: pid)
+        record?(command == endCommand ? "voice.end.shortcut_sent" : "voice.end.toggle_sent", [:],
+                ["control": control, "command": command])
+    }
     // Send the user's explicit stop only after finding a current native Voice
     // control in the live window tree. Detached Electron AX objects can still
     // report enabled/visible/End after a call closes, so never cache them.
@@ -85,8 +100,7 @@ struct VoiceBridge {
         // Activation can replace/close the call. Read live membership again;
         // checking attributes of the earlier object does not establish it.
         guard try currentVoice() else { return nil }
-        try post(command: startCommand, pid: pid)
-        record?("voice.end.toggle_sent", [:], ["control": "fresh_tree"])
+        try postEnd(pid: pid, record: record, control: "fresh_tree")
         return pid
     }
     private static func usableEnd(_ element: AXUIElement, pid: pid_t) -> Bool {
@@ -118,8 +132,7 @@ struct VoiceBridge {
         let info = ["label": controls.endLabel ?? "unknown", "enabled": enabled.map { String($0) } ?? "unknown", "hidden": hidden.map { String($0) } ?? "unknown"]
         record?("voice.end.toggle.requested", ["pid": Double(pid)], info)
         guard usableEnd(button, pid: pid) else { throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.") }
-        try post(command: startCommand, pid: pid)
-        record?("voice.end.toggle_sent", [:], ["control": "fresh"])
+        try postEnd(pid: pid, record: record, control: "fresh")
     }
     // A retry must never send the start/stop toggle a second time. A stale
     // End button may fail or do nothing, but cannot open a new Voice call.

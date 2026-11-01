@@ -3,7 +3,8 @@ import Foundation
 
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
 // starts no App Server. The installed composer's existing shortcut toggles its
-// native call. Ending sends that same toggle only with a validated active call.
+// native call. Ending prefers the configured End shortcut, with a validated
+// active-call toggle as compatibility fallback when no End shortcut is assigned.
 @MainActor final class NativeVoice {
     struct Transport {
         var snapshot: () async -> VoiceSnapshot

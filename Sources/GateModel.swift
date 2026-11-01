@@ -502,12 +502,16 @@ import SwiftUI
             transcript = text
             if microphone == .listening { scheduleMute() }
         }
-        guard !phrasesPausedForAgentFlow else { return }
-        standaloneWake.update(text, at: Diagnostics.now)
+        // Agent Flow still suppresses wakes and phrase mentions. Ethan's explicit
+        // standalone stop must remain usable while dictating; it can only end
+        // a native call, never start one. No extra recognition pipeline is needed.
+        let standaloneEnd = PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases)
+        guard !phrasesPausedForAgentFlow || standaloneEnd else { return }
+        if !phrasesPausedForAgentFlow { standaloneWake.update(text, at: Diagnostics.now) }
         guard !PhraseMatcher.words(wakePhrase).isEmpty, !PhraseMatcher.words(sleepPhrase).isEmpty,
               PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase),
               matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases) == .sleep,
-              agentFlow.confirmAllowsPhrases() else { return }
+              agentFlow.confirmAllowsPhrases() || standaloneEnd else { return }
         standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
         Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
         // Ethan's "buy chat" / Bye Chat gets an immediate detection cue even
