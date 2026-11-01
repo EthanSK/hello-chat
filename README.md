@@ -83,7 +83,7 @@ The main window has three sections:
 - **Heard (local model)**: the latest local transcript in its own scrolling panel. The panel fits the visible window when there is room, follows new words while you are at the bottom, and lets you scroll back without being pulled down. There is no timestamp row. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
 - **Codex Voice**: Voice status, the latest event and **Start Voice in Codex** / **End Voice in Codex**.
 
-Waking waits until you finish speaking: Parakeet uses its built-in end-of-utterance (EOU) signal; Nemotron and Apple Speech require at least 0.6 seconds of quiet audio and a stable transcript. This can add a short delay and depends on the microphone level in a noisy room. The end phrase still acts immediately.
+Waking happens as soon as HelloChat hears the wake phrase, so you can keep talking straight after it. Words you said before the phrase still filter out clear mentions, but words after it can't cancel a wake: “Hello Chat is broken” can still open Voice. The end phrase also acts immediately.
 
 By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
 

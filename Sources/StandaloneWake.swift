@@ -1,11 +1,15 @@
 import Foundation
 
-// A direct address may follow other speech. Ethan's "EOU afterwards" means
-// normally wait for completion, keeping mention filtering. A stable trailing
-// address can also complete over background audio that never becomes quiet.
+// A direct address may follow other speech. It wakes as soon as it is heard,
+// so Ethan can keep talking straight into Voice. On 1 Nov he turned off the
+// earlier "EOU afterwards" wait (0.6 s of quiet, 1.2 s of stable text over
+// noise, or Parakeet's native EOU): it delayed Voice, and with constant room
+// noise a wake followed by more words never completed at all. Don't bring
+// the wait back. The trade-off is that words after the phrase can no longer
+// cancel a wake, so only words already heard filter out mentions.
 struct StandaloneWake {
+    // Parakeet's end-of-utterance debounce. It no longer gates waking.
     static let endSilenceSeconds = 0.6
-    static let stableAddressSeconds = 1.2
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     private var context: [String] = []
     private var sentenceStarts: [Int] = []
@@ -16,16 +20,13 @@ struct StandaloneWake {
     private var heardSpeech = false
     private var revision = 0
     private var checkedRevision = -1
-    private var checkedStableRevision = -1
     private var configuration = ""
-    private var endedRevision: Int?
 
     mutating func reset() { self = StandaloneWake() }
     mutating func resetContext() {
         context = []; sentenceStarts = []; audioBoundary = 0
-        consumed = 0; revision += 1; endedRevision = nil; quiet = 0
+        consumed = 0; revision += 1; quiet = 0
     }
-    mutating func utteranceEnded() { endedRevision = revision }
     mutating func audio(level: Double, seconds: Double) {
         if level < 0.02 { quiet += seconds }
         else {
@@ -48,41 +49,25 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool, requireModelEnd: Bool = false,
+    mutating func poll(at time: Double, phrase: String, similar: Bool,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
-        let key = "\(phrase)|\(similar)|\(requireModelEnd)"
-        if configuration != key { configuration = key; checkedRevision = -1; checkedStableRevision = -1 }
-        // Parakeet supplies its native EOU. Nemotron/Apple use the existing
-        // audio level and stable text as a local silence-based equivalent.
+        let key = "\(phrase)|\(similar)"
+        if configuration != key { configuration = key; checkedRevision = -1 }
         guard heardSpeech, checkedRevision != revision else { return false }
-        let stable = time - changedAt
-        let completed = requireModelEnd ? endedRevision == revision : quiet >= Self.endSilenceSeconds && stable >= 0.45
-        if !completed {
-            // Ethan wants a wake after stopping a video to work even with room
-            // noise. Only a trailing direct address qualifies; changes to the
-            // transcript restart the wait, and native EOU remains authoritative.
-            guard !requireModelEnd, stable >= Self.stableAddressSeconds,
-                  checkedStableRevision != revision else { return false }
-            checkedStableRevision = revision
-        }
         let candidates = matches(phrase: phrase, similar: similar)
         let directAddress = candidates.enumerated().contains { index, match in
-            index + 1 > consumed && (completed || match.end == context.count)
+            index + 1 > consumed
                 && !isMention(start: match.start, end: match.end)
                 && !(similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
                      && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                      && sentenceStarts.contains { $0 > match.start && $0 < match.end })
-        }
-        if !completed && !directAddress {
-            if !candidates.isEmpty { onDecision?("waiting_for_completion", quiet, stable) }
-            return false
         }
         checkedRevision = revision
         // Monotonic occurrence counts prevent corrections to an old sentence
         // from replaying either a rejected mention or an accepted address.
         consumed = max(consumed, candidates.count)
         if !candidates.isEmpty {
-            onDecision?(directAddress ? (completed ? "accepted_completion" : "accepted_stable_address") : "rejected_context_or_consumed", quiet, stable)
+            onDecision?(directAddress ? "accepted_immediately" : "rejected_context_or_consumed", quiet, time - changedAt)
         }
         return directAddress
     }

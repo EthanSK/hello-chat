@@ -43,18 +43,20 @@ struct PhraseMatcher {
     // Shared, local dictionary for Ethan's Hello Chat / Bye Chat commands.
     // "UI Chat", "ByteChat" and "by charts" all refer to his Bye Chat command.
     // Normalize spacing first so joined words and spelled-out letters work too.
+    // Ethan now says "Hey Chat" when talking about the app, so Hey/Hay/Hei
+    // addresses are deliberately absent; "Hey Chat" must never wake (1 Nov).
     private static let helloAddresses: Set<String> = [
         "hello", "helo", "hellow", "helloh", "hellou", "hallo", "halloo", "hullo", "hulo",
         "halo", "hollow", "yellow", "yello", "ello", "alo", "allo", "alow", "heylow",
-        "hey", "hay", "hi", "high", "hiya", "heya", "heyya", "ohhello", "ohhi",
+        "hi", "high", "hiya", "ohhello", "ohhi",
         "helow", "helloo", "hellooo", "helllo", "heello", "heelo", "helloe", "hella",
         "halloh", "hallou", "hallooo", "halow", "halou", "haloo", "hollo", "hillo",
         "hulloh", "hullooo", "hulow", "hullow", "herlo", "herlow", "hurlo", "hallow",
         "heylo", "haylo", "haylow", "heylow", "hailo", "yelo", "yelloh", "yelloo",
         "eloh", "elo", "elloh", "elloo", "elow", "alloh", "alloo", "aloo", "allow",
         "ahlo", "ahllo", "ohlo", "hola", "ola", "ohla", "holla", "holler",
-        "hai", "hei", "heigh", "heh", "heyah", "hiyah", "haya", "hiyaa",
-        "ohhey", "ohello", "ohey", "wellhello", "whyhello", "hellohello", "heyhey", "hihi",
+        "hai", "heh", "hiyah", "haya", "hiyaa",
+        "ohello", "wellhello", "whyhello", "hellohello", "hihi",
         "hilo", "hilow", "hiloh", "hiloe", "uhlo", "uhlow", "ahlow", "helllow", "harlow",
         "ullo", "ulow", "ulo", "ullow", "erlo", "arlo", "orlo", "arlow", "aloe", "ellough"
     ]
@@ -74,15 +76,15 @@ struct PhraseMatcher {
         "chat", "chad", "chatt", "chats", "chart", "charts", "chet", "chit",
         "chads", "chatts", "chard", "chards", "chaz", "chaat", "chaht", "chate",
         "chett", "chut", "chutt", "chot", "chott", "chert", "chirt", "cheat",
-        "shat", "shatt", "shats", "shad", "shads", "shart", "sharts", "shet", "shit",
-        "shut", "shot", "shaht", "cat", "cats", "khat", "katt", "hat", "hats", "that",
         "chatgpt", "chatgbt", "chatgpd", "chatgtp", "chants"
     ]
-    // Ethan prefers sensitivity. Build the large dictionary once, not on each
-    // audio frame: components cover joined/spelled words and phonetic names.
-    // One-edit names deliberately include cat/hat/that in default fuzzy mode;
-    // exact mode and custom phrases retain their existing narrower rules.
-    private static let expandedNames = chatNames.union(oneEdits("chat"))
+    // Build the large dictionary once, not on each audio frame: components
+    // cover joined/spelled words and phonetic names. Names must keep Chat's
+    // "ch" start. Ethan found the old sh/cat/hat/that names too lenient on
+    // 1 Nov: "UI shit" highlighted as Bye Chat, and one-edit names such as
+    // "what" let "by what" end a call. Don't re-add them. Exact mode and
+    // custom phrases retain their existing narrower rules.
+    private static let expandedNames = chatNames.union(oneEdits("chat").filter { $0.hasPrefix("ch") })
     // Ethan heard "hello chance" when addressing Hello Chat. Keep this
     // observed alias wake-only; "bye chance" must not end a conversation.
     private static let observedWakeVariants: Set<String> = ["hellochance"]

@@ -39,7 +39,8 @@ import Foundation
         check("Hello chance", expected: false, phrase: "Hey Chat")
         for text in ["Helo Chatt", "Hallo Chad", "Yellow Chat", "Hi Chat", "H E L L O C H A T",
                      "The video stopped. Hullo Chart, can you help?"] { check(text, expected: true) }
-        for text in ["Hello cat", "Hello that", "Hello shat", "as well chat", "Hello charts"] { check(text, expected: true) }
+        for text in ["as well chat", "Hello charts"] { check(text, expected: true) }
+        for text in ["Hello cat", "Hello that", "Hello shat", "Hey Chat", "hey chat can you help"] { check(text, expected: false) }
         for text in ["the hallo chad detection", "I said yellow chat", "the hello cat app",
                      "I said as well chat", "as well chat detection", "that as well. Chat what next", "help chat"] {
             check(text, expected: false)
@@ -57,11 +58,11 @@ import Foundation
             return detector.poll(at: at, phrase: "Hello Chat", similar: true)
         }
         detector.audio(level: 0.2, seconds: 0.1); update("Hello Chat", 1)
-        expect(!poll(1.2), "Wait briefly for a stable phrase")
+        expect(detector.poll(at: 1.01, phrase: "Hello Chat", similar: true), "Wake as soon as the address is heard, without a pause")
         update("Hello Chat is the phrase", 1.3)
-        expect(!poll(2), "Cancel a partial address revised into an obvious mention")
+        expect(!poll(2), "A later mention correction cannot repeat the wake (accepted trade-off)")
         update("Hello Chat is the phrase. Hello Chat", 3)
-        expect(poll(3.6), "An address after a mention still wakes when its utterance ends")
+        expect(poll(3.6), "A new address after a mention wakes")
         update("Hello Chat was the phrase. Hello Chat", 4)
         expect(!poll(4.6), "An earlier-word correction must not repeat the wake")
         update("Hello Chat was the phrase. Hello Chat. Hello Chad", 5)
@@ -116,49 +117,27 @@ import Foundation
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("Hello Chat", 1)
         detector.audio(level: 0.2, seconds: 1)
-        expect(!detector.poll(at: 2, phrase: "Hello Chat", similar: true), "Stable text cannot wake while speech continues")
-        detector.audio(level: 0, seconds: 0.59)
-        expect(detector.poll(at: 2.6, phrase: "Hello Chat", similar: true), "A stable trailing address can complete before the room becomes quiet")
-        detector.audio(level: 0, seconds: 0.02)
-        expect(!detector.poll(at: 2.7, phrase: "Hello Chat", similar: true), "Later silence cannot replay the stable address")
-        expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true), "One completed utterance wakes only once")
+        expect(detector.poll(at: 2, phrase: "Hello Chat", similar: true), "Continued speech after the address does not delay the wake")
+        update("Hello Chat what's the weather like", 2.5)
+        expect(!detector.poll(at: 2.6, phrase: "Hello Chat", similar: true), "Words spoken straight after the wake cannot repeat it")
+        expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true), "One address wakes only once")
         for text in ["Hello Chat", "A video sentence. Hello Chat", "Yellow Chat"] {
             detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update(text, at: 1)
-            detector.audio(level: 0.05, seconds: 5)
-            expect(!detector.poll(at: 2.19, phrase: "Hello Chat", similar: true), "Wait for stable address over noise")
             var decisions: [String] = []
-            expect(detector.poll(at: 2.21, phrase: "Hello Chat", similar: true, onDecision: { reason, quiet, stable in
-                decisions.append(reason); expect(quiet == 0 && stable >= 1.2, "Noise fallback records numerical completion evidence")
-            }), "Steady background noise must not block a trailing direct address")
-            expect(decisions == ["accepted_stable_address"], "Completion reason is logged without recognized words")
-            expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "Noise fallback fires only once")
+            expect(detector.poll(at: 1.01, phrase: "Hello Chat", similar: true, onDecision: { reason, _, _ in
+                decisions.append(reason)
+            }), "Steady background noise does not delay a direct address")
+            expect(decisions == ["accepted_immediately"], "The decision is logged without recognized words")
+            expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "The address fires only once")
         }
         for text in ["I said Hello Chat", "the Hello Chat", "Hello Chat is the phrase", "Hello Chat can you help"] {
             detector.reset(); detector.audio(level: 0.05, seconds: 3); detector.update(text, at: 1)
-            expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true), "Noise fallback needs a trailing direct address, not a mention or unfinished request")
-            detector.audio(level: 0, seconds: 0.7)
-            expect(detector.poll(at: 3.8, phrase: "Hello Chat", similar: true) == (text == "Hello Chat can you help"), "Ordinary completion retains mention filtering and complete requests")
+            expect(detector.poll(at: 1.01, phrase: "Hello Chat", similar: true) == (text == "Hello Chat can you help"),
+                   "Words already heard still filter mentions; a request wakes at once")
         }
-        detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update("Hello Chat", at: 1)
-        expect(!detector.poll(at: 2.1, phrase: "Hello Chat", similar: true), "Do not accept an unstable address")
-        detector.update("Hello Chat is the phrase", at: 2.15)
-        expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "A late mention correction still cancels the noisy address")
         detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update("Hello Chat Bye Chat", at: 1)
         detector.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true)
-        expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "End still cancels a pending noisy wake")
-        detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
-        update("Hello Chat", 1); detector.audio(level: 0, seconds: 2)
-        expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true, requireModelEnd: true), "Parakeet waits for native EOU even in a quiet room")
-        detector.utteranceEnded()
-        expect(detector.poll(at: 3, phrase: "Hello Chat", similar: true, requireModelEnd: true), "Native EOU authorizes the current transcript")
-        update("Hello Chat Hello Chat", 4)
-        expect(!detector.poll(at: 5, phrase: "Hello Chat", similar: true, requireModelEnd: true), "A previous EOU cannot authorize later words")
-        detector.utteranceEnded()
-        expect(detector.poll(at: 5, phrase: "Hello Chat", similar: true, requireModelEnd: true), "A new native EOU permits a later wake")
-        detector.resetContext(); update("Hello Chat", 6)
-        expect(!detector.poll(at: 7, phrase: "Hello Chat", similar: true, requireModelEnd: true), "Session resets discard old EOU evidence")
-        detector.utteranceEnded(); update("Hello Chat is the phrase", 7)
-        expect(!detector.poll(at: 8, phrase: "Hello Chat", similar: true, requireModelEnd: true), "A late correction invalidates earlier completion evidence")
+        expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "An end in the same transcript still cancels the wake")
         let started = Date()
         for _ in 0..<100_000 { precondition(!poll(4), "Idle frames do not repeat a wake") }
         print("Context-aware wake: \(checks) checks passed; 100000 idle polls in \(Date().timeIntervalSince(started))s")

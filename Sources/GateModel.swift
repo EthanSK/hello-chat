@@ -115,7 +115,6 @@ import SwiftUI
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds in self?.standaloneWake.audio(level: level, seconds: seconds) }
         listener.onFrame = { [weak self] in self?.checkStandaloneWake() }
-        listener.onUtteranceEnd = { [weak self] in self?.standaloneWake.utteranceEnded() }
         listener.onLevel = { [weak self] in self?.meter.level = $0 }
         listener.onError = { [weak self] text in self?.failListening(text) }
         listener.onDelay = { [weak self] in
@@ -522,8 +521,7 @@ import SwiftUI
     }
     private func checkStandaloneWake() {
         guard enabled, detectionRunning, !phrasesPausedForAgentFlow,
-              standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases,
-                                  requireModelEnd: speechModel.hasNativeUtteranceEnd, onDecision: { decision, quiet, stable in
+              standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases, onDecision: { decision, quiet, stable in
                   Diagnostics.shared.record("phrase.wake.evaluated", numbers: ["quiet_s": quiet, "stable_s": stable], info: ["decision": decision])
               }),
               agentFlow.confirmAllowsPhrases() else { return }

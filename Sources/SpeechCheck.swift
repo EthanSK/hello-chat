@@ -37,17 +37,12 @@ struct SpeechCheckResult {
         }
         listener.onComputePlan = { share = $0 }
         listener.onAudioActivity = { level, seconds in standaloneWake.audio(level: level, seconds: seconds) }
-        listener.onUtteranceEnd = {
-            utteranceEnds += 1
-            standaloneWake.utteranceEnded()
-        }
+        listener.onUtteranceEnd = { utteranceEnds += 1 }
         listener.onFrame = { [weak listener] in
-            if standalone, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar,
-                                               requireModelEnd: model.hasNativeUtteranceEnd) {
+            if standalone, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar) {
                 commands.append(.wake)
                 detections.append(["command": "wake", "elapsed_ms": (Diagnostics.now - started) * 1000,
-                                   "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false,
-                                   "completion": model.hasNativeUtteranceEnd ? "model_eou" : "audio_silence"])
+                                   "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false])
             }
         }
         listener.onText = { [weak listener] value in

@@ -26,20 +26,19 @@ import Foundation
         }
         for phrase in ["Helo Chat", "Hallo Chad", "Hullo Chart", "Hello chats", "Helloo Chatt",
                        "Hlelo Chta", "Halo Chat", "Yellow Chat", "Yello Chad", "Ello Chat", "A low Chat",
-                       "Hey low Chat", "HelloChat", "Hi Chat", "Hey Chat", "Hiya Chat", "H E L L O C H A T"] {
+                       "Hey low Chat", "HelloChat", "Hi Chat", "Hiya Chat", "H E L L O C H A T"] {
             var wake = PhraseMatcher()
             check(wake.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "Broad wake spelling: \(phrase)")
         }
-        for phrase in ["Hello cat", "Hello hat", "Hello that", "Hello shat", "Hello shut", "Hello chads",
-                       "Hellow shot", "Holla Chat", "Hola Chat", "Yelloo Chet", "Oh hello Chat",
+        for phrase in ["Hello chads", "Holla Chat", "Hola Chat", "Yelloo Chet", "Oh hello Chat",
                        "Hello charts", "Hello chance", "hello charity", "hello chatter", "Hello chocolate",
                        "hello ch", "HelloChance", "As well chat", "aswellchat", "azwellchat"] {
             var wake = PhraseMatcher()
             check(wake.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake,
                   "Sensitivity-first default wake: \(phrase)")
         }
-        for phrase in ["Pie Chat", "Bite Chat", "Good boy charts", "Bye shad", "Buoy Chat", "buh bye chat",
-                       "bye hat", "buy cats", "good bye chads", "gudbuychat", "B Y E C H A T", "by the charts"] {
+        for phrase in ["Pie Chat", "Bite Chat", "Good boy charts", "Buoy Chat", "buh bye chat",
+                       "good bye chads", "gudbuychat", "B Y E C H A T", "by the charts"] {
             var end = PhraseMatcher()
             check(end.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .sleep,
                   "Sensitivity-first default end: \(phrase)")
@@ -69,7 +68,12 @@ import Foundation
                        "be that", "you don't need to be that good at what you do",
                        "allow chat", "hi hat", "high hat", "high at", "highat", "hi ghat",
                        "it's too high at low speed", "was it high at or what", "yellow hats", "buy hats",
-                       "how are you", "buy a chart", "by chance", "bye chance", "UI settings", "just chat"] {
+                       "how are you", "buy a chart", "by chance", "bye chance", "UI settings", "just chat",
+                       // Ethan's 1 Nov cleanup: "Hey Chat" is his name for the app, and
+                       // non-ch names made ordinary speech match (orange "UI shit").
+                       "Hey Chat", "hey chat", "HeyChat", "hay chat", "Hello cat", "Hello hat", "Hello that",
+                       "Hello shat", "Hello shut", "Hellow shot", "UI shit", "some UI shit sends a key",
+                       "why is UI shit coming up", "bye what", "by what", "hi what", "Bye shad", "bye hat", "buy cats"] {
             var none = PhraseMatcher()
             check(none.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "Keep two recognizable command parts: \(phrase)")
         }
