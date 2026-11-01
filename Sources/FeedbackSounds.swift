@@ -20,8 +20,16 @@ import AppKit
             Diagnostics.shared.record("feedback.skipped", info: ["cue": cue.rawValue, "reason": "missing_resource"])
             return
         }
+        let requestedAt = Diagnostics.now
+        Diagnostics.shared.record("feedback.requested", numbers: ["uptime": requestedAt], info: ["cue": cue.rawValue])
         sounds.values.forEach { $0.stop() }
+        // Every cue starts at its first sample, including a replay after a
+        // previous cue was interrupted. No system volume or route is changed.
+        sound.currentTime = 0
         let played = sound.play()
-        Diagnostics.shared.record("feedback.play", info: ["cue": cue.rawValue, "started": String(played)])
+        Diagnostics.shared.record("feedback.play", numbers: [
+            "play_call_ms": (Diagnostics.now - requestedAt) * 1000,
+            "volume": Double(sound.volume), "duration_s": sound.duration
+        ], info: ["cue": cue.rawValue, "started": String(played)])
     }
 }

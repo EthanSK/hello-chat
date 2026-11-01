@@ -118,10 +118,34 @@ import Foundation
         detector.audio(level: 0.2, seconds: 1)
         expect(!detector.poll(at: 2, phrase: "Hello Chat", similar: true), "Stable text cannot wake while speech continues")
         detector.audio(level: 0, seconds: 0.59)
-        expect(!detector.poll(at: 2.6, phrase: "Hello Chat", similar: true), "A shorter pause is not a completed utterance")
+        expect(detector.poll(at: 2.6, phrase: "Hello Chat", similar: true), "A stable trailing address can complete before the room becomes quiet")
         detector.audio(level: 0, seconds: 0.02)
-        expect(detector.poll(at: 2.7, phrase: "Hello Chat", similar: true), "Nemotron wakes after the completed pause")
+        expect(!detector.poll(at: 2.7, phrase: "Hello Chat", similar: true), "Later silence cannot replay the stable address")
         expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true), "One completed utterance wakes only once")
+        for text in ["Hello Chat", "A video sentence. Hello Chat", "Yellow Chat"] {
+            detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update(text, at: 1)
+            detector.audio(level: 0.05, seconds: 5)
+            expect(!detector.poll(at: 2.19, phrase: "Hello Chat", similar: true), "Wait for stable address over noise")
+            var decisions: [String] = []
+            expect(detector.poll(at: 2.21, phrase: "Hello Chat", similar: true, onDecision: { reason, quiet, stable in
+                decisions.append(reason); expect(quiet == 0 && stable >= 1.2, "Noise fallback records numerical completion evidence")
+            }), "Steady background noise must not block a trailing direct address")
+            expect(decisions == ["accepted_stable_address"], "Completion reason is logged without recognized words")
+            expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "Noise fallback fires only once")
+        }
+        for text in ["I said Hello Chat", "the Hello Chat", "Hello Chat is the phrase", "Hello Chat can you help"] {
+            detector.reset(); detector.audio(level: 0.05, seconds: 3); detector.update(text, at: 1)
+            expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true), "Noise fallback needs a trailing direct address, not a mention or unfinished request")
+            detector.audio(level: 0, seconds: 0.7)
+            expect(detector.poll(at: 3.8, phrase: "Hello Chat", similar: true) == (text == "Hello Chat can you help"), "Ordinary completion retains mention filtering and complete requests")
+        }
+        detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update("Hello Chat", at: 1)
+        expect(!detector.poll(at: 2.1, phrase: "Hello Chat", similar: true), "Do not accept an unstable address")
+        detector.update("Hello Chat is the phrase", at: 2.15)
+        expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "A late mention correction still cancels the noisy address")
+        detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update("Hello Chat Bye Chat", at: 1)
+        detector.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true)
+        expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "End still cancels a pending noisy wake")
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("Hello Chat", 1); detector.audio(level: 0, seconds: 2)
         expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true, requireModelEnd: true), "Parakeet waits for native EOU even in a quiet room")

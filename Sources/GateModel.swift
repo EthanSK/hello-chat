@@ -437,6 +437,9 @@ import SwiftUI
         // Reserve synchronously so an end phrase arriving before this Task's
         // first turn cancels the queued opening instead of starting a second action.
         busy = true
+        // Acknowledge the request before scheduling Voice work. The sound does
+        // not mean Codex connected, and the busy reservation prevents reentry.
+        feedback.play(.wake)
         voiceTask = Task { await openVoice(trigger: trigger) }
     }
     private func openVoice(trigger: String) async {
@@ -447,7 +450,7 @@ import SwiftUI
         do {
             // Refresh native state on each explicit wake, including after a
             // call was closed in Codex, rather than trusting our cached state.
-            let openedMicrophone = try await voice.start(onRequestAccepted: { [weak self] in self?.feedback.play(.wake) })
+            let openedMicrophone = try await voice.start()
             try Task.checkCancellation()
             guard enabled, generation == token else { return }
             if let openedMicrophone, openedMicrophone != .listening { try await voice.setMicrophone(.listening) }
@@ -520,11 +523,17 @@ import SwiftUI
     private func checkStandaloneWake() {
         guard enabled, detectionRunning, !phrasesPausedForAgentFlow,
               standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases,
-                                  requireModelEnd: speechModel.hasNativeUtteranceEnd),
+                                  requireModelEnd: speechModel.hasNativeUtteranceEnd, onDecision: { decision, quiet, stable in
+                  Diagnostics.shared.record("phrase.wake.evaluated", numbers: ["quiet_s": quiet, "stable_s": stable], info: ["decision": decision])
+              }),
               agentFlow.confirmAllowsPhrases() else { return }
         Diagnostics.shared.record("phrase.wake.detected", info: ["contextChecked": "true", "busy": String(busy)])
-        if busy { lastEvent = "Heard \(wakePhrase) · finishing the current Voice action" }
-        else { beginVoice(trigger: "Heard \(wakePhrase)") }
+        if busy {
+            // A detected wake still gets its cue while Voice is busy, without
+            // scheduling another call or cancelling the work already underway.
+            feedback.play(.wake)
+            lastEvent = "Heard \(wakePhrase) · finishing the current Voice action"
+        } else { beginVoice(trigger: "Heard \(wakePhrase)") }
     }
     func quit() { NSApp.terminate(nil) }
     func prepareToQuit() async -> Bool {

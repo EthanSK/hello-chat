@@ -70,7 +70,7 @@ import Foundation
         var state = await snapshot()
         try Task.checkCancellation()
         // Electron can replace an AX node during a read. Retry a bounded,
-        // incomplete negative result; never infer absence from a failed scan.
+        // incomplete result before falling back to the explicit wake request.
         for _ in 0..<2 where state.accessibilityAllowed
             && state.microphone == nil && !state.endControlAvailable
             && (state.pid == nil || !state.controlsComplete) {
@@ -93,13 +93,20 @@ import Foundation
         }
         // Ethan's "Codex is using the microphone" false block: process audio
         // input can remain active after Voice closes, or belong to dictation.
-        // Only the complete Voice-control scan below gates an explicit start.
+        // Fresh positive Voice controls reuse the call; audio activity alone
+        // does not block an explicit start.
         if state.inputRunning {
             diagnostics?.record("voice.input_activity.ignored", info: ["controls_complete": String(state.controlsComplete)])
         }
         let confirmationDeadline = Date().addingTimeInterval(confirmationTimeout)
         if !state.endControlAvailable {
-            guard state.controlsComplete else { throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.") }
+            // Ethan's "err on the side of trying to start" applies when AX
+            // remains unknown after the bounded retries. Send one native
+            // toggle, never a retry loop. Positive Voice controls above still
+            // win, and End/cleanup retain their stricter ownership rules.
+            if !state.controlsComplete {
+                diagnostics?.record("voice.open.uncertain_fallback", info: ["scan_failure": state.scanFailure])
+            }
             try transport.activate(pid)
             try await Task.sleep(nanoseconds: 200_000_000)
             try Task.checkCancellation()

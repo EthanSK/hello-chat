@@ -65,15 +65,15 @@ import Foundation
         precondition(voice.connected && sent.count == beforeResidualStart + 1 && sent.last == VoiceBridge.startCommand,
                      "Residual process input must not block an explicit start after a complete absent Voice-control scan")
         await voice.stop()
+        for input in [false, true] {
+            let count = sent.count
+            current = state(input: input); current.controlsComplete = false
+            _ = try await voice.start()
+            precondition(sent.count == count + 1 && sent.last == VoiceBridge.startCommand && voice.connected,
+                         "An explicit wake makes one start attempt after persistently unknown controls, regardless of residual input")
+            await voice.stop()
+        }
         let count = sent.count
-        current = state(); current.controlsComplete = false
-        do { try await voice.start(); fatalError("An incomplete scan cannot establish Voice is off") }
-        catch is BridgeError { }
-        precondition(sent.count == count, "Timeout or traversal cap must never authorize a start toggle")
-        current = state(input: true); current.controlsComplete = false
-        do { try await voice.start(); fatalError("Input activity must not authorize a start after an incomplete scan") }
-        catch is BridgeError { }
-        precondition(sent.count == count, "Incomplete Voice controls still block even when process input is active")
         var transientReads = 0
         let transient = NativeVoice(transport: .init(snapshot: {
             transientReads += 1
