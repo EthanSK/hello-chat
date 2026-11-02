@@ -81,7 +81,7 @@ The main window has three sections:
 
 - **Listening**: **Listen for wake phrase**, editable **Wake phrase** and **End phrase** fields, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
 - **Heard (local model)**: the latest local transcript in its own scrolling panel. The panel fits the visible window when there is room, follows new words while you are at the bottom, and lets you scroll back without being pulled down. There is no timestamp row. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
-- **Codex Voice**: Voice status, the latest event and **Start Voice in Codex** / **End Voice in Codex**.
+- **Codex Voice**: Voice status, the latest event, **Start Voice in Codex** / **End Voice in Codex**, and **Refresh**, which checks Codex again after you open or close Voice there. If HelloChat can't tell, it shows Voice as off, so **Start Voice in Codex** stays available.
 
 Waking happens as soon as HelloChat hears the wake phrase, so you can keep talking straight after it. Words you said before the phrase still filter out clear mentions, but words after it can't cancel a wake: “Hello Chat is broken” can still open Voice. The end phrase also acts immediately.
 

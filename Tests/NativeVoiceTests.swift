@@ -415,6 +415,21 @@ import Foundation
         _ = try await activeCleanup.start()
         await activeCleanup.stop()
         precondition(cleanupPressed && cleanupDirect == 0 && !activeCleanup.connected, "Owned active cleanup uses exact End only")
+
+        var refreshed = state(.listening)
+        let refreshing = NativeVoice(transport: .init(snapshot: { refreshed },
+            send: { _, _ in fatalError("Refresh must never send a shortcut") },
+            activate: { _ in fatalError("Refresh must not activate Codex") }))
+        let openedInCodex = await refreshing.refresh()
+        precondition(openedInCodex == .listening && refreshing.connected, "Refresh adopts a call opened in Codex")
+        refreshed = state()
+        let closedInCodex = await refreshing.refresh()
+        precondition(closedInCodex == nil && !refreshing.connected, "Refresh notices a call closed in Codex")
+        refreshed = state(.listening)
+        _ = await refreshing.refresh()
+        refreshed = state(input: true); refreshed.controlsComplete = false
+        let unknown = await refreshing.refresh()
+        precondition(unknown == nil && !refreshing.connected, "An incomplete read counts as off, so it never blocks the next start")
         print("Passed native Voice transport checks including stale closed-call and active-call cleanup. No desktop events or real calls sent.")
     }
 }

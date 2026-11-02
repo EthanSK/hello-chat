@@ -361,6 +361,9 @@ struct MainView: View {
                     }
                     .disabled(model.busy && !connecting)
                     .accessibilityIdentifier("voiceButton")
+                    Button("Refresh") { model.refreshVoice() }
+                        .disabled(model.busy)
+                        .accessibilityIdentifier("voiceRefreshButton")
                     if !model.lastEvent.isEmpty {
                         Text(model.lastEvent).foregroundStyle(.secondary).accessibilityIdentifier("lastEvent")
                     }
@@ -573,6 +576,8 @@ struct MenuView: View {
             if model.microphone == .listening || model.status == "Connecting" { model.manualMute() } else { model.manualTalk() }
         }
         .disabled(model.busy && model.status != "Connecting")
+        Button("Refresh Voice status") { model.refreshVoice() }
+            .disabled(model.busy)
         Divider()
         Button("HelloChat") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Button("Settings…") { openWindow(id: "settings"); NSApp.activate(ignoringOtherApps: true) }

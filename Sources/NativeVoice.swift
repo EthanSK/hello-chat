@@ -174,6 +174,17 @@ import Foundation
         }
     }
 
+    // Ethan's 2 Nov Refresh button: one fresh read so HelloChat's on/off state
+    // follows a call opened or closed in Codex itself. A read that finds no
+    // Voice controls counts as off, even when incomplete ("if it can't tell,
+    // just let it start"), so the button then offers Start. Sends nothing.
+    func refresh() async -> MicrophoneState? {
+        let state = await snapshot()
+        connected = state.microphone != nil || state.endControlAvailable
+        diagnostics?.record("voice.refresh", info: ["connected": String(connected), "complete": String(state.controlsComplete)])
+        return state.microphone
+    }
+
     // A spoken end command may address a call opened directly in Codex. Adopt
     // only freshly identified Voice controls; cleanup never takes this path.
     @discardableResult func endIfPresent() async throws -> Bool {
@@ -270,7 +281,9 @@ import Foundation
             }
         }
         diagnostics?.record("voice.end.confirmation_timeout")
-        throw BridgeError.message("Codex Voice is still using the microphone. End the call in Codex.")
+        // Previously "still using the microphone", which on 2 Nov read as a
+        // microphone fault when the real problem was that End didn't work.
+        throw BridgeError.message("Codex Voice didn't end. End the call in Codex.")
     }
 
     // AX reads are bounded and run only during an explicit start/stop, away from

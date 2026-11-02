@@ -482,6 +482,23 @@ import SwiftUI
             voiceTask = Task { await muteVoice(event: "Codex Voice ended") }
         }
     }
+    // Ethan's 2 Nov "have like a refresh button ... so I can toggle it on and
+    // off": re-read Codex on request after Voice was opened or closed there.
+    // It also clears a stale error. HelloChat still never scans in the background.
+    func refreshVoice() {
+        guard !busy, !quitting else { return }
+        busy = true; error = nil
+        let token = generation
+        voiceTask = Task {
+            defer { if generation == token { busy = false; voiceTask = nil } }
+            let found = await voice.refresh()
+            guard generation == token else { return }
+            microphone = found
+            showListening()
+            if voice.connected { voiceText = "Codex Voice is on" }
+            lastEvent = voice.connected ? "Codex Voice is on" : "Codex Voice is off"
+        }
+    }
     private func beginVoice(trigger: String) {
         guard enabled, detectionRunning, !busy, !quitting else { return }
         // Reserve synchronously so an end phrase arriving before this Task's
