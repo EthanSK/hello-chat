@@ -101,7 +101,21 @@ actor NeuralSpeech: SpeechBackend {
         }
         let changed = !text.isEmpty && text != previousText
         if changed { previousText = text }
-        return SpeechUpdate(text: changed ? text : nil, reset: reset, utteranceEnded: ended)
+        return SpeechUpdate(text: changed ? text : nil, reset: reset, utteranceEnded: ended,
+                            wordTimings: changed ? await currentWordTimings() : nil)
+    }
+    private func currentWordTimings() async -> [(word: String, start: Double, end: Double)] {
+        let tokens: [TokenTiming]
+        if let nemotron { tokens = await nemotron.getTokenTimings() }
+        else if let manager {
+            let pieces = await manager.getRawTokenStrings()
+            let times = await manager.getTokenTimestampsMs()
+            tokens = zip(pieces, times).map { TokenTiming(token: $0.0, tokenId: 0,
+                startTime: Double($0.1) / 1000, endTime: Double($0.1) / 1000, confidence: 1) }
+        } else { return [] }
+        return buildWordTimings(from: tokens).flatMap { span in
+            PhraseMatcher.words(span.word).map { (word: $0, start: span.startTime, end: span.endTime) }
+        }
     }
     func finish() async throws -> String {
         try await prime()

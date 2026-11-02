@@ -14,6 +14,8 @@ actor AppleLocalSpeech: SpeechBackend {
     private var targetFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var latest = "", emitted = "", finalized = ""
+    private var latestTimings: [(word: String, start: Double, end: Double)] = []
+    private var finalizedTimings: [(word: String, start: Double, end: Double)] = []
     private var failure: Error?
     private var duration = 0.0
     private var quiet = 0.0
@@ -32,7 +34,7 @@ actor AppleLocalSpeech: SpeechBackend {
             throw BridgeError.message("Apple's English speech model isn't installed. Install it in macOS before selecting Apple Speech.")
         }
         try Task.checkCancellation()
-        let transcriber = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
+        let transcriber = SpeechTranscriber(locale: locale, preset: .timeIndexedProgressiveTranscription)
         guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { throw BridgeError.message("Apple local speech has no supported audio format.") }
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         self.analyzer = analyzer; targetFormat = format
@@ -43,7 +45,13 @@ actor AppleLocalSpeech: SpeechBackend {
         results = Task { [weak self] in
             do {
                 for try await result in transcriber.results {
-                    await self?.receive(String(result.text.characters), final: result.isFinal, token: token)
+                    let timings = result.text.runs.flatMap { run -> [(word: String, start: Double, end: Double)] in
+                        guard let range = run.audioTimeRange else { return [] }
+                        return PhraseMatcher.words(String(result.text[run.range].characters)).map {
+                            (word: $0, start: range.start.seconds, end: range.end.seconds)
+                        }
+                    }
+                    await self?.receive(String(result.text.characters), timings: timings, final: result.isFinal, token: token)
                 }
             } catch { await self?.failed(error, token: token) }
         }
@@ -53,10 +61,11 @@ actor AppleLocalSpeech: SpeechBackend {
         try Task.checkCancellation()
         try await analyzer.start(inputSequence: stream)
     }
-    private func receive(_ text: String, final: Bool, token: UUID) {
+    private func receive(_ text: String, timings: [(word: String, start: Double, end: Double)], final: Bool, token: UUID) {
         guard token == generation else { return }
         latest = [finalized, text].filter { !$0.isEmpty }.joined(separator: " ")
-        if final { finalized = latest }
+        latestTimings = finalizedTimings + timings
+        if final { finalized = latest; finalizedTimings = latestTimings }
     }
     private func failed(_ error: Error, token: UUID) { if token == generation { failure = error } }
     func consume(_ mono: AVAudioPCMBuffer) async throws -> SpeechUpdate {
@@ -95,7 +104,7 @@ actor AppleLocalSpeech: SpeechBackend {
         await Task.yield()
         guard latest != emitted, !latest.isEmpty else { return SpeechUpdate(text: nil, reset: reset) }
         emitted = latest
-        return SpeechUpdate(text: latest, reset: reset)
+        return SpeechUpdate(text: latest, reset: reset, wordTimings: latestTimings)
     }
     func finish() async throws -> String {
         continuation?.finish()
@@ -116,5 +125,6 @@ actor AppleLocalSpeech: SpeechBackend {
         results?.cancel(); await results?.value; results = nil
         analyzer = nil; targetFormat = nil; converter = nil
         latest = ""; emitted = ""; finalized = ""; failure = nil; duration = 0; quiet = 0
+        latestTimings = []; finalizedTimings = []
     }
 }

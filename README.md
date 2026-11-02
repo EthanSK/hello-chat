@@ -85,9 +85,13 @@ The main window has three sections:
 
 Waking happens as soon as HelloChat hears the wake phrase, so you can keep talking straight after it. Words you said before the phrase still filter out clear mentions, but words after it can't cancel a wake: “Hello Chat is broken” can still open Voice. The end phrase also acts immediately.
 
+Words within either command must be close together: no gap over 1.5 seconds, and a two-word phrase must fit within 3 seconds. Longer custom phrases have a proportionally larger total window. The app uses local model audio timestamps where available, with first-observed word times as a fallback. This does not limit the length of a Voice conversation or add a delay after a valid command.
+
 By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
 
-While Agent Flow is recording, HelloChat ignores wake and end phrases. Its listening toggle and manual Voice controls remain available.
+While Agent Flow is recording, HelloChat ignores wake phrases and mentions of commands, but a standalone end phrase can still stop Voice. Its listening toggle and manual Voice controls remain available.
+
+If Core ML fails during recognition or a model reload, HelloChat tries up to three local restarts without ending Codex Voice. After repeated failures it stops reloading until a power/display change, system wake or manual restart gives it another chance. Automatic listening still waits two minutes after docking. A Core ML operation already in progress must return before its model can be safely replaced.
 
 The menu bar has **Start listening** / **Stop listening** and the same Voice controls. **Settings…** (⌘,) has:
 

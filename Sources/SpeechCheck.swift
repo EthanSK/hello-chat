@@ -45,10 +45,10 @@ struct SpeechCheckResult {
                                    "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false])
             }
         }
-        listener.onText = { [weak listener] value in
+        listener.onText = { [weak listener] value, timings in
             text = value
-            standaloneWake.update(value, at: Diagnostics.now)
-            if let command = matcher.consume(value, wake: standalone ? "" : "Hello Chat", sleep: "Bye Chat", similar: similar) {
+            standaloneWake.update(value, at: Diagnostics.now, timings: timings)
+            if let command = matcher.consume(value, wake: standalone ? "" : "Hello Chat", sleep: "Bye Chat", similar: similar, timings: timings) {
                 if standalone, command == .sleep {
                     standaloneWake.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: similar)
                 }

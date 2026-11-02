@@ -6,6 +6,15 @@ import Foundation
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
         }
+        var timed = StandaloneWake()
+        timed.audio(level: 0.2, seconds: 0.1)
+        timed.update("hello", at: 1, timings: [("hello", 0, 0.3)])
+        expect(!timed.poll(at: 1, phrase: "Hello Chat", similar: true), "Partial address waits for name")
+        timed.update("hello chat", at: 20, timings: [("hello", 0, 0.3), ("chat", 19, 19.4)])
+        expect(!timed.poll(at: 20, phrase: "Hello Chat", similar: true), "Old hello and later chat do not wake")
+        timed.update("hello chat hello chat", at: 30, timings:
+            [("hello", 0, 0.3), ("chat", 19, 19.4), ("hello", 29, 29.3), ("chat", 29.5, 29.8)])
+        expect(timed.poll(at: 30, phrase: "Hello Chat", similar: true), "A later fresh complete phrase still wakes immediately")
         func check(_ text: String, expected: Bool, phrase: String = "Hello Chat", similar: Bool = true) {
             var detector = StandaloneWake()
             detector.audio(level: 0.2, seconds: 0.1)

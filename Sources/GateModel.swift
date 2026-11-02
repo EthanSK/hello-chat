@@ -135,7 +135,7 @@ import SwiftUI
             self.lastEvent = "Listening resumed after an audio delay"
             self.detail = self.microphone == .listening ? "Say \(self.sleepPhrase) to end Voice." : "Say \(self.wakePhrase) to start Voice."
         }
-        listener.onText = { [weak self] text in self?.heard(text) }
+        listener.onText = { [weak self] text, timings in self?.heard(text, timings: timings) }
         listener.onComputePlan = { [weak self] share in
             guard let self else { return }
             guard self.speechModel.neuralPlacementKnown else {
@@ -546,7 +546,7 @@ import SwiftUI
             await self.muteVoice(event: "Codex Voice ended after silence")
         }
     }
-    private func heard(_ text: String) {
+    private func heard(_ text: String, timings: [(word: String, start: Double, end: Double)]) {
         guard enabled else { return }
         if saveTranscripts { archive.update(text, model: speechModel.rawValue, microphone: inputs.selectedName) }
         if transcript != text {
@@ -557,13 +557,13 @@ import SwiftUI
         // standalone stop must remain usable while dictating; it can only end
         // a native call, never start one. No extra recognition pipeline is needed.
         guard !phrasesPausedForAgentFlow ||
-                PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases) else { return }
-        if !phrasesPausedForAgentFlow { standaloneWake.update(text, at: Diagnostics.now) }
+                PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases, timings: timings) else { return }
+        if !phrasesPausedForAgentFlow { standaloneWake.update(text, at: Diagnostics.now, timings: timings) }
         guard !PhraseMatcher.words(wakePhrase).isEmpty, !PhraseMatcher.words(sleepPhrase).isEmpty,
               PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase),
-              matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases) == .sleep,
+              matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases, timings: timings) == .sleep,
               agentFlow.confirmAllowsPhrases() ||
-                PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases) else { return }
+                PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases, timings: timings) else { return }
         standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
         Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
         // Ethan's "buy chat" / Bye Chat gets an immediate detection cue even

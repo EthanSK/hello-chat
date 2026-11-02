@@ -208,7 +208,8 @@ struct PhraseMatcher {
         }
         return edits + (a.count - i) + (b.count - j) <= 1
     }
-    static func matches(in tokens: [String], phrase: String, similar: Bool, ending: Bool = false) -> [(start: Int, end: Int)] {
+    static func matches(in tokens: [String], phrase: String, similar: Bool, ending: Bool = false,
+                        timings: [(word: String, start: Double, end: Double)]? = nil) -> [(start: Int, end: Int)] {
         let expected = words(phrase)
         guard !expected.isEmpty else { return [] }
         let compact = expected.joined()
@@ -225,6 +226,7 @@ struct PhraseMatcher {
                 candidate += tokens[end - 1]
                 guard equivalentCompact(candidate, expected: expected, compact: compact,
                                         similar: similar, allowEndAddressEdit: ending) else { continue }
+                guard closeInTime(start: start, end: end, tokens: tokens, timings: timings) else { continue }
                 result.append((start, end)); start = end; found = true; break
             }
             // "Good bye Chat" must be one command, not a second nested "bye Chat".
@@ -232,20 +234,39 @@ struct PhraseMatcher {
         }
         return result
     }
+    // Ethan's "hello ... much later ... chat" must not become a command.
+    // These are model audio timestamps when exposed, with observed revision
+    // times as fallback. No wait is added after a naturally spoken phrase.
+    static func closeInTime(start: Int, end: Int, tokens: [String],
+                            timings: [(word: String, start: Double, end: Double)]?) -> Bool {
+        guard let timings else { return true } // Text-only callers have no audio clock.
+        guard timings.map(\.word) == tokens, start >= 0, end <= timings.count, start < end else { return false }
+        let phrase = timings[start..<end]
+        guard phrase.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start }),
+              let first = phrase.first, let last = phrase.last,
+              last.end - first.start <= max(3, Double(end - start) * 1.5) else { return false }
+        for index in (start + 1)..<end {
+            guard timings[index].start >= timings[index - 1].start,
+                  timings[index].start - timings[index - 1].end <= 1.5 else { return false }
+        }
+        return true
+    }
     // While Ethan dictates into Agent Flow, only a standalone "ByteChat" /
     // "by chat" (including repetitions) may interrupt Voice. Talking about
     // the phrase must not end the call. Reuse the same dictionary as detection.
-    static func isStandaloneEnd(_ text: String, phrase: String, similar: Bool) -> Bool {
+    static func isStandaloneEnd(_ text: String, phrase: String, similar: Bool,
+                                timings: [(word: String, start: Double, end: Double)]? = nil) -> Bool {
         let tokens = words(text)
         guard !tokens.isEmpty else { return false }
         var covered = 0
-        for match in matches(in: tokens, phrase: phrase, similar: similar, ending: true) {
+        for match in matches(in: tokens, phrase: phrase, similar: similar, ending: true, timings: timings) {
             guard match.start == covered else { return false }
             covered = match.end
         }
         return covered == tokens.count
     }
-    mutating func consume(_ text: String, wake: String, sleep: String, similar: Bool = false) -> PhraseCommand? {
+    mutating func consume(_ text: String, wake: String, sleep: String, similar: Bool = false,
+                          timings: [(word: String, start: Double, end: Double)]? = nil) -> PhraseCommand? {
         let tokens = Self.words(text)
         var latest: (end: Int, command: PhraseCommand, ordinal: Int)?
         var wakes = 0, ends = 0
@@ -253,7 +274,7 @@ struct PhraseMatcher {
         // an earlier word must not turn the same phrase into a new command.
         // Backends explicitly reset this matcher at their context boundary.
         for (phrase, command) in [(wake, PhraseCommand.wake), (sleep, .sleep)] {
-            for match in Self.matches(in: tokens, phrase: phrase, similar: similar, ending: command == .sleep) {
+            for match in Self.matches(in: tokens, phrase: phrase, similar: similar, ending: command == .sleep, timings: timings) {
                     let end = match.end
                     if command == .wake { wakes += 1 } else { ends += 1 }
                     let ordinal = command == .wake ? wakes : ends

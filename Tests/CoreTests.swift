@@ -7,6 +7,23 @@ import Foundation
         guard condition() else { fatalError(message) }
     }
     static func main() throws {
+        for (text, command) in [("hello chat", PhraseCommand.wake), ("by charts", .sleep)] {
+            let words = PhraseMatcher.words(text)
+            let close = [(word: words[0], start: 1.0, end: 1.4), (word: words[1], start: 1.8, end: 2.2)]
+            let distant = [(word: words[0], start: 1.0, end: 1.4), (word: words[1], start: 20.0, end: 20.4)]
+            var matcher = PhraseMatcher()
+            check(matcher.consume(text, wake: "Hello Chat", sleep: "Bye Chat", similar: true, timings: distant) == nil, "Separate speech must not combine into either command")
+            matcher.reset()
+            check(matcher.consume(text, wake: "Hello Chat", sleep: "Bye Chat", similar: true, timings: close) == command, "Natural speech timing still works")
+        }
+        check(!PhraseMatcher.isStandaloneEnd("by charts", phrase: "Bye Chat", similar: true,
+            timings: [("by", 0, 0.2), ("charts", 10, 10.3)]), "Dictation stop cannot cross a long gap")
+        var joined = PhraseMatcher()
+        check(joined.consume("hellochat", wake: "Hello Chat", sleep: "Bye Chat", similar: true,
+            timings: [("hellochat", 0, 20)]) == nil, "Joined decoder token must not conceal a long phrase duration")
+        var custom = PhraseMatcher()
+        check(custom.consume("start voice now", wake: "Start Voice Now", sleep: "Stop Voice", timings:
+            [("start", 1, 1.3), ("voice", 1.7, 2), ("now", 2.3, 2.6)]) == .wake, "Custom phrases retain natural timing")
         for phrase in ["Bye Chat", "ByteChat", "B-Y chat", "by chat, by chat", "ByteChat. Bye charts!"] {
             check(PhraseMatcher.isStandaloneEnd(phrase, phrase: "Bye Chat", similar: true), "Standalone stop survives Agent Flow: \(phrase)")
         }

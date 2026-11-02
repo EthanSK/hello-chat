@@ -4,7 +4,7 @@ import Foundation
 import CoreAudio
 
 @MainActor final class SpeechListener {
-    var onText: ((String) -> Void)?
+    var onText: ((String, [(word: String, start: Double, end: Double)]) -> Void)?
     var onLevel: ((Double) -> Void)?
     var onError: ((Error) -> Void)?
     var onSession: (() -> Void)?
@@ -174,6 +174,7 @@ import CoreAudio
         if let capture { diagnostics?.record("speech.capture.route", numbers: ["current_device": Double(capture.currentDevice ?? 0)], info: ["engine_running": String(capture.isRunning)]) }
         processing = Task(priority: .utility) { [weak self] in
             var continuity = SpeechContinuity()
+            var timing = SpeechTimingTracker()
             var frames = 0, textUpdates = 0, gaps = 0
             var queueMax = 0.0, processMax = 0.0, processTotal = 0.0, audioTotal = 0.0
             var summaryAt = Diagnostics.now
@@ -194,6 +195,7 @@ import CoreAudio
                         try await worker.resetForDiscontinuity()
                         guard self.session == token else { break }
                         self.onSession?()
+                        timing = SpeechTimingTracker()
                         if !boundaryReset { self.onRecovery?() }
                         self.diagnostics?.record(boundaryReset ? "speech.context.discarded" : "speech.recovered", numbers: ["ms": (Diagnostics.now - resetting) * 1000])
                     }
@@ -206,9 +208,12 @@ import CoreAudio
                     frames += 1; queueMax = max(queueMax, queuedMS); processMax = max(processMax, processMS); processTotal += processMS
                     audioTotal += Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate
                     self.resultAudioSeconds = frame.audioEnd ?? audioTotal
-                    if result.reset { self.diagnostics?.record("speech.context.reset"); self.onSession?() }
+                    if result.reset { self.diagnostics?.record("speech.context.reset"); self.onSession?(); timing = SpeechTimingTracker() }
                     self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate)
-                    if let text = result.text { textUpdates += 1; self.onText?(text) }
+                    if let text = result.text {
+                        textUpdates += 1
+                        self.onText?(text, timing.update(text, at: frame.audioEnd ?? frame.capturedAt, supplied: result.wordTimings))
+                    }
                     if result.utteranceEnded {
                         self.diagnostics?.record("speech.utterance.ended", info: ["source": "model_eou"])
                         self.onUtteranceEnd?()
@@ -223,7 +228,7 @@ import CoreAudio
                 if recording != nil, !Task.isCancelled, let self, self.session == token {
                     let text = try await worker.finish()
                     self.resultWasFlushed = true
-                    if !text.isEmpty { self.onText?(text) }
+                    if !text.isEmpty { self.onText?(text, timing.update(text, at: self.resultAudioSeconds, supplied: nil)) }
                 }
             } catch is CancellationError { }
             catch {

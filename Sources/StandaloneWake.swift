@@ -12,6 +12,7 @@ struct StandaloneWake {
     static let endSilenceSeconds = 0.6
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     private var context: [String] = []
+    private var wordTimings: [(word: String, start: Double, end: Double)]?
     private var sentenceStarts: [Int] = []
     private var audioBoundary = 0
     private var quiet = 1.0
@@ -25,6 +26,7 @@ struct StandaloneWake {
     mutating func reset() { self = StandaloneWake() }
     mutating func resetContext() {
         context = []; sentenceStarts = []; audioBoundary = 0
+        wordTimings = nil
         consumed = 0; revision += 1; quiet = 0
     }
     mutating func audio(level: Double, seconds: Double) {
@@ -34,7 +36,8 @@ struct StandaloneWake {
             heardSpeech = true; quiet = 0
         }
     }
-    mutating func update(_ text: String, at time: Double) {
+    mutating func update(_ text: String, at time: Double,
+                         timings: [(word: String, start: Double, end: Double)]? = nil) {
         var words: [String] = [], starts: [Int] = []
         let source = text.lowercased() as NSString
         for match in Self.tokenizer.matches(in: source as String, range: NSRange(location: 0, length: source.length)) {
@@ -42,6 +45,7 @@ struct StandaloneWake {
             if token.rangeOfCharacter(from: .alphanumerics) != nil { words.append(token) }
             else { starts.append(words.count) }
         }
+        wordTimings = timings
         guard words != context || starts != sentenceStarts else { return }
         if audioBoundary > 0 {
             let common = zip(context, words).prefix { $0 == $1 }.count
@@ -81,7 +85,7 @@ struct StandaloneWake {
     }
 
     private func matches(phrase: String, similar: Bool, allowEndAddressEdit: Bool = false) -> [(start: Int, end: Int)] {
-        PhraseMatcher.matches(in: context, phrase: phrase, similar: similar, ending: allowEndAddressEdit)
+        PhraseMatcher.matches(in: context, phrase: phrase, similar: similar, ending: allowEndAddressEdit, timings: wordTimings)
     }
 
     private func isMention(start: Int, end: Int) -> Bool {

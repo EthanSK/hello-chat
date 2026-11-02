@@ -38,6 +38,7 @@ struct SpeechUpdate {
     var text: String?
     var reset = false
     var utteranceEnded = false
+    var wordTimings: [(word: String, start: Double, end: Double)]? = nil
 }
 
 protocol SpeechBackend: Actor {

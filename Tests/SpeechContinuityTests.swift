@@ -2,6 +2,16 @@ import Foundation
 
 @main struct SpeechContinuityTests {
     static func main() async {
+        var timing = SpeechTimingTracker()
+        _ = timing.update("hello", at: 1, supplied: nil)
+        let later = timing.update("hello chat", at: 30, supplied: nil)
+        precondition(later[0].start == 1 && later[1].start == 30, "Do not renew an earlier word when text grows")
+        let correction = timing.update("hallo chat", at: 31, supplied: nil)
+        precondition(correction[1].start == 30, "Earlier corrections preserve the suffix time")
+        let native = timing.update("hello chat", at: 40, supplied: [("hello", 10, 10.3), ("chat", 10.5, 10.8)])
+        precondition(native[0].start == 10 && native[1].start == 10.5, "Prefer model audio times to delayed callback time")
+        let mismatch = timing.update("hello chat", at: 50, supplied: [("other", 49, 50)])
+        precondition(mismatch.count == 2 && mismatch[0].word == "hello", "Misaligned timing cannot change recognized words")
         var boundary = SpeechContextBoundary()
         precondition(boundary.accepts(capturedAt: 0) && !boundary.takeReset())
         boundary.invalidate(at: 10)

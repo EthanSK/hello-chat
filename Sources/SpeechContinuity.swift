@@ -1,5 +1,30 @@
 import Foundation
 
+// Prefer audio timestamps. If a backend omits them, retain the first observed
+// time of unchanged words across revisions so appending "chat" cannot renew
+// an old "hello". Context resets discard this bounded transcript state.
+struct SpeechTimingTracker {
+    private var previous: [(word: String, start: Double, end: Double)] = []
+    mutating func update(_ text: String, at time: Double,
+                         supplied: [(word: String, start: Double, end: Double)]?) -> [(word: String, start: Double, end: Double)] {
+        let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        if let supplied, supplied.map(\.word) == words {
+            previous = supplied
+            return supplied
+        }
+        let prefix = zip(words, previous).prefix { $0.0 == $0.1.word }.count
+        var result = Array(previous.prefix(prefix))
+        result += words.dropFirst(prefix).map { (word: $0, start: time, end: time) }
+        // Preserve a stable suffix when an earlier word is corrected.
+        var index = words.count - 1, oldIndex = previous.count - 1
+        while index >= prefix, oldIndex >= prefix, words[index] == previous[oldIndex].word {
+            result[index] = previous[oldIndex]; index -= 1; oldIndex -= 1
+        }
+        previous = result
+        return result
+    }
+}
+
 // Ethan's "self recover": retry transient local model failures, but do not
 // spin forever when Core ML is unavailable. Real audio progress replenishes
 // the budget; a dock/wake or explicit user change can start another episode.
