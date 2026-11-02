@@ -6,7 +6,7 @@ import CoreAudio
 @MainActor final class SpeechListener {
     var onText: ((String) -> Void)?
     var onLevel: ((Double) -> Void)?
-    var onError: ((String) -> Void)?
+    var onError: ((Error) -> Void)?
     var onSession: (() -> Void)?
     var onWaiting: (() -> Void)?
     var onAudioActivity: ((Double, Double) -> Void)?
@@ -229,7 +229,7 @@ import CoreAudio
             catch {
                 if let self, self.session == token {
                     self.recordingError = error.localizedDescription
-                    self.diagnostics?.failure("speech.failed", error); self.onError?(error.localizedDescription)
+                    self.diagnostics?.failure("speech.failed", error); self.onError?(error)
                 }
             }
             if let self, self.session == token { self.recordingProducer?.cancel() }

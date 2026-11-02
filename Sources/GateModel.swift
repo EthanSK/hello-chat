@@ -97,6 +97,7 @@ import SwiftUI
     private var phraseUpdateTask: Task<Void, Never>?
     private var inputGeneration = UUID()
     private var captureRestartThrottle = CaptureRestartThrottle()
+    private var speechRecovery = SpeechRecovery()
 
     init() {
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
@@ -114,9 +115,16 @@ import SwiftUI
         }
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds in self?.standaloneWake.audio(level: level, seconds: seconds) }
-        listener.onFrame = { [weak self] in self?.checkStandaloneWake() }
+        listener.onFrame = { [weak self] in
+            self?.speechRecovery.processed(at: Diagnostics.now)
+            self?.checkStandaloneWake()
+        }
         listener.onLevel = { [weak self] in self?.meter.level = $0 }
-        listener.onError = { [weak self] text in self?.failListening(text) }
+        listener.onError = { [weak self] error in
+            guard let self else { return }
+            if SpeechRecovery.isTransient(error) { self.recoverSpeech(error) }
+            else { self.failListening(error.localizedDescription) }
+        }
         listener.onDelay = { [weak self] in
             self?.detectionRunning = false
             self?.detail = "Recovering after an audio delay…"
@@ -143,10 +151,14 @@ import SwiftUI
         inputs.onRouteChange = { [weak self] in self?.restartMicrophone(settle: true) }
         listener.onConfigurationChange = { [weak self] in self?.restartMicrophone(settle: true) }
         dock.onChange = { [weak self] in
-            guard let self, self.automaticListening else { return }
-            self.dockDelay.invalidateStartup()
-            self.applyAutomaticListening()
+            guard let self else { return }
+            if self.automaticListening {
+                self.dockDelay.invalidateStartup()
+                self.applyAutomaticListening()
+            }
+            self.retrySpeechAfterEnvironmentChange()
         }
+        dock.onWake = { [weak self] in self?.retrySpeechAfterEnvironmentChange() }
         listener.model = speechModel
         updateComputeLabel()
         updatePhrases()
@@ -230,6 +242,7 @@ import SwiftUI
         updateComputeLabel()
         transcript = ""; matcher.reset(); error = nil
         if enabled, !checkingSpeech {
+            speechRecovery = SpeechRecovery()
             changingModel = true
             detail = "Preparing local speech recognition."
             restartMicrophone()
@@ -240,37 +253,71 @@ import SwiftUI
         inputTask?.cancel()
         let token = UUID(); inputGeneration = token
         inputTask = Task {
-            defer { if inputGeneration == token { changingModel = false } }
-            do {
-                if settle { try await Task.sleep(nanoseconds: 350_000_000) }
-                try Task.checkCancellation()
-                guard inputGeneration == token, enabled, !quitting else { return }
-                if settle {
-                    let delay = captureRestartThrottle.delay(at: Diagnostics.now)
-                    if delay > 0 {
-                        detectionRunning = false
-                        detail = "Recovering after an audio delay…"
-                        Diagnostics.shared.record("speech.capture.route_backoff", numbers: ["seconds": delay])
-                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                        try Task.checkCancellation()
-                        guard inputGeneration == token, enabled, !quitting else { return }
+            defer { if inputGeneration == token { changingModel = false; inputTask = nil } }
+            var settling = settle
+            while !Task.isCancelled {
+                do {
+                    if settling { try await Task.sleep(nanoseconds: 350_000_000) }
+                    try Task.checkCancellation()
+                    guard inputGeneration == token, enabled, !quitting else { return }
+                    if settling {
+                        let delay = captureRestartThrottle.delay(at: Diagnostics.now)
+                        if delay > 0 {
+                            detectionRunning = false
+                            detail = "Recovering after an audio delay…"
+                            Diagnostics.shared.record("speech.capture.route_backoff", numbers: ["seconds": delay])
+                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            try Task.checkCancellation()
+                            guard inputGeneration == token, enabled, !quitting else { return }
+                        }
+                        captureRestartThrottle.started(at: Diagnostics.now)
                     }
-                    captureRestartThrottle.started(at: Diagnostics.now)
+                    listener.stop(); detectionRunning = false; error = nil
+                    try await listener.start()
+                    guard inputGeneration == token, enabled else { return }
+                    transcript = ""; matcher.reset()
+                    detectionRunning = true
+                    status = "Listening"
+                    detail = voice.connected ? (microphone == nil ? "Voice is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end Voice.") : "Say \(wakePhrase) to turn Voice on."
+                    Diagnostics.shared.record("speech.restart.ready")
+                    return
+                } catch {
+                    guard inputGeneration == token, enabled, !(error is CancellationError) else { return }
+                    Diagnostics.shared.failure("speech.restart.failed", error)
+                    self.error = error.localizedDescription; detectionRunning = false
+                    status = "Needs attention"
+                    guard SpeechRecovery.isTransient(error), speechRecovery.retry() else {
+                        listener.stop()
+                        Diagnostics.shared.record("speech.recovery.exhausted", numbers: ["attempts": Double(speechRecovery.attempts)])
+                        return
+                    }
+                    Diagnostics.shared.record("speech.recovery.retry", numbers: ["attempt": Double(speechRecovery.attempts)])
+                    settling = true // Reuse the existing route-restart throttle.
                 }
-                listener.stop(); detectionRunning = false; error = nil
-                try await listener.start()
-                guard inputGeneration == token, enabled else { return }
-                transcript = ""; matcher.reset()
-                detectionRunning = true
-                status = "Listening"
-                detail = voice.connected ? (microphone == nil ? "Voice is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end Voice.") : "Say \(wakePhrase) to turn Voice on."
-            } catch {
-                guard inputGeneration == token, enabled, !(error is CancellationError) else { return }
-                Diagnostics.shared.failure("speech.restart.failed", error)
-                self.error = error.localizedDescription; detectionRunning = false
-                status = "Needs attention"
             }
         }
+    }
+    private func recoverSpeech(_ error: Error) {
+        guard enabled, !quitting, !checkingSpeech, playbackAllowed else { return }
+        self.error = error.localizedDescription
+        detectionRunning = false
+        listener.stop()
+        guard speechRecovery.retry() else {
+            status = "Needs attention"
+            detail = "Wake detection stopped."
+            Diagnostics.shared.record("speech.recovery.exhausted", numbers: ["attempts": Double(speechRecovery.attempts)])
+            return
+        }
+        Diagnostics.shared.record("speech.recovery.retry", numbers: ["attempt": Double(speechRecovery.attempts)])
+        // Local model recovery must not cancel or hang up native Codex Voice.
+        restartMicrophone(settle: true)
+    }
+    private func retrySpeechAfterEnvironmentChange() {
+        guard enabled, !detectionRunning, inputTask == nil, !busy,
+              playbackAllowed, !quitting, !checkingSpeech else { return }
+        speechRecovery = SpeechRecovery()
+        Diagnostics.shared.record("speech.recovery.environment_changed")
+        restartMicrophone(settle: true)
     }
     private func updatePhrases() {
         listener.contextualPhrases = [wakePhrase, sleepPhrase]
@@ -356,7 +403,10 @@ import SwiftUI
             showListening()
         } catch { if generation == token {
             Diagnostics.shared.failure("speech.start.failed", error)
-            failListening(error.localizedDescription)
+            if SpeechRecovery.isTransient(error), !(error is CancellationError), !quitting {
+                enabled = true
+                recoverSpeech(error)
+            } else { failListening(error.localizedDescription) }
         } }
     }
     private func showListening() {
@@ -372,6 +422,7 @@ import SwiftUI
         cancelAutomaticStart(reason: "stopping")
         inputGeneration = UUID(); inputTask?.cancel(); inputTask = nil
         captureRestartThrottle = CaptureRestartThrottle()
+        speechRecovery = SpeechRecovery()
         phraseUpdateTask?.cancel(); phraseUpdateTask = nil
         generation = UUID(); listeningTask?.cancel(); listeningTask = nil
         voiceTask?.cancel(); timeoutTask?.cancel(); timeoutTask = nil

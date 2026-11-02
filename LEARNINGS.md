@@ -1,5 +1,7 @@
 # HelloChat engineering notes
 
+- Core ML can time out during recognition or during the subsequent model reload. Keep the NSError domain through the listener, retry both paths with one bounded recovery budget, and replenish it only after processed audio. Preserve native Voice and the listening preference during local recovery. After exhaustion, power/display changes or system wake can retry; automatic undock/redock still owns its two-minute delay. Await the old worker's cleanup before loading another; task cancellation cannot forcibly interrupt a Core ML call already in progress.
+
 - Agent Flow's recording guard used to block both wake and end phrases. Keep wakes and phrase mentions suppressed during dictation, but allow standalone end phrases (including repetitions) through the same local recognizer. Match the whole utterance with the existing dictionary so discussing an end phrase does not itself stop Voice.
 - Prefer the configured Codex `realtimeVoice.endCall` for explicit ends; retain the active-call-validated toggle only when End is unassigned. Agent Flow's shared F20 command only coordinates microphone mute, not call ending. Sending a complete process-targeted key event is different from physically pressing the component modifiers in sequence.
 

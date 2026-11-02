@@ -58,6 +58,7 @@ struct DockListeningDelay {
     @Published private(set) var externalDisplays = 0
     @Published private(set) var powerText = "Checking power…"
     var onChange: (() -> Void)?
+    var onWake: (() -> Void)?
     private var powerSource: CFRunLoopSource?
     private var displayObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
@@ -76,7 +77,7 @@ struct DockListeningDelay {
             Task { @MainActor in self?.refresh() }
         }
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in self?.refresh(); self?.onWake?() }
         }
     }
     deinit {
@@ -85,7 +86,7 @@ struct DockListeningDelay {
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
     }
     func refresh() {
-        let old = eligible
+        let oldPower = onPower, oldDisplays = externalDisplays
         if let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue() {
             onPower = (IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() as String?) == kIOPSACPowerValue
             let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] ?? []
@@ -101,6 +102,6 @@ struct DockListeningDelay {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return false }
             return CGDisplayIsBuiltin(CGDirectDisplayID(number.uint32Value)) == 0
         }.count
-        if old != eligible { onChange?() }
+        if oldPower != onPower || oldDisplays != externalDisplays { onChange?() }
     }
 }

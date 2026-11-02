@@ -1,5 +1,34 @@
 import Foundation
 
+// Ethan's "self recover": retry transient local model failures, but do not
+// spin forever when Core ML is unavailable. Real audio progress replenishes
+// the budget; a dock/wake or explicit user change can start another episode.
+struct SpeechRecovery {
+    private(set) var attempts = 0
+    private var healthySince: Double?
+    mutating func retry() -> Bool {
+        healthySince = nil
+        guard attempts < 3 else { return false }
+        attempts += 1
+        return true
+    }
+    mutating func processed(at now: Double) {
+        if healthySince == nil { healthySince = now }
+        if now - healthySince! >= 15 { attempts = 0 }
+    }
+    static func isTransient(_ error: Error) -> Bool {
+        var error = error as NSError
+        // Core ML can wrap the device-service timeout in an underlying error.
+        for _ in 0..<8 {
+            if error.domain == "com.apple.CoreML" { return true }
+            guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError,
+                  underlying !== error else { return false }
+            error = underlying
+        }
+        return false
+    }
+}
+
 // Changing recording ownership invalidates both queued audio and an inference
 // already in flight. Reset once at the first new frame, without reloading models.
 struct SpeechContextBoundary {

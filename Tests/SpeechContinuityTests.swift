@@ -55,6 +55,24 @@ import Foundation
         throttle.started(at: 10)
         precondition(throttle.delay(at: 10.1) > 0)
         precondition(throttle.delay(at: 20) == 0)
+        let timeout = NSError(domain: "com.apple.CoreML", code: 0)
+        precondition(SpeechRecovery.isTransient(timeout))
+        precondition(SpeechRecovery.isTransient(NSError(domain: "wrapper", code: 1,
+            userInfo: [NSUnderlyingErrorKey: timeout])))
+        precondition(!SpeechRecovery.isTransient(NSError(domain: "configuration", code: 1)))
+        var recovery = SpeechRecovery()
+        for _ in 0..<3 { precondition(recovery.retry()) }
+        precondition(!recovery.retry(), "Persistent failure must not cause unlimited model reloads")
+        // A successful prepare alone is insufficient: a model can fail on its
+        // first prediction. Only sustained processed audio restores retries.
+        recovery.processed(at: 100)
+        recovery.processed(at: 114.9)
+        precondition(recovery.attempts == 3)
+        recovery.processed(at: 115)
+        precondition(recovery.attempts == 0 && recovery.retry())
+        precondition(!SpeechRecovery.isTransient(CancellationError()))
+        recovery = SpeechRecovery() // Eligible dock/wake/manual restart.
+        precondition(recovery.retry())
         print("Passed audio backlog recovery checks: bounded newest buffers, dropped-frame detection, one reset and continued processing. No capture, playback or Voice calls used.")
     }
 }
