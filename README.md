@@ -191,7 +191,7 @@ This repository previously held [HeyBoy](https://github.com/EthanSK/hello-chat/t
 
 ## Licence
 
-HelloChat's first-party source is under [the no-sale terms](LICENSE). FluidAudio is under the Apache License 2.0, and the Parakeet and Nemotron models are under the NVIDIA Open Model License; see [`Resources/THIRD-PARTY-NOTICES.txt`](Resources/THIRD-PARTY-NOTICES.txt). HelloChat isn't affiliated with OpenAI. Codex and ChatGPT are OpenAI's.
+HelloChat's first-party source is under [Apache 2.0 + Commons Clause v1.0](LICENSE). FluidAudio is under the Apache License 2.0, and the Parakeet and Nemotron models are under the NVIDIA Open Model License; see [`Resources/THIRD-PARTY-NOTICES.txt`](Resources/THIRD-PARTY-NOTICES.txt). HelloChat isn't affiliated with OpenAI. Codex and ChatGPT are OpenAI's.
 
 ## Maintaining the Website
 
@@ -200,4 +200,4 @@ The static GitHub Pages site lives in `docs/`. After changing its CSS, JavaScrip
 
 ## License
 
-Source-available under [Ethan Source-Available No-Sale Terms 1.0](LICENSE). You can use and modify the covered code, including internally at work, and share it without charge. Selling the software, modified versions, paid access, or bundles requires a separate commercial license. Earlier licenses and third-party rights remain in force. See [scope and release policy](LICENSING.md).
+Source-available under [Apache License 2.0 with Commons Clause v1.0](LICENSE). You may use and modify the covered software, including internally at work, and redistribute it under these terms. Commons Clause restricts selling products or services whose value derives entirely or substantially from the software's functionality; it does not prohibit every commercial use. Earlier licenses and third-party rights remain in force. See [scope and release policy](LICENSING.md).
