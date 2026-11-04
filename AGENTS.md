@@ -2,6 +2,8 @@
 
 Native macOS wake-phrase helper for Codex Voice. Previously Hey Chat; replaced the unrelated HeyBoy project, whose history remains under archive/heyboy-before-hellochat.
 
+- Refer to it as “H Chat” so it doesn’t trigger, in discussions and speech. Keep the product UI, bundle and repository names unchanged. User-requested — 2026-11-04.
+
 - Read LEARNINGS.md before fragile changes. Keep public docs free of personal logs, device IDs, credentials, and local task paths.
 - Build with zsh scripts/build.sh; run zsh scripts/test.sh. Use HELLOCHAT_BUILD_DIR for task-owned .noindex scratch.
 - Recognition and model assets are local. Never silently add network transcription, voice identification, or background microphone behavior.
