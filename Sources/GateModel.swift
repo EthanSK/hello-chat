@@ -110,6 +110,13 @@ import SwiftUI
             Diagnostics.shared.record("phrases.agent_flow", info: ["paused": String(value)])
         }
         do { try ShortcutLease().restore() } catch { self.error = "Could not restore Voice shortcut: \(error.localizedDescription)" }
+        do {
+            let added = try VoiceShortcutConfiguration().ensureDefaults()
+            if !added.isEmpty { Diagnostics.shared.record("voice.shortcuts.configured", info: ["commands": added.joined(separator: ",")]) }
+        } catch {
+            self.error = error.localizedDescription
+            Diagnostics.shared.failure("voice.shortcuts.failed", error)
+        }
         listener.onSession = { [weak self] in
             self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.detectionRunning = true
         }

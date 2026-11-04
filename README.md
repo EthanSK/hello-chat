@@ -33,7 +33,7 @@ Speech recognition runs on your Mac with a bundled Parakeet model through Core M
 
 1. Open Codex, sign in and start Voice yourself once to check it works.
 2. [Build HelloChat](#build-from-source) and copy it to `/Applications`.
-3. Open HelloChat and allow **Microphone** for local listening and **Accessibility** for Codex's Voice shortcut and End Voice control. If macOS doesn't ask for Accessibility, add HelloChat in System Settings → Privacy & Security → Accessibility.
+3. Open HelloChat. It adds dedicated Start and End Voice shortcuts if they are unset in Codex’s keyboard settings, preserving existing choices. If a default shortcut is already used, resolve the conflict in Codex settings. Allow **Microphone** for local listening and **Accessibility** for Codex's Voice shortcut and End Voice control. If macOS doesn't ask for Accessibility, add HelloChat in System Settings → Privacy & Security → Accessibility.
 4. In **Settings → Microphone**, choose your microphone. **System default** follows macOS's default input. Codex Voice keeps its own input setting.
 5. Turn on **Listen for wake phrase**. HelloChat prepares the local model, then shows **Listening**.
 6. Say **Hello Chat**. When you're done, say **Bye Chat**.

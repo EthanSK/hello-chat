@@ -53,27 +53,17 @@ struct VoiceBridge {
     static func isEndVoiceLabel(_ label: String) -> Bool {
         ["end voice", "end voice chat", "stop voice chat"].contains(label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
     }
-    // Prefer Codex's dedicated End action when configured. The legacy toggle
-    // remains a compatibility fallback and always requires a fresh active call.
-    static func endDeliveryCommand(bindings: [[String: Any]]) -> String {
-        bindings.contains { binding in
-            binding["command"] as? String == endCommand &&
-            (binding["key"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        } ? endCommand : startCommand
-    }
     private static func postEnd(pid: pid_t, record: ((String, [String: Double], [String: String]) -> Void)?, control: String) throws {
-        let bindings = try JSONSerialization.jsonObject(with: Data(contentsOf: bindingsURL)) as? [[String: Any]] ?? []
-        let command = endDeliveryCommand(bindings: bindings)
-        try post(command: command, pid: pid)
-        record?(command == endCommand ? "voice.end.shortcut_sent" : "voice.end.toggle_sent", [:],
-                ["control": control, "command": command])
+        // The required dedicated End binding is configured by post. Never use
+        // the start/stop toggle as a substitute for an unassigned End command.
+        try post(command: endCommand, pid: pid)
+        record?("voice.end.shortcut_sent", [:], ["control": control, "command": endCommand])
     }
     // Send the user's explicit stop only after finding a current native Voice
     // control in the live window tree. Detached Electron AX objects can still
     // report enabled/visible/End after a call closes, so never cache them.
-    // Codex's configured "Toggle voice chat" shortcut starts OR stops Voice.
     // AXPress can acknowledge without invoking Electron's button handler.
-    // Send the proven shortcut only after revalidating an active Voice control.
+    // Send the dedicated End shortcut only after revalidating an active control.
     static func requestActiveEnd(record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws -> pid_t? {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
         let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
@@ -254,20 +244,23 @@ struct VoiceBridge {
     static func post(command: String, pid: pid_t, deliveryKey: String? = nil) throws {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
         guard codexProcess(pid) else { throw BridgeError.message("ChatGPT changed or closed. Check Voice again.") }
-        let bindings = FileManager.default.fileExists(atPath: bindingsURL.path)
-            ? (try JSONSerialization.jsonObject(with: Data(contentsOf: bindingsURL)) as? [[String: Any]] ?? []) : []
-        guard let key = deliveryKey ?? bindings.first(where: { $0["command"] as? String == command })?["key"] as? String
-                ?? (command == startCommand ? "Control+Shift+V" : nil) else {
+        try VoiceShortcutConfiguration().ensureDefaults()
+        // Re-read on every send: settings may have changed since app startup.
+        let bindings = try VoiceShortcutConfiguration().read()
+        guard let key = deliveryKey ?? bindings.first(where: {
+            $0["command"] as? String == command && ($0["key"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        })?["key"] as? String,
+              !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.")
         }
-        let keys: [String: CGKeyCode] = ["F16": CGKeyCode(kVK_F16), "F17": CGKeyCode(kVK_F17), "F19": CGKeyCode(kVK_F19), "F20": CGKeyCode(kVK_F20), "V": CGKeyCode(kVK_ANSI_V)]
         let parts = key.components(separatedBy: "+")
-        guard let last = parts.last, let virtualKey = keys[last] else { throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.") }
+        guard let last = parts.last else { throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.") }
         var flags: CGEventFlags = []
         if parts.contains(where: { ["Command", "Cmd", "CmdOrCtrl", "CommandOrControl"].contains($0) }) { flags.insert(.maskCommand) }
         if parts.contains(where: { ["Control", "Ctrl"].contains($0) }) { flags.insert(.maskControl) }
         if parts.contains(where: { ["Option", "Alt"].contains($0) }) { flags.insert(.maskAlternate) }
         if parts.contains("Shift") { flags.insert(.maskShift) }
+        let virtualKey = try VoiceShortcutKeyCode.resolve(last, command: flags.contains(.maskCommand))
         guard let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
@@ -309,6 +302,124 @@ struct VoiceBridge {
 enum BridgeError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+}
+
+// Resolve letter shortcuts from the active layout at delivery. Ethan's
+// Dvorak - QWERTY Command layout puts plain V on key 47, but Command+V on key 9.
+// Function keys are layout-independent. Shift/Option/Control are shortcut
+// modifiers, not changes to the base letter being looked up.
+enum VoiceShortcutKeyCode {
+    static func resolve(_ name: String, command: Bool,
+                        characters: [CGKeyCode: String]? = nil) throws -> CGKeyCode {
+        let functions: [String: CGKeyCode] = ["F16": CGKeyCode(kVK_F16), "F17": CGKeyCode(kVK_F17),
+                                             "F19": CGKeyCode(kVK_F19), "F20": CGKeyCode(kVK_F20)]
+        if let code = functions[name] { return code }
+        guard name == "V" else {
+            throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.")
+        }
+        let mapping = try characters ?? layoutCharacters(command: command)
+        guard let code = mapping.keys.sorted().first(where: { mapping[$0]?.lowercased() == "v" }) else {
+            throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.")
+        }
+        return code
+    }
+
+    private static func layoutCharacters(command: Bool) throws -> [CGKeyCode: String] {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.")
+        }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+        guard let bytes = CFDataGetBytePtr(data) else { throw CocoaError(.fileReadCorruptFile) }
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        var mapping: [CGKeyCode: String] = [:]
+        for code in CGKeyCode(0)..<128 {
+            var dead: UInt32 = 0
+            var length = 0
+            var chars = [UniChar](repeating: 0, count: 8)
+            let result = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDown),
+                                        command ? UInt32(cmdKey >> 8) : 0, UInt32(LMGetKbdType()),
+                                        UInt32(kUCKeyTranslateNoDeadKeysMask), &dead, chars.count, &length, &chars)
+            if result == noErr && length > 0 { mapping[code] = String(utf16CodeUnits: chars, count: length) }
+        }
+        return mapping
+    }
+}
+
+// Ethan's "assign it if missing" setup is permanent, unlike ShortcutLease's
+// temporary mute reservation. Keep custom shortcuts and extra fields, filling
+// only unset keys. Reuse its compare-before-atomic-write pattern to preserve edits.
+struct VoiceShortcutConfiguration {
+    static let defaults: [(command: String, key: String)] = [
+        (VoiceBridge.startCommand, "Command+Control+Option+Shift+F17"),
+        (VoiceBridge.endCommand, "Ctrl+Alt+Shift+V")
+    ]
+    var bindingsURL: URL = VoiceBridge.bindingsURL
+
+    func read() throws -> [[String: Any]] {
+        guard FileManager.default.fileExists(atPath: bindingsURL.path) else { return [] }
+        return try parse(Data(contentsOf: bindingsURL))
+    }
+
+    private func parse(_ data: Data) throws -> [[String: Any]] {
+        guard let bindings = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        for entry in bindings {
+            guard let command = entry["command"] as? String, !command.isEmpty else { throw CocoaError(.fileReadCorruptFile) }
+            if let key = entry["key"], !(key is String), !(key is NSNull) { throw CocoaError(.fileReadCorruptFile) }
+        }
+        return bindings
+    }
+
+    // Modifier aliases and ordering must not hide another command's binding.
+    static func normalizedKey(_ key: String) -> String {
+        let parts = key.split(separator: "+").map { value -> String in
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "cmd", "command", "cmdorctrl", "commandorcontrol": return "command"
+            case "ctrl", "control": return "control"
+            case "alt", "option": return "option"
+            default: return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+        }
+        return Set(parts).sorted().joined(separator: "+")
+    }
+
+    @discardableResult func ensureDefaults() throws -> [String] {
+        let fm = FileManager.default
+        let original = fm.fileExists(atPath: bindingsURL.path) ? try Data(contentsOf: bindingsURL) : nil
+        var bindings = try original.map(parse) ?? []
+        var added: [String] = []
+        for setting in Self.defaults {
+            let indices = bindings.indices.filter { bindings[$0]["command"] as? String == setting.command }
+            // Ethan explicitly wants absent/blank/null keys filled; a nonempty
+            // custom binding stays untouched, including additional bindings.
+            guard !indices.contains(where: { index in
+                guard let key = bindings[index]["key"] as? String else { return false }
+                return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }) else { continue }
+            guard !bindings.contains(where: { entry in
+                guard let key = entry["key"] as? String else { return false }
+                return Self.normalizedKey(key) == Self.normalizedKey(setting.key)
+            }) else {
+                throw BridgeError.message("HelloChat shortcut is already used. Change that shortcut in ChatGPT first.")
+            }
+            if let index = indices.first {
+                guard indices.count == 1 else { throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.") }
+                bindings[index]["key"] = setting.key
+            } else {
+                bindings.append(["command": setting.command, "key": setting.key])
+            }
+            added.append(setting.command)
+        }
+        guard !added.isEmpty else { return [] }
+        try fm.createDirectory(at: bindingsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let current = fm.fileExists(atPath: bindingsURL.path) ? try Data(contentsOf: bindingsURL) : nil
+        guard current == original else { throw BridgeError.message("ChatGPT shortcuts changed. Try again.") }
+        try JSONSerialization.data(withJSONObject: bindings, options: [.prettyPrinted, .sortedKeys])
+            .write(to: bindingsURL, options: .atomic)
+        return added
+    }
 }
 
 // While armed, use F16 so Agent Flow's F20 preflight refuses to act. Restore only our own changes;

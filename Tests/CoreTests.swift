@@ -2,9 +2,9 @@ import Foundation
 
 @main enum CoreTests {
     static var checks = 0
-    static func check(_ condition: @autoclosure () -> Bool, _ message: String) {
+    static func check(_ condition: @autoclosure () throws -> Bool, _ message: String) rethrows {
         checks += 1
-        guard condition() else { fatalError(message) }
+        guard try condition() else { fatalError(message) }
     }
     static func main() throws {
         for (text, command) in [("hello chat", PhraseCommand.wake), ("by charts", .sleep)] {
@@ -32,11 +32,6 @@ import Foundation
         }
         check(!PhraseMatcher.isStandaloneEnd("ByteChat", phrase: "Bye Chat", similar: false), "Exact mode remains exact while dictating")
         check(PhraseMatcher.isStandaloneEnd("stop listening stop listening", phrase: "Stop Listening", similar: false), "Custom repeated stop remains supported")
-        check(VoiceBridge.endDeliveryCommand(bindings: [["command": VoiceBridge.endCommand, "key": "Ctrl+Alt+Shift+V"]]) == VoiceBridge.endCommand, "Prefer the user's dedicated End shortcut")
-        let unassignedEndBindings: [[[String: Any]]] = [[], [["command": VoiceBridge.endCommand, "key": NSNull()]], [["command": VoiceBridge.endCommand, "key": " "]]]
-        for bindings in unassignedEndBindings {
-            check(VoiceBridge.endDeliveryCommand(bindings: bindings) == VoiceBridge.startCommand, "Unassigned End keeps the guarded legacy toggle")
-        }
         for phrase in ["Bye Chat", "ByeChat", "bye chad", "by chat", "bychat", "Byte Chat", "ByteChat", "B-Y Chat", "B Y Chat", "B.Y. Chat", "buy chat", "by charts", "Bye Charts", "Buy Charts", "ByteCharts", "by chats", "bye chart"] {
             var endMatcher = PhraseMatcher()
             check(endMatcher.consume(phrase, wake: "Hey Chat", sleep: "Bye Chat", similar: true) == .sleep, "Configured Bye Chat end phrase: \(phrase)")
@@ -215,6 +210,65 @@ import Foundation
         do { try lease.acquire(); fatalError("Must reject shortcut collision") } catch is BridgeError { checks += 1 }
         let afterCollision = try Data(contentsOf: bindings)
         check(afterCollision == before, "Collision leaves user file unchanged")
+        try check(VoiceShortcutKeyCode.resolve("V", command: false, characters: [9: "k", 47: "v"]) == 47,
+                  "Dvorak Ctrl/Option/Shift+V uses the physical V location, not QWERTY V")
+        try check(VoiceShortcutKeyCode.resolve("V", command: true, characters: [9: "v", 47: "."]) == 9,
+                  "Dvorak QWERTY Command uses QWERTY V with Command held")
+        try check(VoiceShortcutKeyCode.resolve("F17", command: true, characters: [:]) == 64,
+                  "Function-key defaults do not depend on the letter layout")
+        do {
+            _ = try VoiceShortcutKeyCode.resolve("V", command: false, characters: [9: "k"])
+            fatalError("Never silently fall back to the wrong physical letter")
+        } catch is BridgeError { checks += 1 }
+        let setupURL = root.appendingPathComponent("fresh/settings/keybindings.json")
+        let setup = VoiceShortcutConfiguration(bindingsURL: setupURL)
+        let added = try setup.ensureDefaults()
+        check(added == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fresh setup adds the required Start and End bindings")
+        var configured = try setup.read()
+        check(configured.count == 2, "Setup does not add or change the separate global Voice command")
+        check(configured[0]["key"] as? String == "Command+Control+Option+Shift+F17", "Start uses Ethan's main Mac default")
+        check(configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "End uses Ethan's main Mac default")
+        let installed = try Data(contentsOf: setupURL)
+        try check(try setup.ensureDefaults().isEmpty, "Repeated setup is a no-op")
+        try check(try Data(contentsOf: setupURL) == installed, "Repeated setup preserves exact bytes")
+        func writeSetup(_ value: [[String: Any]]) throws {
+            try JSONSerialization.data(withJSONObject: value).write(to: setupURL)
+        }
+        try writeSetup([["command": VoiceBridge.startCommand, "key": "Control+Shift+V", "custom": "kept"],
+                        ["command": "realtimeVoice", "key": "F19"]])
+        try check(try setup.ensureDefaults() == [VoiceBridge.endCommand], "Only the missing End binding is added")
+        configured = try setup.read()
+        check(configured[0]["key"] as? String == "Control+Shift+V" && configured[0]["custom"] as? String == "kept", "Preserve an existing Start choice and unknown fields")
+        check(configured[1]["command"] as? String == "realtimeVoice" && configured[1]["key"] as? String == "F19", "Preserve the separate global binding")
+        try writeSetup([["command": VoiceBridge.startCommand, "key": NSNull()],
+                        ["command": VoiceBridge.endCommand, "key": ""]])
+        try check(try setup.ensureDefaults() == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fill both null and blank required shortcuts")
+        configured = try setup.read()
+        check(configured.count == 2 && configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "Filling an unset key does not append a duplicate command")
+        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V"] {
+            try writeSetup([["command": "other.command", "key": conflictingKey]])
+            let beforeSetup = try Data(contentsOf: setupURL)
+            do { try setup.ensureDefaults(); fatalError("Must reject a default collision") } catch is BridgeError { checks += 1 }
+            try check(try Data(contentsOf: setupURL) == beforeSetup, "A collision causes no partial Start or End write")
+        }
+        for malformed in ["{}", "[1]", "not json", "[{\"command\":\"composer.startVoiceMode\",\"key\":123}]", "[{\"key\":\"V\"}]"] {
+            try Data(malformed.utf8).write(to: setupURL)
+            do { try setup.ensureDefaults(); fatalError("Must reject malformed settings") } catch { checks += 1 }
+            try check(try String(contentsOf: setupURL, encoding: .utf8) == malformed, "Malformed settings stay untouched")
+        }
+        try writeSetup([["command": VoiceBridge.startCommand, "key": "F19"],
+                        ["command": VoiceBridge.endCommand, "key": "F20"]])
+        try check(try setup.read().first?["key"] as? String == "F19", "Reads use a newly edited setting")
+        try writeSetup([["command": VoiceBridge.startCommand, "key": "F17"],
+                        ["command": VoiceBridge.endCommand, "key": "F20"]])
+        try check(try setup.read().first?["key"] as? String == "F17", "Later reads do not cache a previous shortcut")
+        let blockedParent = root.appendingPathComponent("not-a-directory")
+        try Data("keep".utf8).write(to: blockedParent)
+        do {
+            try VoiceShortcutConfiguration(bindingsURL: blockedParent.appendingPathComponent("keybindings.json")).ensureDefaults()
+            fatalError("Must surface an unwritable settings location")
+        } catch { checks += 1 }
+        try check(try String(contentsOf: blockedParent, encoding: .utf8) == "keep", "Write failure preserves existing content")
         print("Passed \(checks) checks: phrase boundaries, duplicate recognition, safe mute decisions, shortcut ownership and recovery.")
     }
 }
