@@ -217,7 +217,7 @@ import Foundation
         check(added == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fresh setup adds the required Start and End bindings")
         var configured = try setup.read()
         check(configured.count == 2, "Setup adds only global Voice and dedicated End, never Toggle")
-        check(configured[0]["key"] as? String == "Command+Control+Option+Shift+F17", "Global Start uses the agreed F17 default")
+        check(configured[0]["key"] as? String == "Command+Control+Shift+V", "Global Start uses the approved chord without Option")
         check(configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "End uses Ethan's main Mac default")
         let installed = try Data(contentsOf: setupURL)
         try check(try setup.ensureDefaults().isEmpty, "Repeated setup is a no-op")
@@ -250,7 +250,7 @@ import Foundation
         let userSettings = try Data(contentsOf: setupURL)
         try check(try setup.ensureDefaults().isEmpty, "Upgrade keeps the user's actual Voice chat hotkey")
         try check(try Data(contentsOf: setupURL) == userSettings, "Upgrade does not re-add the reset Toggle binding or rewrite custom choices")
-        try writeSetup([["command": "composer.startVoiceMode", "key": "Command+Control+Option+Shift+F17"]])
+        try writeSetup([["command": "composer.startVoiceMode", "key": "Command+Control+Shift+V"]])
         let occupiedToggle = try Data(contentsOf: setupURL)
         do { _ = try setup.ensureDefaults(); fatalError("A custom Toggle collision must be explained, not overwritten") }
         catch is BridgeError { checks += 1 }
@@ -260,7 +260,7 @@ import Foundation
         try check(try setup.ensureDefaults() == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fill both null and blank required shortcuts")
         configured = try setup.read()
         check(configured.count == 2 && configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "Filling an unset key does not append a duplicate command")
-        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V", "Shift+Alt+Control+Command+F17"] {
+        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V", "Shift+Control+Command+V"] {
             try writeSetup([["command": "other.command", "key": conflictingKey]])
             let beforeSetup = try Data(contentsOf: setupURL)
             do { try setup.ensureDefaults(); fatalError("Must reject a default collision") } catch is BridgeError { checks += 1 }

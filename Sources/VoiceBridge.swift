@@ -341,15 +341,25 @@ struct VoiceBridge {
               let up = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
             throw BridgeError.message("Could not send Voice shortcut.")
         }
+        let originalFlags = CGEventSource.flagsState(.hidSystemState)
         down.flags = flags; up.flags = flags
         // Match Agent Flow's established process-targeted transport, including fresh
         // event timestamps rather than delivering an indistinguishable key pair.
         // Voice chat hotkey is registered globally, so it needs the system event
         // path. Dedicated End and microphone actions remain process-targeted.
-        down.timestamp = eventTimestamp()
-        if command == startCommand { down.post(tap: .cghidEventTap) } else { down.postToPid(pid) }
-        up.timestamp = eventTimestamp()
-        if command == startCommand { up.post(tap: .cghidEventTap) } else { up.postToPid(pid) }
+        if command == startCommand {
+            // The isolated receiver reproduced lingering synthetic modifiers
+            // when key-up repeated the chord. Restore the pre-send state, so a
+            // real modifier the user already held is not released by H Chat.
+            up.flags = originalFlags
+            down.timestamp = eventTimestamp(); down.post(tap: .cghidEventTap)
+            up.timestamp = eventTimestamp(); up.post(tap: .cghidEventTap)
+        } else {
+            // Keep the established PID sender unchanged for End and microphone
+            // actions while diagnosing their live acceptance independently.
+            down.timestamp = mach_absolute_time(); down.postToPid(pid)
+            up.timestamp = mach_absolute_time(); up.postToPid(pid)
+        }
     }
 
     static func eventTimestamp() -> CGEventTimestamp {
@@ -424,7 +434,7 @@ enum BridgeError: LocalizedError {
 // only unset keys. Reuse its compare-before-atomic-write pattern to preserve edits.
 struct VoiceShortcutConfiguration {
     static let defaults: [(command: String, key: String)] = [
-        (VoiceBridge.startCommand, "Command+Control+Option+Shift+F17"),
+        (VoiceBridge.startCommand, "Command+Control+Shift+V"),
         (VoiceBridge.endCommand, "Ctrl+Alt+Shift+V")
     ]
     var bindingsURL: URL = VoiceBridge.bindingsURL
