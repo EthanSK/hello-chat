@@ -9,7 +9,7 @@ HelloChat is a native macOS app that listens for both phrases with a local speec
 **Website:** https://ethansk.github.io/hello-chat/
 
 > [!NOTE]
-> No app download has been published yet. The [release setup](RELEASE.md) needs an online signing runner and its Keychain credentials before the first signed, notarised download. Until then, [build from source](#build-from-source).
+> [Download HelloChat for Apple Silicon](https://github.com/EthanSK/hello-chat/releases/latest). Release builds are signed and notarised, with automatic updates and **Check for Updates…** in the app menu and Settings. You can also [build from source](#build-from-source).
 
 ## How It Works
 
@@ -32,7 +32,7 @@ Speech recognition runs on your Mac with a bundled Parakeet model through Core M
 ## Recommended Setup
 
 1. Open Codex, sign in and start Voice yourself once to check it works.
-2. [Build HelloChat](#build-from-source) and copy it to `/Applications`.
+2. [Download HelloChat](https://github.com/EthanSK/hello-chat/releases/latest), unzip it and move the app to `/Applications`.
 3. Open HelloChat. It fills unset **Voice chat hotkey** (Command-Control-Shift-V) and **End voice chat** (Control-Option-Shift-V), preserving existing choices and leaving **Toggle voice chat** alone. If Codex is already running, restart it once to apply new shortcuts. If a default shortcut is already used, resolve the conflict in Codex settings. Allow **Microphone** for local listening and **Accessibility** for Codex's Voice shortcut and End Voice control. If macOS doesn't ask for Accessibility, add HelloChat in System Settings → Privacy & Security → Accessibility.
 4. In **Settings → Microphone**, choose your microphone. **System default** follows macOS's default input. Codex Voice keeps its own input setting.
 5. Turn on **Listen for wake phrase**. HelloChat prepares the local model, then shows **Listening**.
@@ -49,7 +49,7 @@ ditto .build.noindex/HelloChat.app /Applications/HelloChat.app
 open /Applications/HelloChat.app
 ```
 
-To update, quit HelloChat and move the old copy out of `/Applications` before copying the new build. `ditto` merges into an existing bundle rather than replacing it.
+Release builds update through **Check for Updates…** or automatic updates. When replacing a source build manually, quit HelloChat and move the old copy out of `/Applications` before copying the new build. `ditto` merges into an existing bundle rather than replacing it.
 
 `scripts/build.sh`:
 

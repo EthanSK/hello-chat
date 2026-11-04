@@ -6,6 +6,10 @@ Every push to `main` starts the Release workflow on a dedicated Apple Silicon si
 
 Use the GitHub repository’s Actions → Runners setup for an official macOS ARM64 runner. Add the `hello-chat-release` label and run it in the signing user’s logged-in macOS session. Keep its work/temp directories on suitable scratch storage. This workflow runs only for trusted main pushes and manual dispatches, never pull requests from forks.
 
+Keep the runner's work-folder path free of spaces; a space-free symlink to scratch storage also works. The runner can otherwise split its generated shell-script path before the script runs. Verify the resolved storage destination before a release.
+
+For a LaunchAgent signing runner, set `SessionCreate` to `false` so it shares the logged-in user's security session, then reload only that idle runner. If `notarytool history` succeeds interactively but reports `keychainLocked` in the job, check this session setting before asking for another unlock. Do not copy signing credentials or store the login password in a workflow to work around that difference. Require the workflow's signing-access check to pass.
+
 The signing user must have:
 
 - Developer ID Application identity from team `T34G959ZG8`, accessible to `codesign`.

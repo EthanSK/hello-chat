@@ -228,7 +228,7 @@
     <section class="section" id="build" aria-labelledby="build-title">
       <div class="section-head">
         <h2 id="build-title">Build From Source</h2>
-        <p class="section-lead">There’s no signed, notarised download yet, so build it on your Mac.</p>
+        <p class="section-lead"><a href="https://github.com/EthanSK/hello-chat/releases/latest">Download the signed, notarised app</a>, or build it on your Mac.</p>
       </div>
       <div class="build-grid">
         <div>
@@ -253,7 +253,7 @@ zsh scripts/test.sh
 ditto .build.noindex/HelloChat.app /Applications/HelloChat.app
 open /Applications/HelloChat.app</code></pre>
           </div>
-          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. To update, quit HelloChat and move the old copy to the Bin before copying the new one.</p>
+          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. Release builds update through Check for Updates in the app menu or Settings. When replacing a source build manually, quit HelloChat and move the old copy to the Bin before copying the new one.</p>
         </div>
       </div>
 
