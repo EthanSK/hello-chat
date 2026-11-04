@@ -1,10 +1,10 @@
+// Coordinate one native Voice request, with fresh call checks and bounded readiness.
 import AppKit
 import Foundation
 
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
-// starts no App Server. The installed composer's existing shortcut toggles its
-// native call. Ending uses the configured dedicated End shortcut; missing
-// required bindings are set up without substituting the start/stop toggle.
+// starts no App Server. Start uses Codex's global "Voice chat hotkey"; the
+// composer's "Toggle voice chat" remains untouched. End stays dedicated.
 @MainActor final class NativeVoice {
     struct Transport {
         var snapshot: () async -> VoiceSnapshot
@@ -12,6 +12,7 @@ import Foundation
         var activate: (Int32) throws -> Void
         var requestEnd: (() async throws -> Int32?)? = nil
         var retryEnd: ((Int32) async throws -> Void)? = nil
+        var launch: (() async throws -> Void)? = nil
         static var live: Self {
             Self(snapshot: { await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value },
                  send: { command, pid in
@@ -39,20 +40,24 @@ import Foundation
                     try await Task.detached(priority: .userInitiated) {
                         try VoiceBridge.pressEnd(pid: pid)
                     }.value
-                 })
+                 }, launch: { try await VoiceBridge.launchCodex() })
         }
     }
     private let transport: Transport
     private let diagnostics: Diagnostics?
     private let confirmationTimeout: TimeInterval
+    private let launchTimeout: TimeInterval
+    private let endConfirmationTimeout: TimeInterval
     private(set) var connected = false
     private(set) var lastError: String?
     private var pendingUntil: Date?
     private var ending: Task<Bool, Error>?
     private var detachedForQuit = false
 
-    init(transport: Transport = .live, diagnostics: Diagnostics? = nil, confirmationTimeout: TimeInterval = 15) {
+    init(transport: Transport = .live, diagnostics: Diagnostics? = nil, confirmationTimeout: TimeInterval = 15, launchTimeout: TimeInterval = 30, endConfirmationTimeout: TimeInterval = 8) {
         self.transport = transport; self.diagnostics = diagnostics; self.confirmationTimeout = confirmationTimeout
+        self.launchTimeout = launchTimeout
+        self.endConfirmationTimeout = endConfirmationTimeout
     }
 
     // nil means an exact End Voice control confirmed the call, but the native
@@ -81,8 +86,32 @@ import Foundation
             state = await snapshot()
             try checkAttached()
         }
+        guard state.accessibilityAllowed else {
+            throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
+        }
+        let waitForApplication = state.pid == nil || state.applicationLaunching || !state.applicationHasWindow
+        if state.pid == nil || !state.applicationReady, let launch = transport.launch {
+            try checkAttached()
+            diagnostics?.record("voice.application.launch_requested")
+            try await launch()
+            try checkAttached()
+            state = await snapshot()
+        }
+        // Poll an actual readiness condition at the existing confirmation cadence,
+        // not a fixed launch delay. Never send a shortcut into an opening process.
+        let launchDeadline = Date().addingTimeInterval(launchTimeout)
+        while waitForApplication && (state.pid == nil || !state.applicationReady) {
+            guard transport.launch != nil, Date() < launchDeadline else {
+                throw BridgeError.message("Codex didn't open. Try again.")
+            }
+            try checkAttached()
+            try await Task.sleep(nanoseconds: 300_000_000)
+            state = await snapshot()
+        }
+        try checkAttached()
+        if waitForApplication { diagnostics?.record("voice.application.ready") }
         guard let pid = state.pid else {
-            throw BridgeError.message("Open Codex, then try again.")
+            throw BridgeError.message("Couldn't identify the active Codex window.")
         }
         guard state.accessibilityAllowed else {
             throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
@@ -104,7 +133,7 @@ import Foundation
         if !state.endControlAvailable {
             // Ethan's "err on the side of trying to start" applies when AX
             // remains unknown after the bounded retries. Send one native
-            // toggle, never a retry loop. Positive Voice controls above still
+            // request, never a retry loop. Positive Voice controls above still
             // win, and End/cleanup retain their stricter ownership rules.
             if !state.controlsComplete {
                 diagnostics?.record("voice.open.uncertain_fallback", info: ["scan_failure": state.scanFailure])
@@ -112,10 +141,18 @@ import Foundation
             try transport.activate(pid)
             try await Task.sleep(nanoseconds: 200_000_000)
             try checkAttached()
+            // The call can appear during activation or launch. Reuse it instead
+            // of sending the global start action into an already-active call.
+            let activated = await snapshot()
+            try checkAttached()
+            if let microphone = activated.microphone { connected = true; return microphone }
+            if activated.endControlAvailable { connected = true; return nil }
+            guard activated.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
             pendingUntil = Date().addingTimeInterval(confirmationTimeout)
             do { try await transport.send(VoiceBridge.startCommand, pid) }
             catch { pendingUntil = nil; throw error }
-            diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000])
+            diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],
+                                info: ["command": VoiceBridge.startCommand, "delivery": "global_hotkey"])
         }
         try checkAttached()
         while Date() < (pendingUntil ?? confirmationDeadline) {
@@ -248,7 +285,7 @@ import Foundation
             return true
         }
         // A cancelled native opening may finish late. Wait for its actual Voice
-        // controls before sending the toggle, so cancellation cannot start a call.
+        // controls before sending dedicated End, so cancellation cannot start a call.
         var state: VoiceSnapshot
         if let initial { state = initial } else { state = await snapshot() }
         while state.microphone == nil, !state.endControlAvailable, let deadline = pendingUntil, Date() < deadline {
@@ -278,7 +315,7 @@ import Foundation
     }
 
     private func confirmEnd(pid: Int32, starting: Double, retryIfPresent: Bool = false) async throws {
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = Date().addingTimeInterval(endConfirmationTimeout)
         var absentWhileInputRunning = 0
         var canRetry = retryIfPresent
         let retryAfter = Date().addingTimeInterval(2)
@@ -296,8 +333,8 @@ import Foundation
                 diagnostics?.record("voice.end.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000], info: ["input_running": String(fresh.inputRunning)])
                 return
             }
-            // End is a toggle. Let a normal slow teardown finish before a
-            // second request, and require a complete, still-active read.
+            // Let a normal slow teardown finish before a second End request,
+            // and require a complete, still-active read.
             if canRetry, Date() >= retryAfter, fresh.controlsComplete,
                fresh.pid == pid, fresh.microphone != nil || fresh.endControlAvailable {
                 canRetry = false
@@ -308,9 +345,9 @@ import Foundation
             }
         }
         diagnostics?.record("voice.end.confirmation_timeout")
-        // Previously "still using the microphone", which on 2 Nov read as a
-        // microphone fault when the real problem was that End didn't work.
-        throw BridgeError.message("Codex Voice didn't end. End the call in Codex.")
+        // Stale controls or another audio stream can outlive a successful End.
+        // A failed confirmation is unknown, not evidence that End failed.
+        throw BridgeError.endUnconfirmed
     }
 
     // AX reads are bounded and run only during an explicit start/stop, away from

@@ -29,13 +29,16 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 ## Voice and keyboard behavior
 
 - Preserve an active Codex call on normal H Chat Quit: detach local listening/control work without sending End. Explicit spoken/button End remains separate. Inspect [GateModel.swift](../../../Sources/GateModel.swift), [NativeVoice.swift](../../../Sources/NativeVoice.swift), and [NativeVoiceTests.swift](../../../Tests/NativeVoiceTests.swift).
+- Default missing Voice chat hotkey to Command+Control+Option+Shift+F17 and dedicated End to Ctrl+Alt+Shift+V. Preserve existing custom values and report collisions without overriding another command. Leave Toggle reset/custom values untouched.
+- If Codex is closed, launch the installed app by its verified bundle identity, wait for actual window readiness, and send Start once. Use injected launch/readiness tests; never create live calls in an automated check.
 - A wake sound acknowledges detection, not a sent shortcut. Preserve the fresh active-call check, which reuses a live call instead of blindly toggling it.
 - [VoiceBridge.swift](../../../Sources/VoiceBridge.swift) owns required shortcut defaults, collision checks, per-send configuration reads and key delivery. Preserve custom bindings and unrelated settings. Do not change keyboard-layout handling or Karabiner/global keyboard settings without current authorization; first verify the actual delivered action.
 
 ## Shortcut diagnosis and explanations
 
-- Before explaining or testing a shortcut, distinguish `composer.startVoiceMode` (app Voice command), `realtimeVoice` (system-wide Voice command), and `realtimeVoice.endCall` (dedicated End). Do not treat Start, End and Toggle as interchangeable because of a displayed label.
+- Before explaining or testing a shortcut, distinguish `realtimeVoice` (the desired **Voice chat hotkey**, system-wide Start), `composer.startVoiceMode` (**Toggle voice chat**, never configured or emitted by H Chat), and `realtimeVoice.endCall` (dedicated End). Do not treat Start, End and Toggle as interchangeable because of a displayed label.
 - Inspect this machine's configured binding and the installed app's command registry/defaults, then resolve the active keyboard layout and modifiers. Compare the main and bedside Macs separately; a working binding on one does not prove the other uses it.
+- A keybinding file write skips Codex’s live apply routine. Keep own writes made during a running process marked pending until a new process can load them; show a restart message. Never claim registration or Voice acceptance from file readback alone. A successful End may outlive stale controls, so an expired confirmation is unknown, not proof of failure.
 - Separate the configured/intended command, the physical key event actually delivered, and the observed app result. A documented default, wake sound, or emitted event does not prove Codex received or accepted the action. State uncertainty until the result is observed; do not describe a default Start binding as invalid merely because delivery failed.
 
 ## Installation and release

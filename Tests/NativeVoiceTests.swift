@@ -67,7 +67,7 @@ import Foundation
         await voice.stop()
         for input in [false, true] {
             let count = sent.count
-            current = state(input: input); current.controlsComplete = false
+            current = state(input: input); current.controlsComplete = false; current.applicationReady = false
             _ = try await voice.start()
             precondition(sent.count == count + 1 && sent.last == VoiceBridge.startCommand && voice.connected,
                          "An explicit wake makes one start attempt after persistently unknown controls, regardless of residual input")
@@ -96,6 +96,79 @@ import Foundation
         let recoveredInitialApp = try await missingInitialApp.start()
         precondition(recoveredInitialApp == .muted && lookupReads == 2,
                      "A transient initial application lookup recovers before deciding Voice is absent")
+
+        var launched = false, launchCount = 0, readinessReads = 0, launchCommands: [String] = []
+        let closedApp = NativeVoice(transport: .init(snapshot: {
+            var value = state()
+            if !launched { value.pid = nil; value.controlsComplete = false; return value }
+            readinessReads += 1
+            value.applicationReady = readinessReads >= 3
+            if !launchCommands.isEmpty { value = state(.listening) }
+            return value
+        }, send: { command, _ in
+            precondition(readinessReads >= 3, "Never deliver to a process before its actual readiness")
+            launchCommands.append(command)
+        }, activate: { _ in }, launch: { launched = true; launchCount += 1 }))
+        _ = try await closedApp.start()
+        precondition(launchCount == 1 && launchCommands == ["realtimeVoice"] && closedApp.connected,
+                     "A closed Codex launches once, waits for readiness, then receives only the global Voice action")
+
+        var launchFoundCall = false, adoptedLaunches = 0
+        let launchAdoption = NativeVoice(transport: .init(snapshot: {
+            if launchFoundCall { return state(.listening) }
+            var value = state(); value.pid = nil; return value
+        }, send: { _, _ in fatalError("Never send Start when launch discovers an existing call") },
+        activate: { _ in }, launch: { launchFoundCall = true; adoptedLaunches += 1 }))
+        _ = try await launchAdoption.start()
+        precondition(adoptedLaunches == 1 && launchAdoption.connected, "A call that appears during launch is reused")
+
+        var reopened = false, windowlessCommands: [String] = []
+        let closedWindow = NativeVoice(transport: .init(snapshot: {
+            var value = state()
+            value.applicationHasWindow = reopened; value.applicationReady = reopened
+            if !windowlessCommands.isEmpty { value = state(.listening) }
+            return value
+        }, send: { command, _ in windowlessCommands.append(command) }, activate: { _ in }, launch: { reopened = true }))
+        _ = try await closedWindow.start()
+        precondition(reopened && windowlessCommands == ["realtimeVoice"], "An existing process with its last window closed receives a normal reopen before Start")
+
+        var readyAfterActivation = false
+        let activationAdoption = NativeVoice(transport: .init(snapshot: { readyAfterActivation ? state(.listening) : state() },
+            send: { _, _ in fatalError("Never send Start when a call appears during activation") },
+            activate: { _ in readyAfterActivation = true }, launch: { fatalError("An open app is not launched again") }))
+        _ = try await activationAdoption.start()
+        precondition(activationAdoption.connected, "The final fresh check prevents a duplicate call")
+
+        var readinessLaunches = 0, unreadyCommands = 0
+        let neverReady = NativeVoice(transport: .init(snapshot: {
+            var value = state(); value.pid = readinessLaunches == 0 ? nil : 123
+            value.applicationReady = false; return value
+        }, send: { _, _ in unreadyCommands += 1 }, activate: { _ in },
+        launch: { readinessLaunches += 1 }), launchTimeout: 0.01)
+        do { _ = try await neverReady.start(); fatalError("Unready launch must time out") } catch { }
+        precondition(readinessLaunches == 1 && unreadyCommands == 0, "A launch timeout neither relaunches nor sends blindly")
+
+        let launchFailure = NativeVoice(transport: .init(snapshot: {
+            var value = state(); value.pid = nil; return value
+        }, send: { _, _ in fatalError("Failed launch must send nothing") }, activate: { _ in },
+        launch: { throw BridgeError.message("not installed") }))
+        do { _ = try await launchFailure.start(); fatalError("Missing installation must fail") }
+        catch { precondition(error.localizedDescription == "not installed") }
+
+        var finishLaunch: CheckedContinuation<Void, Never>?
+        var launchCancelledCommands = 0
+        let cancelledLaunch = NativeVoice(transport: .init(snapshot: {
+            var value = state(); value.pid = nil; return value
+        }, send: { _, _ in launchCancelledCommands += 1 }, activate: { _ in }, launch: {
+            await withCheckedContinuation { finishLaunch = $0 }
+        }))
+        let launchTask = Task { try await cancelledLaunch.start() }
+        while finishLaunch == nil { await Task.yield() }
+        launchTask.cancel()
+        finishLaunch?.resume()
+        do { _ = try await launchTask.value; fatalError("Cancelled launch must not start Voice") }
+        catch is CancellationError { }
+        precondition(launchCancelledCommands == 0, "Cancellation during application launch sends neither Start nor End")
 
         var startedWithMissingRead = false, openingReads = 0
         var recoveryCommands: [String] = []
@@ -376,6 +449,13 @@ import Foundation
         _ = try await missingRoot.endIfPresent()
         precondition(missingRootReads == 2 && !missingRoot.connected,
                      "Missing app/AX root must not falsely confirm shutdown")
+
+        var unconfirmedSends = 0
+        let staleEnd = NativeVoice(transport: .init(snapshot: { state(.listening) },
+            send: { _, _ in unconfirmedSends += 1 }, activate: { _ in }, requestEnd: { 123 }), endConfirmationTimeout: 0.01)
+        do { _ = try await staleEnd.endIfPresent(); fatalError("Stale controls do not prove closure") }
+        catch BridgeError.endUnconfirmed { }
+        precondition(unconfirmedSends == 0, "An uncertain End must never retry Start or claim the call failed to close")
         var coalescedRequests = 0
         let coalesced = NativeVoice(transport: .init(snapshot: { state() }, send: { _, _ in }, activate: { _ in },
         requestEnd: { coalescedRequests += 1; return 123 }))

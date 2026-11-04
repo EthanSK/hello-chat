@@ -68,6 +68,9 @@ import SwiftUI
         didSet { UserDefaults.standard.set(timeout, forKey: "timeout"); if microphone == .listening { scheduleMute() } }
     }
     @Published private(set) var error: String?
+    // Shortcut activation is independent of microphone/model preparation, which
+    // clears ordinary errors. Keep the restart notice until an explicit refresh.
+    @Published private(set) var shortcutNotice: String?
     @Published private(set) var lastEvent = ""
     @Published private(set) var micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     let voice = NativeVoice(diagnostics: .shared)
@@ -111,8 +114,9 @@ import SwiftUI
         }
         do { try ShortcutLease().restore() } catch { self.error = "Could not restore Voice shortcut: \(error.localizedDescription)" }
         do {
-            let added = try VoiceShortcutConfiguration().ensureDefaults()
-            if !added.isEmpty { Diagnostics.shared.record("voice.shortcuts.configured", info: ["commands": added.joined(separator: ",")]) }
+            let added = try VoiceBridge.prepareShortcuts()
+            if !added.isEmpty { Diagnostics.shared.record("voice.shortcuts.saved", info: ["commands": added.joined(separator: ",")]) }
+            shortcutNotice = VoiceBridge.shortcutSetupMessage()
         } catch {
             self.error = error.localizedDescription
             Diagnostics.shared.failure("voice.shortcuts.failed", error)
@@ -394,7 +398,9 @@ import SwiftUI
         cancelAutomaticStart(reason: "starting")
         busy = true; error = nil; status = "Starting"; detail = "Preparing local speech recognition."
         let token = UUID(); generation = token
-        defer { if generation == token { busy = false } }
+        defer {
+            if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
+        }
         do {
             guard !PhraseMatcher.words(wakePhrase).isEmpty, !PhraseMatcher.words(sleepPhrase).isEmpty,
                   PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase) else {
@@ -494,6 +500,7 @@ import SwiftUI
     // It also clears a stale error. HelloChat still never scans in the background.
     func refreshVoice() {
         guard !busy, !quitting else { return }
+        shortcutNotice = VoiceBridge.shortcutSetupMessage()
         busy = true; error = nil
         let token = generation
         voiceTask = Task {
@@ -518,9 +525,12 @@ import SwiftUI
     }
     private func openVoice(trigger: String) async {
         guard enabled, !quitting, !Task.isCancelled else { busy = false; return }
+        shortcutNotice = VoiceBridge.shortcutSetupMessage()
         let token = generation
         busy = true; error = nil; status = "Connecting"; detail = "Opening Voice in Codex."; lastEvent = trigger
-        defer { if generation == token { busy = false } }
+        defer {
+            if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
+        }
         do {
             // Refresh native state on each explicit wake, including after a
             // call was closed in Codex, rather than trusting our cached state.
@@ -545,7 +555,9 @@ import SwiftUI
         guard enabled || voice.connected, !busy else { return }
         let token = generation
         busy = true
-        defer { if generation == token { busy = false } }
+        defer {
+            if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
+        }
         do {
             let ended = try await voice.endIfPresent()
             guard generation == token else { return }
@@ -557,6 +569,10 @@ import SwiftUI
             // second whole stop cycle delays the error and doubles the wait.
             guard generation == token else { return }
             showListening(); self.error = error.localizedDescription
+            if case BridgeError.endUnconfirmed = error {
+                microphone = nil
+                voiceText = "Codex Voice status unknown"
+            }
         }
     }
     private func scheduleMute() {

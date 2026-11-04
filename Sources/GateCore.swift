@@ -300,6 +300,9 @@ struct VoiceSnapshot: Codable {
     var scanTimeouts = 0
     var scanDepth = 0
     var scanFailure = ""
+    var applicationReady = true
+    var applicationLaunching = false
+    var applicationHasWindow = true
     var callPresent: Bool { pid != nil && inputRunning }
 }
 

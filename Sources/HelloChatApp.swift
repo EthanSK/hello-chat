@@ -312,6 +312,13 @@ struct MainView: View {
     var body: some View {
         GeometryReader { viewport in
             Form {
+                if let notice = model.shortcutNotice {
+                    Section {
+                        Label(notice, systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange).textSelection(.enabled)
+                            .accessibilityIdentifier("shortcutNotice")
+                    }
+                }
                 if let error = model.error {
                     Section {
                         Label(error, systemImage: "exclamationmark.triangle")

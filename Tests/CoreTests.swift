@@ -212,30 +212,55 @@ import Foundation
         check(afterCollision == before, "Collision leaves user file unchanged")
         let setupURL = root.appendingPathComponent("fresh/settings/keybindings.json")
         let setup = VoiceShortcutConfiguration(bindingsURL: setupURL)
+        check(VoiceBridge.startCommand == "realtimeVoice", "Start is Voice chat hotkey, never Toggle voice chat")
         let added = try setup.ensureDefaults()
         check(added == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fresh setup adds the required Start and End bindings")
         var configured = try setup.read()
-        check(configured.count == 2, "Setup does not add or change the separate global Voice command")
-        check(configured[0]["key"] as? String == "Command+Control+Option+Shift+F17", "Start uses Ethan's main Mac default")
+        check(configured.count == 2, "Setup adds only global Voice and dedicated End, never Toggle")
+        check(configured[0]["key"] as? String == "Command+Control+Option+Shift+F17", "Global Start uses the agreed F17 default")
         check(configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "End uses Ethan's main Mac default")
         let installed = try Data(contentsOf: setupURL)
         try check(try setup.ensureDefaults().isEmpty, "Repeated setup is a no-op")
         try check(try Data(contentsOf: setupURL) == installed, "Repeated setup preserves exact bytes")
+        check(!configured.contains { $0["command"] as? String == "composer.startVoiceMode" }, "A reset Toggle stays at Codex's own default")
+        check(VoiceBridge.virtualKey(for: "T") != nil && VoiceBridge.virtualKey(for: "F17") != nil,
+              "Custom global T and F17 can be delivered without rewriting settings")
+        check(VoiceBridge.virtualKey(for: "unsupported") == nil, "Unknown keys are not silently translated")
+        let timestamp = Double(VoiceBridge.eventTimestamp()) / 1_000_000_000
+        check(abs(timestamp - ProcessInfo.processInfo.systemUptime) < 1, "Event timestamps use nanoseconds, not raw CPU ticks")
+        let launchedAt = Date(timeIntervalSince1970: 123)
+        let activation = VoiceShortcutActivation(pid: 123, launchedAt: launchedAt, bindings: [VoiceBridge.startCommand: "F17"])
+        let pendingBinding: [[String: Any]] = [["command": VoiceBridge.startCommand, "key": "F17"]]
+        check(activation.requiresRestart(pid: 123, launchedAt: launchedAt, current: pendingBinding), "A saved key remains pending in the process that predated it")
+        check(!activation.requiresRestart(pid: 124, launchedAt: launchedAt, current: pendingBinding), "A restarted process can load the saved key")
+        check(!activation.requiresRestart(pid: 123, launchedAt: launchedAt.addingTimeInterval(1), current: pendingBinding), "PID reuse does not retain a stale activation warning")
+        check(!activation.requiresRestart(pid: 123, launchedAt: launchedAt, current: []), "User reset invalidates our pending binding")
         func writeSetup(_ value: [[String: Any]]) throws {
             try JSONSerialization.data(withJSONObject: value).write(to: setupURL)
         }
         try writeSetup([["command": VoiceBridge.startCommand, "key": "Control+Shift+V", "custom": "kept"],
-                        ["command": "realtimeVoice", "key": "F19"]])
+                        ["command": "composer.startVoiceMode", "key": "F19"]])
         try check(try setup.ensureDefaults() == [VoiceBridge.endCommand], "Only the missing End binding is added")
         configured = try setup.read()
         check(configured[0]["key"] as? String == "Control+Shift+V" && configured[0]["custom"] as? String == "kept", "Preserve an existing Start choice and unknown fields")
-        check(configured[1]["command"] as? String == "realtimeVoice" && configured[1]["key"] as? String == "F19", "Preserve the separate global binding")
+        check(configured[1]["command"] as? String == "composer.startVoiceMode" && configured[1]["key"] as? String == "F19", "Preserve the separate user Toggle binding")
+        try writeSetup([["command": "hotkeyWindow", "key": "Alt+Shift+Space"],
+                        ["command": VoiceBridge.startCommand, "key": "Ctrl+Alt+Shift+T"],
+                        ["command": VoiceBridge.endCommand, "key": "Ctrl+Alt+Shift+V"]])
+        let userSettings = try Data(contentsOf: setupURL)
+        try check(try setup.ensureDefaults().isEmpty, "Upgrade keeps the user's actual Voice chat hotkey")
+        try check(try Data(contentsOf: setupURL) == userSettings, "Upgrade does not re-add the reset Toggle binding or rewrite custom choices")
+        try writeSetup([["command": "composer.startVoiceMode", "key": "Command+Control+Option+Shift+F17"]])
+        let occupiedToggle = try Data(contentsOf: setupURL)
+        do { _ = try setup.ensureDefaults(); fatalError("A custom Toggle collision must be explained, not overwritten") }
+        catch is BridgeError { checks += 1 }
+        try check(try Data(contentsOf: setupURL) == occupiedToggle, "Other users' custom Toggle stays intact on collision")
         try writeSetup([["command": VoiceBridge.startCommand, "key": NSNull()],
                         ["command": VoiceBridge.endCommand, "key": ""]])
         try check(try setup.ensureDefaults() == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fill both null and blank required shortcuts")
         configured = try setup.read()
         check(configured.count == 2 && configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "Filling an unset key does not append a duplicate command")
-        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V"] {
+        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V", "Shift+Alt+Control+Command+F17"] {
             try writeSetup([["command": "other.command", "key": conflictingKey]])
             let beforeSetup = try Data(contentsOf: setupURL)
             do { try setup.ensureDefaults(); fatalError("Must reject a default collision") } catch is BridgeError { checks += 1 }

@@ -1,3 +1,4 @@
+// Native Codex discovery, shortcut setup and delivery for H Chat's Voice actions.
 import AppKit
 import ApplicationServices
 import CoreAudio
@@ -23,10 +24,74 @@ struct VoiceBridge {
                                   reportedExecutable: app.executableURL?.path, actualExecutable: executable(pid))
     }
     static let muteCommand = "realtimeVoice.toggleMicrophoneMute"
-    static let startCommand = "composer.startVoiceMode"
+    // Ethan's "Voice chat hotkey" is the OS-global action. The separate
+    // composer.startVoiceMode is labelled "Toggle voice chat"; leave its reset
+    // and any custom binding alone rather than assigning our start key to it.
+    static let startCommand = "realtimeVoice"
     static let endCommand = "realtimeVoice.endCall"
     static let privateMuteKey = "Command+Control+Option+Shift+F16"
     static let bindingsURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/keybindings.json")
+    private static let activationURL = AppPaths.support.appendingPathComponent("voice-shortcut-activation.json")
+
+    static func currentApplication() -> NSRunningApplication? {
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
+            .filter { !$0.isTerminated && codexProcess($0.processIdentifier) }
+        return apps.count == 1 ? apps[0] : nil
+    }
+
+    @discardableResult static func prepareShortcuts() throws -> [String] {
+        let setup = VoiceShortcutConfiguration()
+        let added = try setup.ensureDefaults()
+        if !added.isEmpty, let app = currentApplication(), let launchedAt = app.launchDate {
+            let keys = try setup.read().filter { added.contains($0["command"] as? String ?? "") }
+            let bindings = Dictionary(uniqueKeysWithValues: keys.compactMap { entry -> (String, String)? in
+                guard let command = entry["command"] as? String, let key = entry["key"] as? String else { return nil }
+                return (command, key)
+            })
+            var receipt = (try? JSONDecoder().decode(VoiceShortcutActivation.self, from: Data(contentsOf: activationURL)))
+                ?? VoiceShortcutActivation(pid: app.processIdentifier, launchedAt: launchedAt, bindings: [:])
+            if receipt.pid != app.processIdentifier || receipt.launchedAt != launchedAt {
+                receipt = VoiceShortcutActivation(pid: app.processIdentifier, launchedAt: launchedAt, bindings: [:])
+            }
+            receipt.bindings.merge(bindings) { _, new in new }
+            try FileManager.default.createDirectory(at: activationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(receipt).write(to: activationURL, options: .atomic)
+        }
+        return added
+    }
+
+    static func shortcutSetupMessage(command: String? = nil) -> String? {
+        guard let app = currentApplication(), let launchedAt = app.launchDate,
+              let receipt = try? JSONDecoder().decode(VoiceShortcutActivation.self, from: Data(contentsOf: activationURL)),
+              let bindings = try? VoiceShortcutConfiguration().read(),
+              receipt.requiresRestart(pid: app.processIdentifier, launchedAt: launchedAt,
+                                      current: bindings.filter { command == nil || $0["command"] as? String == command }) else { return nil }
+        return "Voice shortcuts saved. Restart Codex to apply them."
+    }
+
+    @MainActor static func launchCodex() async throws {
+        // Set defaults before launch so this new Codex process can register them.
+        try prepareShortcuts()
+        // Closing Codex's last window can leave its process running. Send the
+        // normal reopen request in that case too; never create a second instance.
+        guard let url = currentApplication()?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
+              Bundle(url: url)?.bundleIdentifier == "com.openai.codex" else {
+            throw BridgeError.message("Install Codex, then try again.")
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = false
+        configuration.activates = true
+        let app: NSRunningApplication = try await withCheckedThrowingContinuation { continuation in
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, error in
+                if let error { continuation.resume(throwing: error) }
+                else if let app { continuation.resume(returning: app) }
+                else { continuation.resume(throwing: BridgeError.message("Codex didn't open. Try again.")) }
+            }
+        }
+        guard codexProcess(app.processIdentifier) else {
+            throw BridgeError.message("Couldn't identify the active Codex window.")
+        }
+    }
 
     static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96, requireEnd: Bool = false) -> VoiceSnapshot {
         let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
@@ -40,7 +105,11 @@ struct VoiceBridge {
         if app == nil { controls.failure = "application_lookup:\(candidates.count)/\(applications.count)" }
         return VoiceSnapshot(pid: app?.processIdentifier, inputRunning: voice, recorderRunning: recorder,
                              microphone: controls.microphone, accessibilityAllowed: AXIsProcessTrusted(), endControlAvailable: controls.end != nil,
-                             controlsComplete: controls.complete, scanNodes: controls.nodes, scanTimeouts: controls.timeouts, scanDepth: controls.depth, scanFailure: controls.failure)
+                             controlsComplete: controls.complete, scanNodes: controls.nodes, scanTimeouts: controls.timeouts, scanDepth: controls.depth, scanFailure: controls.failure,
+                             applicationReady: app?.isFinishedLaunching == true
+                                && (controls.windowReady || controls.microphone != nil || controls.end != nil),
+                             applicationLaunching: app.map { !$0.isFinishedLaunching } ?? false,
+                             applicationHasWindow: controls.hasWindow)
     }
 
     // Passive, one-shot reads only. No AXPress, focus/activation writes or pointer automation.
@@ -145,6 +214,8 @@ struct VoiceBridge {
         var timeouts = 0
         var depth = 0
         var failure = ""
+        var windowReady = false
+        var hasWindow = false
     }
     private struct Identity: Hashable {
         let element: AXUIElement
@@ -169,6 +240,7 @@ struct VoiceBridge {
         // A real Codex window reaches depth 46 and exceeds 3,000 nodes even idle.
         // Keep the two-second deadline while allowing that complete negative scan.
         let windows = read(kAXWindowsAttribute, root) as? [AXUIElement] ?? []
+        result.hasWindow = !windows.isEmpty
         var queue: [(AXUIElement, Int)] = (windows.isEmpty ? [root] : windows).map { ($0, 0) }
         var seen = Set<Identity>()
         let deadline = Date().addingTimeInterval(2)
@@ -202,6 +274,9 @@ struct VoiceBridge {
                 if result.end != nil || (!requireEnd && result.microphone != nil) { result.complete = true; return result }
             }
             if role == "AXWebArea" {
+                // A launched process alone is too early. The native window must
+                // expose its web content before the launch path sends Start.
+                result.windowReady = !windows.isEmpty
                 // Chromium's native button search skips chat text, including
                 // long/offscreen conversations that exhaust a node-by-node scan.
                 let limit = 1000
@@ -244,7 +319,8 @@ struct VoiceBridge {
     static func post(command: String, pid: pid_t, deliveryKey: String? = nil) throws {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
         guard codexProcess(pid) else { throw BridgeError.message("ChatGPT changed or closed. Check Voice again.") }
-        try VoiceShortcutConfiguration().ensureDefaults()
+        try prepareShortcuts()
+        if let message = shortcutSetupMessage(command: command) { throw BridgeError.message(message) }
         // Re-read on every send: settings may have changed since app startup.
         let bindings = try VoiceShortcutConfiguration().read()
         guard let key = deliveryKey ?? bindings.first(where: {
@@ -253,9 +329,8 @@ struct VoiceBridge {
               !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.")
         }
-        let keys: [String: CGKeyCode] = ["F16": CGKeyCode(kVK_F16), "F17": CGKeyCode(kVK_F17), "F19": CGKeyCode(kVK_F19), "F20": CGKeyCode(kVK_F20), "V": CGKeyCode(kVK_ANSI_V)]
         let parts = key.components(separatedBy: "+")
-        guard let last = parts.last, let virtualKey = keys[last] else { throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.") }
+        guard let last = parts.last, let virtualKey = virtualKey(for: last) else { throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.") }
         var flags: CGEventFlags = []
         if parts.contains(where: { ["Command", "Cmd", "CmdOrCtrl", "CommandOrControl"].contains($0) }) { flags.insert(.maskCommand) }
         if parts.contains(where: { ["Control", "Ctrl"].contains($0) }) { flags.insert(.maskControl) }
@@ -269,8 +344,42 @@ struct VoiceBridge {
         down.flags = flags; up.flags = flags
         // Match Agent Flow's established process-targeted transport, including fresh
         // event timestamps rather than delivering an indistinguishable key pair.
-        down.timestamp = mach_absolute_time(); down.postToPid(pid)
-        up.timestamp = mach_absolute_time(); up.postToPid(pid)
+        // Voice chat hotkey is registered globally, so it needs the system event
+        // path. Dedicated End and microphone actions remain process-targeted.
+        down.timestamp = eventTimestamp()
+        if command == startCommand { down.post(tap: .cghidEventTap) } else { down.postToPid(pid) }
+        up.timestamp = eventTimestamp()
+        if command == startCommand { up.post(tap: .cghidEventTap) } else { up.postToPid(pid) }
+    }
+
+    static func eventTimestamp() -> CGEventTimestamp {
+        // CGEvent wants nanoseconds, while mach_absolute_time returns CPU ticks.
+        // On Apple Silicon the ratio is commonly 125/3, not one-to-one.
+        var scale = mach_timebase_info_data_t()
+        mach_timebase_info(&scale)
+        let ticks = mach_absolute_time()
+        return ticks / UInt64(scale.denom) * UInt64(scale.numer)
+            + ticks % UInt64(scale.denom) * UInt64(scale.numer) / UInt64(scale.denom)
+    }
+
+    // Keep the existing physical-key delivery; no keyboard-layout translation.
+    // Accept normal custom letter/function shortcuts (including Ethan's test T)
+    // without silently replacing the saved binding with our default.
+    static func virtualKey(for key: String) -> CGKeyCode? {
+        let letters = ["A": kVK_ANSI_A, "B": kVK_ANSI_B, "C": kVK_ANSI_C, "D": kVK_ANSI_D,
+                       "E": kVK_ANSI_E, "F": kVK_ANSI_F, "G": kVK_ANSI_G, "H": kVK_ANSI_H,
+                       "I": kVK_ANSI_I, "J": kVK_ANSI_J, "K": kVK_ANSI_K, "L": kVK_ANSI_L,
+                       "M": kVK_ANSI_M, "N": kVK_ANSI_N, "O": kVK_ANSI_O, "P": kVK_ANSI_P,
+                       "Q": kVK_ANSI_Q, "R": kVK_ANSI_R, "S": kVK_ANSI_S, "T": kVK_ANSI_T,
+                       "U": kVK_ANSI_U, "V": kVK_ANSI_V, "W": kVK_ANSI_W, "X": kVK_ANSI_X,
+                       "Y": kVK_ANSI_Y, "Z": kVK_ANSI_Z]
+        let functions = [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+                         kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20]
+        if let value = letters[key.uppercased()] { return CGKeyCode(value) }
+        if key.uppercased().hasPrefix("F"), let number = Int(key.dropFirst()), (1...functions.count).contains(number) {
+            return CGKeyCode(functions[number - 1])
+        }
+        return nil
     }
 
     static func inputPIDs() -> Set<pid_t> {
@@ -301,7 +410,13 @@ struct VoiceBridge {
 
 enum BridgeError: LocalizedError {
     case message(String)
-    var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+    case endUnconfirmed
+    var errorDescription: String? {
+        switch self {
+        case .message(let text): return text
+        case .endUnconfirmed: return "Couldn't confirm Voice ended. Check Codex."
+        }
+    }
 }
 
 // Ethan's "assign it if missing" setup is permanent, unlike ShortcutLease's
@@ -377,6 +492,23 @@ struct VoiceShortcutConfiguration {
         try JSONSerialization.data(withJSONObject: bindings, options: [.prettyPrinted, .sortedKeys])
             .write(to: bindingsURL, options: .atomic)
         return added
+    }
+}
+
+// A disk write is not a live registration. Remember only our writes made while
+// Codex was running; a different launch can load them. A removed/edited binding
+// no longer belongs to this receipt. Never call this proof of Voice acceptance.
+struct VoiceShortcutActivation: Codable {
+    var pid: Int32
+    var launchedAt: Date
+    var bindings: [String: String]
+
+    func requiresRestart(pid: Int32, launchedAt: Date, current: [[String: Any]]) -> Bool {
+        guard self.pid == pid, self.launchedAt == launchedAt else { return false }
+        return current.contains { entry in
+            guard let command = entry["command"] as? String, let key = entry["key"] as? String else { return false }
+            return bindings[command] == key
+        }
     }
 }
 
