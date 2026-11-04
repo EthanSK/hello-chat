@@ -30,6 +30,8 @@ Do not bump a second version file or commit generated release metadata back to m
 4. From an older installed build, check that Sparkle finds the newer version, downloads it, validates its signature and relaunches into that exact build. Verify preferences, startup configuration, microphone permission and Accessibility permission remain intact.
 5. Keep real microphone/Voice acceptance separate from fixture and transport tests. Never automate live Codex calls to test a release.
 
+For a change to Voice behavior, check both the ChatGPT and Codex presentations of the same desktop app. First use fixtures for the affected Start, existing-call, End, cancellation, and unavailable-Voice cases. Then obtain user-operated live acceptance in each supported presentation, without ending an existing call to make room for a test. Preserve custom bindings, keyboard layout, the complete modifier combination, and the chosen presentation. Record a native availability or registration blocker explicitly; a passing fixture or a working call in one presentation does not establish the other.
+
 The public download is `https://github.com/EthanSK/hello-chat/releases/latest`. Sparkle reads the latest release’s `appcast.xml` asset. That feed points to the exact immutable version ZIP and contains its Ed25519 signature and length.
 
 ## Package on the signing Mac

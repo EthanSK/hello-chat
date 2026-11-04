@@ -180,6 +180,18 @@ rm ~/Library/LaunchAgents/com.ethansk.hello-chat.plist
 
 This isn't an official Codex wake-word API. A Codex update can change the shortcut or controls; HelloChat then shows an error instead of guessing.
 
+### ChatGPT and Codex presentations
+
+HelloChat already uses the same dedicated Start command for the ChatGPT and Codex presentations of the `com.openai.codex` desktop app. Its implementation is not restricted to Codex mode. It preserves the user's selected presentation: it does not switch modes or rewrite the app's turn-detail preference to make a call start.
+
+[OpenAI documents Voice in Chat, Work, and Codex](https://learn.chatgpt.com/docs/features/voice), subject to account, rollout, and workspace availability. Both presentations use the dedicated **Voice chat hotkey** in **Settings → Voice**. HelloChat uses that same configured `realtimeVoice` command; **Toggle voice chat** is not a fallback.
+
+The shared command path does not establish native Voice availability or successful calls in both presentations. Verify each presentation separately; a successful Codex call alone does not verify ChatGPT-mode compatibility.
+
+If a wake is acknowledged but Voice does not open, first test the configured Voice chat hotkey manually in that same presentation, after the current call has finished. A shortcut that also fails manually is not evidence of a HelloChat key-delivery failure. Check native Voice availability and its shortcut registration before changing the sender. HelloChat cannot enable a Voice feature that the desktop app has not made available.
+
+The app's shortcut editor can also look different between presentations. The saved `conversationDetailMode` preference, account policy, and current route influence that view. Its configured value is not proof of the live effective value or Voice availability. Keep the selected mode and unrelated preferences intact during diagnosis.
+
 ## Limits
 
 - It isn't speaker-locked or voice-identified: anyone the microphone can hear, including a video, can wake or end Voice.
