@@ -345,6 +345,13 @@ struct VoiceBridge {
                      record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
         guard codexProcess(pid) else { throw BridgeError.message("ChatGPT changed or closed. Check Voice again.") }
+        if command == startCommand {
+            let session = DesktopSessionState.current
+            guard session == .interactive else {
+                record?("voice.session.blocked", [:], ["state": session.rawValue])
+                throw BridgeError.desktopUnavailable(session)
+            }
+        }
         try prepareShortcuts()
         if let message = shortcutSetupMessage(command: command) { throw BridgeError.message(message) }
         // Re-read on every send: settings may have changed since app startup.
@@ -550,10 +557,12 @@ struct VoiceKeyCombination {
 enum BridgeError: LocalizedError {
     case message(String)
     case endUnconfirmed
+    case desktopUnavailable(DesktopSessionState)
     var errorDescription: String? {
         switch self {
         case .message(let text): return text
         case .endUnconfirmed: return "Couldn't confirm Voice ended. Check Codex."
+        case .desktopUnavailable(let session): return session.message
         }
     }
 }

@@ -21,6 +21,7 @@ import Foundation
         var retryEnd: ((Int32) async throws -> Void)? = nil
         var launch: (() async throws -> Void)? = nil
         var unmute: ((Int32) async throws -> Void)? = nil
+        var startSession: () -> DesktopSessionState = { .interactive }
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
         static var live: Self {
@@ -56,7 +57,7 @@ import Foundation
                     }.value
                  }, launch: { try await VoiceBridge.launchCodex() }, unmute: { pid in
                     try await Task.detached(priority: .userInitiated) { try VoiceBridge.pressUnmute(pid: pid) }.value
-                 })
+                 }, startSession: { .current })
         }
     }
     private let transport: Transport
@@ -82,7 +83,7 @@ import Foundation
     // nil means an exact End Voice control confirmed the call, but the native
     // presentation didn't expose its microphone state. Never infer an unmute.
     @discardableResult func start(context: VoiceStartContext? = nil, onRequestAccepted: () -> Void = {}) async throws -> MicrophoneState? {
-        try checkAttached()
+        try checkStartAllowed()
         let opening = context ?? VoiceStartContext()
         let starting = Diagnostics.now
         diagnostics?.record("voice.open.requested")
@@ -95,16 +96,16 @@ import Foundation
         // an End-only presentation doesn't tell us whether its mic is muted.
         connected = false
         var state = await snapshot()
-        try checkAttached()
+        try checkStartAllowed()
         // Electron can replace an AX node during a read. Retry a bounded,
         // incomplete result before falling back to the explicit wake request.
         for _ in 0..<2 where state.accessibilityAllowed
             && state.microphone == nil && !state.endControlAvailable
             && (state.pid == nil || !state.controlsComplete) {
             try await Task.sleep(nanoseconds: 120_000_000)
-            try checkAttached()
+            try checkStartAllowed()
             state = await snapshot()
-            try checkAttached()
+            try checkStartAllowed()
         }
         guard state.accessibilityAllowed else {
             throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
@@ -116,10 +117,10 @@ import Foundation
         var launchedAt = transport.now()
         var launchDeadline = launchedAt + launchTimeout
         if waitForApplication, let launch = transport.launch {
-            try checkAttached()
+            try checkStartAllowed()
             diagnostics?.record("voice.application.launch_requested")
             try await launch()
-            try checkAttached()
+            try checkStartAllowed()
             state = await snapshot()
             if let pid = state.pid { lastObservedPID = pid }
         }
@@ -136,7 +137,7 @@ import Foundation
             guard transport.launch != nil, transport.now() < launchDeadline else {
                 throw BridgeError.message("Codex didn't open. Try again.")
             }
-            try checkAttached()
+            try checkStartAllowed()
             if state.pid == nil, lastObservedPID != nil, !relaunchedAfterExit, let launch = transport.launch {
                 // A user restart can remove the old process after our first
                 // reopen request. Retry launch once, never retry the Voice key.
@@ -147,7 +148,7 @@ import Foundation
                 launchDeadline = launchedAt + launchTimeout
                 diagnostics?.record("voice.application.relaunch_after_exit")
                 try await launch()
-                try checkAttached()
+                try checkStartAllowed()
                 state = await snapshot()
                 continue
             }
@@ -155,7 +156,7 @@ import Foundation
             state = await snapshot()
             if let pid = state.pid { lastObservedPID = pid }
         }
-        try checkAttached()
+        try checkStartAllowed()
         if waitForApplication { diagnostics?.record("voice.application.ready") }
         guard let pid = state.pid else {
             throw BridgeError.message("Couldn't identify the active Codex window.")
@@ -187,11 +188,11 @@ import Foundation
             }
             try transport.activate(pid)
             try await Task.sleep(nanoseconds: 200_000_000)
-            try checkAttached()
+            try checkStartAllowed()
             // The call can appear during activation or launch. Reuse it instead
             // of sending the global start action into an already-active call.
             let activated = await snapshot()
-            try checkAttached()
+            try checkStartAllowed()
             if let microphone = activated.microphone { connected = true; clearPendingOpening(); return microphone }
             if activated.endControlAvailable { connected = true; clearPendingOpening(); return nil }
             guard activated.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
@@ -205,12 +206,12 @@ import Foundation
             diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],
                                 info: ["command": VoiceBridge.startCommand, "delivery": "global_hotkey"])
         }
-        try checkAttached()
+        try checkStartAllowed()
         while Date() < (pendingUntil ?? confirmationDeadline) {
-            try checkAttached()
+            try checkStartAllowed()
             try await Task.sleep(nanoseconds: 300_000_000)
             let fresh = await snapshot()
-            try checkAttached()
+            try checkStartAllowed()
             // A transient application lookup is unknown, not proof of exit.
             // Keep waiting for this start without resending its toggle.
             if fresh.pid == nil { continue }
@@ -272,6 +273,15 @@ import Foundation
     private func checkAttached() throws {
         try Task.checkCancellation()
         if detachedForQuit { throw CancellationError() }
+    }
+
+    private func checkStartAllowed() throws {
+        try checkAttached()
+        let session = transport.startSession()
+        guard session == .interactive else {
+            diagnostics?.record("voice.session.blocked", info: ["state": session.rawValue])
+            throw BridgeError.desktopUnavailable(session)
+        }
     }
 
     func stop() async {
@@ -424,7 +434,7 @@ import Foundation
     private func snapshot() async -> VoiceSnapshot {
         let starting = Diagnostics.now
         let state = await transport.snapshot()
-        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning)])
+        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning), "session": transport.startSession().rawValue])
         return state
     }
 }

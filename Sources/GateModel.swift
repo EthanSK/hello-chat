@@ -87,6 +87,7 @@ import SwiftUI
         if voice.connected || status == "Connecting" { manualMute() } else { manualTalk() }
     }
     private let agentFlow = AgentFlowRecordingMonitor()
+    private let desktopSession = DesktopSessionMonitor()
     private let feedback = FeedbackSounds()
     private let listener = SpeechListener()
     private var matcher = PhraseMatcher()
@@ -119,6 +120,23 @@ import SwiftUI
     init() {
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
         phrasesPausedForAgentFlow = agentFlow.suppressesPhrases
+        desktopSession.onChange = { [weak self] state in
+            guard let self else { return }
+            // A lock or session switch cannot carry a queued wake into the
+            // next desktop. Preserve any late call and require a fresh phrase.
+            self.matcher.reset(); self.standaloneWake.reset()
+            self.listener.discardPendingRecognition()
+            if let opening = self.voiceStartContext {
+                opening.preserveCallOnCancellation = true
+                self.voiceTask?.cancel(); self.voiceTask = nil
+                self.voiceStartContext = nil; self.generation = UUID(); self.busy = false
+                self.showListening()
+            }
+            if state == .interactive, [DesktopSessionState.locked.message, DesktopSessionState.inactive.message].contains(self.error ?? "") {
+                self.error = nil
+            }
+            Diagnostics.shared.record("voice.session.changed", info: ["state": state.rawValue])
+        }
         agentFlow.onChange = { [weak self] value in
             guard let self else { return }
             self.phrasesPausedForAgentFlow = value

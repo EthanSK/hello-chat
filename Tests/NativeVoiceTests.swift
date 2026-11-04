@@ -6,6 +6,49 @@ import Foundation
             VoiceSnapshot(pid: 123, inputRunning: input || mic != nil, recorderRunning: false,
                           microphone: mic, accessibilityAllowed: allowed)
         }
+        var desktop = DesktopSessionState.locked
+        var sessionCommands: [String] = [], sessionState = state()
+        let sessionVoice = NativeVoice(transport: .init(snapshot: { sessionState }, send: { command, _ in
+            sessionCommands.append(command); sessionState = state(.listening)
+        }, activate: { _ in precondition(desktop == .interactive) }, startSession: { desktop }))
+        for unavailable in [DesktopSessionState.locked, .inactive, .unknown] {
+            desktop = unavailable
+            do { _ = try await sessionVoice.start(); fatalError("Unavailable desktop accepted Start") }
+            catch BridgeError.desktopUnavailable(let found) { precondition(found == unavailable) }
+        }
+        precondition(sessionCommands.isEmpty, "Locked/inactive starts never post a key")
+        desktop = .interactive
+        _ = try await sessionVoice.start()
+        precondition(sessionVoice.connected && sessionCommands == [VoiceBridge.startCommand],
+                     "A fresh wake after unlock starts once without stale pending ownership")
+
+        var changedDuringRead = DesktopSessionState.interactive
+        let readLock = NativeVoice(transport: .init(snapshot: {
+            changedDuringRead = .locked; return state()
+        }, send: { _, _ in fatalError("A lock during scanning must prevent delivery") },
+            activate: { _ in fatalError("A lock during scanning must prevent activation") },
+            startSession: { changedDuringRead }))
+        do { _ = try await readLock.start(); fatalError("Lock during scan accepted Start") }
+        catch BridgeError.desktopUnavailable { }
+
+        var confirmationSession = DesktopSessionState.interactive
+        var confirmationState = state(), confirmationCommands: [String] = []
+        let lockDuringConfirmation = NativeVoice(transport: .init(snapshot: { confirmationState }, send: { command, _ in
+            confirmationCommands.append(command)
+            if confirmationCommands.count == 1 { confirmationSession = .locked }
+            else { confirmationState = state(.listening) }
+        }, activate: { _ in }, startSession: { confirmationSession }))
+        let lockedOpening = VoiceStartContext()
+        do { _ = try await lockDuringConfirmation.start(context: lockedOpening); fatalError("Locked confirmation continued") }
+        catch {
+            guard case BridgeError.desktopUnavailable = error else { throw error }
+            await lockDuringConfirmation.recoverFromStartFailure(error, context: lockedOpening)
+        }
+        precondition(confirmationCommands == [VoiceBridge.startCommand], "Lock recovery never sends End")
+        confirmationSession = .interactive
+        _ = try await lockDuringConfirmation.start()
+        precondition(confirmationCommands == [VoiceBridge.startCommand, VoiceBridge.startCommand],
+                     "A locked attempt cannot poison a later unlocked wake")
         let cancelledBeforeStart = NativeVoice(transport: .init(
             snapshot: { fatalError("A cancelled request must not scan native controls") },
             send: { _, _ in fatalError("A cancelled request must not send commands") },
