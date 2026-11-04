@@ -113,7 +113,8 @@ struct VoiceBridge {
                              applicationReady: app?.isFinishedLaunching == true
                                 && (controls.windowReady || controls.microphone != nil || controls.end != nil),
                              applicationLaunching: app.map { !$0.isFinishedLaunching } ?? false,
-                             applicationHasWindow: controls.hasWindow)
+                             applicationHasWindow: controls.hasWindow,
+                             applicationHasWebContent: controls.webContentReady)
     }
 
     // Passive, one-shot reads only. No AXPress, focus/activation writes or pointer automation.
@@ -219,6 +220,7 @@ struct VoiceBridge {
         var depth = 0
         var failure = ""
         var windowReady = false
+        var webContentReady = false
         var hasWindow = false
     }
     private struct Identity: Hashable {
@@ -251,6 +253,11 @@ struct VoiceBridge {
         func inspectButton(_ element: AXUIElement) {
             for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
                 if let label = read(name, element) as? String {
+                    // A web area can exist while Electron is still showing its
+                    // launch shell. A real conversation action is better evidence.
+                    if ["new chat", "new thread", "send message", "send now"].contains(label.lowercased()) {
+                        result.windowReady = true
+                    }
                     if let state = MicrophoneState.accessibilityLabel(label) {
                         result.microphone = state; result.microphoneButton = element
                     }
@@ -280,7 +287,7 @@ struct VoiceBridge {
             if role == "AXWebArea" {
                 // A launched process alone is too early. The native window must
                 // expose its web content before the launch path sends Start.
-                result.windowReady = !windows.isEmpty
+                result.webContentReady = !windows.isEmpty
                 // Chromium's native button search skips chat text, including
                 // long/offscreen conversations that exhaust a node-by-node scan.
                 let limit = 1000
@@ -374,9 +381,8 @@ struct VoiceBridge {
             + ticks % UInt64(scale.denom) * UInt64(scale.numer) / UInt64(scale.denom)
     }
 
-    // Keep the existing physical-key delivery; no keyboard-layout translation.
-    // Accept normal custom letter/function shortcuts (including Ethan's test T)
-    // without silently replacing the saved binding with our default.
+    // Fixed key codes are the fallback for character lookup and the canonical
+    // codes for function/navigation keys. Resolve character layout at delivery.
     static func virtualKey(for key: String) -> CGKeyCode? {
         let key = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let letters = ["A": kVK_ANSI_A, "B": kVK_ANSI_B, "C": kVK_ANSI_C, "D": kVK_ANSI_D,

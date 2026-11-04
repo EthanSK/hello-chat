@@ -13,6 +13,8 @@ import Foundation
         var requestEnd: (() async throws -> Int32?)? = nil
         var retryEnd: ((Int32) async throws -> Void)? = nil
         var launch: (() async throws -> Void)? = nil
+        var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        var wait: (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
         static var live: Self {
             Self(snapshot: { await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value },
                  send: { command, pid in
@@ -51,6 +53,7 @@ import Foundation
     private let diagnostics: Diagnostics?
     private let confirmationTimeout: TimeInterval
     private let launchTimeout: TimeInterval
+    private let minimumLaunchWait: TimeInterval
     private let endConfirmationTimeout: TimeInterval
     private(set) var connected = false
     private(set) var lastError: String?
@@ -58,9 +61,10 @@ import Foundation
     private var ending: Task<Bool, Error>?
     private var detachedForQuit = false
 
-    init(transport: Transport = .live, diagnostics: Diagnostics? = nil, confirmationTimeout: TimeInterval = 15, launchTimeout: TimeInterval = 30, endConfirmationTimeout: TimeInterval = 8) {
+    init(transport: Transport = .live, diagnostics: Diagnostics? = nil, confirmationTimeout: TimeInterval = 15, launchTimeout: TimeInterval = 10, endConfirmationTimeout: TimeInterval = 8, minimumLaunchWait: TimeInterval = 5) {
         self.transport = transport; self.diagnostics = diagnostics; self.confirmationTimeout = confirmationTimeout
         self.launchTimeout = launchTimeout
+        self.minimumLaunchWait = minimumLaunchWait
         self.endConfirmationTimeout = endConfirmationTimeout
     }
 
@@ -94,9 +98,12 @@ import Foundation
             throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
         }
         let waitForApplication = state.pid == nil || state.applicationLaunching || !state.applicationHasWindow
+            || (!state.applicationReady && state.controlsComplete)
         var lastObservedPID = state.pid
         var relaunchedAfterExit = false
-        if state.pid == nil || !state.applicationReady, let launch = transport.launch {
+        var launchedAt = transport.now()
+        let launchDeadline = launchedAt + launchTimeout
+        if waitForApplication, let launch = transport.launch {
             try checkAttached()
             diagnostics?.record("voice.application.launch_requested")
             try await launch()
@@ -104,11 +111,18 @@ import Foundation
             state = await snapshot()
             if let pid = state.pid { lastObservedPID = pid }
         }
-        // Poll an actual readiness condition at the existing confirmation cadence,
-        // not a fixed launch delay. Never send a shortcut into an opening process.
-        let launchDeadline = Date().addingTimeInterval(launchTimeout)
-        while waitForApplication && (state.pid == nil || !state.applicationReady) {
-            guard transport.launch != nil, Date() < launchDeadline else {
+        // Ethan confirmed that a visible launch shell accepted Start too early.
+        // After opening/reopening only, allow five seconds for registration and
+        // require a real app action. At seven seconds a loaded web window is a
+        // bounded fallback for app versions whose accessible labels differ.
+        // Already-open chats retain their immediate path; no retry sends Start.
+        while waitForApplication {
+            if state.microphone != nil || state.endControlAvailable { break }
+            let elapsed = transport.now() - launchedAt
+            if state.pid != nil && !state.applicationLaunching && state.applicationHasWindow
+                && ((state.applicationReady && elapsed >= minimumLaunchWait)
+                    || (state.applicationHasWebContent && elapsed >= max(7, minimumLaunchWait))) { break }
+            guard transport.launch != nil, transport.now() < launchDeadline else {
                 throw BridgeError.message("Codex didn't open. Try again.")
             }
             try checkAttached()
@@ -116,13 +130,14 @@ import Foundation
                 // A user restart can remove the old process after our first
                 // reopen request. Retry launch once, never retry the Voice key.
                 relaunchedAfterExit = true
+                launchedAt = transport.now()
                 diagnostics?.record("voice.application.relaunch_after_exit")
                 try await launch()
                 try checkAttached()
                 state = await snapshot()
                 continue
             }
-            try await Task.sleep(nanoseconds: 300_000_000)
+            try await transport.wait(0.3)
             state = await snapshot()
             if let pid = state.pid { lastObservedPID = pid }
         }

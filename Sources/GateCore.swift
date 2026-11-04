@@ -303,6 +303,7 @@ struct VoiceSnapshot: Codable {
     var applicationReady = true
     var applicationLaunching = false
     var applicationHasWindow = true
+    var applicationHasWebContent = true
     var callPresent: Bool { pid != nil && inputRunning }
 }
 

@@ -108,10 +108,32 @@ import Foundation
         }, send: { command, _ in
             precondition(readinessReads >= 3, "Never deliver to a process before its actual readiness")
             launchCommands.append(command)
-        }, activate: { _ in }, launch: { launched = true; launchCount += 1 }))
+        }, activate: { _ in }, launch: { launched = true; launchCount += 1 }), minimumLaunchWait: 0)
         _ = try await closedApp.start()
         precondition(launchCount == 1 && launchCommands == ["realtimeVoice"] && closedApp.connected,
                      "A closed Codex launches once, waits for readiness, then receives only the global Voice action")
+
+        // Virtual time exercises production's launch delay without making the
+        // test suite sleep or starting a real Codex conversation.
+        for semanticReady in [true, false] {
+            var clock: TimeInterval = 0
+            var opened = false, commands = 0
+            let settled = NativeVoice(transport: .init(snapshot: {
+                var value = state()
+                value.pid = opened ? 123 : nil
+                value.applicationReady = opened && semanticReady
+                value.applicationHasWebContent = opened
+                if commands > 0 { value = state(.listening) }
+                return value
+            }, send: { command, _ in
+                precondition(clock >= (semanticReady ? 5 : 7), "A visible launch shell cannot receive Start early")
+                precondition(command == "realtimeVoice", "Never use Toggle as a launch fallback")
+                commands += 1
+            }, activate: { _ in }, launch: { opened = true },
+            now: { clock }, wait: { clock += $0 }))
+            _ = try await settled.start()
+            precondition(commands == 1, "Semantic readiness and the bounded web fallback both send Start once")
+        }
 
         var launchFoundCall = false, adoptedLaunches = 0
         let launchAdoption = NativeVoice(transport: .init(snapshot: {
@@ -128,7 +150,7 @@ import Foundation
             value.applicationHasWindow = reopened; value.applicationReady = reopened
             if !windowlessCommands.isEmpty { value = state(.listening) }
             return value
-        }, send: { command, _ in windowlessCommands.append(command) }, activate: { _ in }, launch: { reopened = true }))
+        }, send: { command, _ in windowlessCommands.append(command) }, activate: { _ in }, launch: { reopened = true }), minimumLaunchWait: 0)
         _ = try await closedWindow.start()
         precondition(reopened && windowlessCommands == ["realtimeVoice"], "An existing process with its last window closed receives a normal reopen before Start")
 
@@ -142,7 +164,7 @@ import Foundation
         }, send: { command, pid in
             precondition(pid == 456, "Only the replacement process receives Start")
             raceCommands.append(command)
-        }, activate: { _ in }, launch: { raceLaunches += 1 }))
+        }, activate: { _ in }, launch: { raceLaunches += 1 }), minimumLaunchWait: 0)
         _ = try await exitsDuringReopen.start()
         precondition(raceLaunches == 2 && raceCommands == ["realtimeVoice"],
                      "If the old process exits during reopen, relaunch once and send Voice only once after readiness")

@@ -309,7 +309,6 @@ struct MainView: View {
     @ObservedObject var zoom: InterfaceZoom
     @Environment(\.openWindow) private var openWindow
     private var preparing: Bool { (model.busy && model.status == "Starting") || model.changingModel }
-    private var voiceOn: Bool { model.voice.connected }
     private var connecting: Bool { model.status == "Connecting" }
     var body: some View {
         GeometryReader { viewport in
@@ -355,27 +354,25 @@ struct MainView: View {
                         Button("Allow Microphone") { model.requestAudioPermissions() }
                     }
                 }
-                Section("Heard (local model)") {
+                Section {
                     TranscriptPane(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
                                    similar: model.similarPhrases, enabled: model.enabled,
                                    viewportHeight: viewport.size.height, scale: zoom.scale)
-                }
-                Section("Codex Voice") {
-                    LabeledContent("Status", value: connecting ? "Opening…" : (voiceOn ? "On" : "Off"))
-                        .accessibilityIdentifier("voiceStatus")
-                    Text(voiceOn ? "Say \(model.sleepPhrase) to end Voice." : "Say \(model.wakePhrase) to start Voice. No need to turn it on first.")
-                        .foregroundStyle(.secondary)
-                    Button(connecting ? "Cancel" : (voiceOn ? "End Voice in Codex" : "Start Voice in Codex")) {
-                        if voiceOn || connecting { model.manualMute() } else { model.manualTalk() }
+                } header: {
+                    HStack {
+                        Text("Heard (local model)")
+                        Spacer()
+                        Button(model.chatActionTitle) { model.toggleChat() }
+                            .buttonStyle(.bordered)
+                            .disabled(model.busy && !connecting)
+                            .accessibilityIdentifier("voiceButton")
+                        Button { model.refreshVoice() } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless).help("Refresh chat status")
+                        .disabled(model.busy).accessibilityIdentifier("voiceRefreshButton")
                     }
-                    .disabled(model.busy && !connecting)
-                    .accessibilityIdentifier("voiceButton")
-                    Button("Refresh") { model.refreshVoice() }
-                        .disabled(model.busy)
-                        .accessibilityIdentifier("voiceRefreshButton")
-                    if !model.lastEvent.isEmpty {
-                        Text(model.lastEvent).foregroundStyle(.secondary).accessibilityIdentifier("lastEvent")
-                    }
+                    .textCase(nil)
                 }
             }
             .formStyle(.grouped)
@@ -441,7 +438,7 @@ struct SettingsView: View {
             Section("Phrases") {
                 TextField("Wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
                 TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
-                Text("Say the wake phrase, then finish speaking to talk to Chat. Clear mentions of the phrase are ignored. The end phrase acts immediately, including while Voice is connecting.")
+                Text("Say the wake phrase, then finish speaking to talk to Chat. Clear mentions of the phrase are ignored. The end phrase acts immediately, including while chat is connecting.")
                     .foregroundStyle(.secondary)
                 Toggle("Allow small spelling differences", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
@@ -450,7 +447,7 @@ struct SettingsView: View {
                 if PhraseMatcher.words(model.wakePhrase).isEmpty || PhraseMatcher.words(model.sleepPhrase).isEmpty {
                     Text("Enter both phrases").foregroundStyle(.red)
                 }
-                Picker("End Voice after silence", selection: $model.timeout) {
+                Picker("End chat after silence", selection: $model.timeout) {
                     Text("30 seconds").tag(30)
                     Text("1 minute").tag(60)
                     Text("2 minutes").tag(120)
@@ -481,7 +478,8 @@ struct SettingsView: View {
                 Toggle("Save transcripts", isOn: $model.saveTranscripts).accessibilityIdentifier("saveTranscripts")
                 Text("Saves local recognition as JSON with rough phrase timestamps. May include background speech. Audio isn't saved.").foregroundStyle(.secondary)
                 Text(TranscriptArchive.directory.path).textSelection(.enabled).accessibilityIdentifier("transcriptArchivePath")
-                Text("Google Drive backup runs daily while plugged in. Existing backups remain when saving is off.").foregroundStyle(.secondary)
+                Text(TranscriptBackupConfiguration.message).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("transcriptBackupStatus")
                 if let error = model.archiveError { Text(error).foregroundStyle(.red).accessibilityIdentifier("transcriptArchiveError") }
             }
             Section("Diagnostics") { DiagnosticsView() }
@@ -581,11 +579,9 @@ struct MenuView: View {
         Text(model.status)
         Button(model.listeningToggleOn ? "Stop listening" : "Start listening") { model.toggle() }
             .disabled(model.busy && !model.enabled)
-        Button(model.status == "Connecting" ? "Cancel" : (model.microphone == .listening ? "End Voice in Codex" : "Start Voice in Codex")) {
-            if model.microphone == .listening || model.status == "Connecting" { model.manualMute() } else { model.manualTalk() }
-        }
+        Button(model.chatActionTitle) { model.toggleChat() }
         .disabled(model.busy && model.status != "Connecting")
-        Button("Refresh Voice status") { model.refreshVoice() }
+        Button("Refresh chat status") { model.refreshVoice() }
             .disabled(model.busy)
         Divider()
         Button("HelloChat") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }

@@ -10,7 +10,7 @@ import SwiftUI
     @Published var soundEffects = UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true {
         didSet { UserDefaults.standard.set(soundEffects, forKey: "soundEffects") }
     }
-    @Published private(set) var voiceText = "Voice is off"
+    @Published private(set) var voiceText = "Chat is off"
     @Published private(set) var microphone: MicrophoneState? = .muted
     let meter = AudioMeter()
     @Published private(set) var transcript = ""
@@ -74,6 +74,14 @@ import SwiftUI
     @Published private(set) var lastEvent = ""
     @Published private(set) var micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     let voice = NativeVoice(diagnostics: .shared)
+    // Ethan calls this conversation "Chat" in the UI. It is still the same
+    // native Codex Voice session; both menu and window use one action/state.
+    var chatActionTitle: String {
+        status == "Connecting" ? "Cancel" : (voice.connected ? "End chat" : "Start chat")
+    }
+    func toggleChat() {
+        if voice.connected || status == "Connecting" { manualMute() } else { manualTalk() }
+    }
     private let agentFlow = AgentFlowRecordingMonitor()
     private let feedback = FeedbackSounds()
     private let listener = SpeechListener()
@@ -144,7 +152,7 @@ import SwiftUI
             guard let self else { return }
             self.transcript = ""
             self.lastEvent = "Listening resumed after an audio delay"
-            self.detail = self.microphone == .listening ? "Say \(self.sleepPhrase) to end Voice." : "Say \(self.wakePhrase) to start Voice."
+            self.detail = self.microphone == .listening ? "Say \(self.sleepPhrase) to end chat." : "Say \(self.wakePhrase) to start chat."
         }
         listener.onText = { [weak self] text, timings in self?.heard(text, timings: timings) }
         listener.onComputePlan = { [weak self] share in
@@ -289,7 +297,7 @@ import SwiftUI
                     transcript = ""; matcher.reset()
                     detectionRunning = true
                     status = "Listening"
-                    detail = voice.connected ? (microphone == nil ? "Voice is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end Voice.") : "Say \(wakePhrase) to turn Voice on."
+                    detail = voice.connected ? (microphone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end chat.") : "Say \(wakePhrase) to start chat."
                     Diagnostics.shared.record("speech.restart.ready")
                     return
                 } catch {
@@ -424,11 +432,11 @@ import SwiftUI
     }
     private func showListening() {
         status = enabled ? "Listening" : "Off"
-        detail = enabled ? "Say \(wakePhrase) to turn Voice on." : "Start listening for \(wakePhrase)."
+        detail = enabled ? "Say \(wakePhrase) to start chat." : "Start listening for \(wakePhrase)."
         if enabled, voice.connected {
-            detail = microphone == nil ? "Voice is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end Voice."
+            detail = microphone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end chat."
         }
-        voiceText = voice.connected ? "Check Codex Voice" : "Codex Voice is off"
+        voiceText = voice.connected ? "Check chat" : "Chat is off"
         if !voice.connected { microphone = .muted }
     }
     private func stopLocal() {
@@ -450,7 +458,7 @@ import SwiftUI
             await voice.stop(); await previous?.value
             guard generation == token else { return }
             if !voice.connected { microphone = .muted }
-            voiceText = voice.connected ? "Check Codex Voice" : "Codex Voice is off"
+            voiceText = voice.connected ? "Check chat" : "Chat is off"
             if let text = voice.lastError { error = text }
             busy = false; voiceTask = nil
         }
@@ -464,7 +472,7 @@ import SwiftUI
             await voice.stop(); await previous?.value
             guard generation == token else { return }
             if !voice.connected { microphone = .muted }
-            voiceText = voice.connected ? "Check Codex Voice" : "Codex Voice is off"
+            voiceText = voice.connected ? "Check chat" : "Chat is off"
             if let text = voice.lastError { error = text }
             busy = false; voiceTask = nil
         }
@@ -509,8 +517,8 @@ import SwiftUI
             guard generation == token else { return }
             microphone = found
             showListening()
-            if voice.connected { voiceText = "Codex Voice is on" }
-            lastEvent = voice.connected ? "Codex Voice is on" : "Codex Voice is off"
+            if voice.connected { voiceText = "Chat is on" }
+            lastEvent = voice.connected ? "Chat is on" : "Chat is off"
         }
     }
     private func beginVoice(trigger: String) {
@@ -527,7 +535,7 @@ import SwiftUI
         guard enabled, !quitting, !Task.isCancelled else { busy = false; return }
         shortcutNotice = VoiceBridge.shortcutSetupMessage()
         let token = generation
-        busy = true; error = nil; status = "Connecting"; detail = "Opening Voice in Codex."; lastEvent = trigger
+        busy = true; error = nil; status = "Connecting"; detail = "Opening chat…"; lastEvent = trigger
         defer {
             if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
         }
@@ -540,8 +548,8 @@ import SwiftUI
             if let openedMicrophone, openedMicrophone != .listening { try await voice.setMicrophone(.listening) }
             try Task.checkCancellation()
             guard enabled, generation == token else { return }
-            microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Codex Voice is on"; status = "Voice on"
-            detail = openedMicrophone == nil ? "Voice is open. Check the microphone in Codex." : "Say \(sleepPhrase) to turn Voice off."; lastEvent = trigger
+            microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Chat is on"; status = "Chat on"
+            detail = openedMicrophone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end chat."; lastEvent = trigger
             scheduleMute()
         } catch {
             Diagnostics.shared.failure("voice.open.failed", error)
