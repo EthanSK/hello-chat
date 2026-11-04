@@ -32,6 +32,12 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 - A wake sound acknowledges detection, not a sent shortcut. Preserve the fresh active-call check, which reuses a live call instead of blindly toggling it.
 - [VoiceBridge.swift](../../../Sources/VoiceBridge.swift) owns required shortcut defaults, collision checks, per-send configuration reads and macOS keyboard-layout translation. Preserve custom bindings and unrelated settings. Use the built-in layout API; do not add per-layout tables or change Karabiner/global keyboard settings to fix app delivery.
 
+## Shortcut diagnosis and explanations
+
+- Before explaining or testing a shortcut, distinguish `composer.startVoiceMode` (app Voice command), `realtimeVoice` (system-wide Voice command), and `realtimeVoice.endCall` (dedicated End). Do not treat Start, End and Toggle as interchangeable because of a displayed label.
+- Inspect this machine's configured binding and the installed app's command registry/defaults, then resolve the active keyboard layout and modifiers. Compare the main and bedside Macs separately; a working binding on one does not prove the other uses it.
+- Separate the configured/intended command, the physical key event actually delivered, and the observed app result. A documented default, wake sound, or emitted event does not prove Codex received or accepted the action. State uncertainty until the result is observed; do not describe a default Start binding as invalid merely because delivery failed.
+
 ## Installation and release
 
 - Establish the exact source commit, bundle version and build before handing an artifact to an installer. Coordinate one installation owner; never race copies or change an artifact another task is signing/installing.
