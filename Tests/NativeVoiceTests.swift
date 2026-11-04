@@ -132,6 +132,21 @@ import Foundation
         _ = try await closedWindow.start()
         precondition(reopened && windowlessCommands == ["realtimeVoice"], "An existing process with its last window closed receives a normal reopen before Start")
 
+        var raceLaunches = 0, raceCommands: [String] = []
+        let exitsDuringReopen = NativeVoice(transport: .init(snapshot: {
+            var value = state()
+            if raceLaunches == 0 { value.applicationHasWindow = false; value.applicationReady = false }
+            else if raceLaunches == 1 { value.pid = nil; value.applicationReady = false }
+            else { value.pid = 456; if !raceCommands.isEmpty { value.microphone = .listening } }
+            return value
+        }, send: { command, pid in
+            precondition(pid == 456, "Only the replacement process receives Start")
+            raceCommands.append(command)
+        }, activate: { _ in }, launch: { raceLaunches += 1 }))
+        _ = try await exitsDuringReopen.start()
+        precondition(raceLaunches == 2 && raceCommands == ["realtimeVoice"],
+                     "If the old process exits during reopen, relaunch once and send Voice only once after readiness")
+
         var readyAfterActivation = false
         let activationAdoption = NativeVoice(transport: .init(snapshot: { readyAfterActivation ? state(.listening) : state() },
             send: { _, _ in fatalError("Never send Start when a call appears during activation") },

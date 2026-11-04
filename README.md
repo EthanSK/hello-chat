@@ -164,7 +164,7 @@ rm ~/Library/LaunchAgents/com.ethansk.hello-chat.plist
 ## How Codex Control Works
 
 - HelloChat identifies Codex by the bundle identifier `com.openai.codex` and checks that the running executable belongs to that bundle. It doesn't depend on one install path.
-- **Start** sends the **Voice chat hotkey** (`realtimeVoice`) through macOS’s global shortcut path. The default is Command-Control-Shift-V. **Toggle voice chat** (`composer.startVoiceMode`) is separate and is never configured or sent by HelloChat. Custom letter and F1–F20 keys are preserved; unsupported keys produce a setup error.
+- **Start** sends the **Voice chat hotkey** (`realtimeVoice`) through macOS’s global shortcut path. The default is Command-Control-Shift-V. **Toggle voice chat** (`composer.startVoiceMode`) is separate and is never configured or sent by HelloChat. Custom letters, digits, punctuation (including grave/tilde), F1–F20 and navigation keys are preserved, including their modifiers. Unsupported keys or multi-step sequences produce a setup error.
 - If Codex is closed, HelloChat launches the registered Codex app, waits for its native window to be ready, then sends Start once. A call that is already open is reused.
 - **End** sends the dedicated `realtimeVoice.endCall` shortcut after a fresh Voice-control check. A retry presses the exact End control itself. If closure cannot be confirmed, HelloChat says the status is unknown instead of claiming the End action failed.
 - Shortcut writes are marked as saved, not proof of live registration. If HelloChat adds bindings while Codex is running, it shows a restart message. Voice confirmation still depends on the actual call controls.

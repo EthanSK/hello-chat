@@ -88,6 +88,10 @@ struct VoiceBridge {
                 else { continuation.resume(throwing: BridgeError.message("Codex didn't open. Try again.")) }
             }
         }
+        // A previous process can exit while Launch Services is handling its
+        // reopen request. Let the readiness coordinator observe that exit and
+        // make one fresh launch rather than failing on the stale process.
+        if app.isTerminated || currentApplication() == nil { return }
         guard codexProcess(app.processIdentifier) else {
             throw BridgeError.message("Couldn't identify the active Codex window.")
         }
@@ -125,7 +129,7 @@ struct VoiceBridge {
     private static func postEnd(pid: pid_t, record: ((String, [String: Double], [String: String]) -> Void)?, control: String) throws {
         // The required dedicated End binding is configured by post. Never use
         // the start/stop toggle as a substitute for an unassigned End command.
-        try post(command: endCommand, pid: pid)
+        try post(command: endCommand, pid: pid, record: record)
         record?("voice.end.shortcut_sent", [:], ["control": control, "command": endCommand])
     }
     // Send the user's explicit stop only after finding a current native Voice
@@ -316,7 +320,8 @@ struct VoiceBridge {
         return AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success ? result : nil
     }
 
-    static func post(command: String, pid: pid_t, deliveryKey: String? = nil) throws {
+    static func post(command: String, pid: pid_t, deliveryKey: String? = nil,
+                     record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
         guard codexProcess(pid) else { throw BridgeError.message("ChatGPT changed or closed. Check Voice again.") }
         try prepareShortcuts()
@@ -329,13 +334,10 @@ struct VoiceBridge {
               !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.")
         }
-        let parts = key.components(separatedBy: "+")
-        guard let last = parts.last, let virtualKey = virtualKey(for: last) else { throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.") }
-        var flags: CGEventFlags = []
-        if parts.contains(where: { ["Command", "Cmd", "CmdOrCtrl", "CommandOrControl"].contains($0) }) { flags.insert(.maskCommand) }
-        if parts.contains(where: { ["Control", "Ctrl"].contains($0) }) { flags.insert(.maskControl) }
-        if parts.contains(where: { ["Option", "Alt"].contains($0) }) { flags.insert(.maskAlternate) }
-        if parts.contains("Shift") { flags.insert(.maskShift) }
+        let combination = try VoiceKeyCombination(key)
+        let virtualKey = combination.resolvedKeyCode(), flags = combination.flags
+        record?("voice.key.prepared", ["keycode": Double(virtualKey), "flags": Double(flags.rawValue)],
+                ["command": command, "accelerator": key])
         guard let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
@@ -376,6 +378,7 @@ struct VoiceBridge {
     // Accept normal custom letter/function shortcuts (including Ethan's test T)
     // without silently replacing the saved binding with our default.
     static func virtualKey(for key: String) -> CGKeyCode? {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let letters = ["A": kVK_ANSI_A, "B": kVK_ANSI_B, "C": kVK_ANSI_C, "D": kVK_ANSI_D,
                        "E": kVK_ANSI_E, "F": kVK_ANSI_F, "G": kVK_ANSI_G, "H": kVK_ANSI_H,
                        "I": kVK_ANSI_I, "J": kVK_ANSI_J, "K": kVK_ANSI_K, "L": kVK_ANSI_L,
@@ -386,6 +389,30 @@ struct VoiceBridge {
         let functions = [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
                          kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20]
         if let value = letters[key.uppercased()] { return CGKeyCode(value) }
+        let standard = ["0": kVK_ANSI_0, "1": kVK_ANSI_1, "2": kVK_ANSI_2, "3": kVK_ANSI_3,
+                        "4": kVK_ANSI_4, "5": kVK_ANSI_5, "6": kVK_ANSI_6, "7": kVK_ANSI_7,
+                        "8": kVK_ANSI_8, "9": kVK_ANSI_9,
+                        "`": kVK_ANSI_Grave, "GRAVE": kVK_ANSI_Grave, "BACKTICK": kVK_ANSI_Grave,
+                        "-": kVK_ANSI_Minus, "MINUS": kVK_ANSI_Minus,
+                        "=": kVK_ANSI_Equal, "EQUAL": kVK_ANSI_Equal,
+                        "[": kVK_ANSI_LeftBracket, "]": kVK_ANSI_RightBracket,
+                        "\\": kVK_ANSI_Backslash, "BACKSLASH": kVK_ANSI_Backslash,
+                        ";": kVK_ANSI_Semicolon, "SEMICOLON": kVK_ANSI_Semicolon,
+                        "'": kVK_ANSI_Quote, "QUOTE": kVK_ANSI_Quote,
+                        ",": kVK_ANSI_Comma, "COMMA": kVK_ANSI_Comma,
+                        ".": kVK_ANSI_Period, "PERIOD": kVK_ANSI_Period,
+                        "/": kVK_ANSI_Slash, "SLASH": kVK_ANSI_Slash,
+                        "SPACE": kVK_Space, "SPACEBAR": kVK_Space, "TAB": kVK_Tab,
+                        "RETURN": kVK_Return, "ENTER": kVK_Return,
+                        "ESC": kVK_Escape, "ESCAPE": kVK_Escape,
+                        "BACKSPACE": kVK_Delete, "DELETE": kVK_ForwardDelete,
+                        "LEFT": kVK_LeftArrow, "ARROWLEFT": kVK_LeftArrow,
+                        "RIGHT": kVK_RightArrow, "ARROWRIGHT": kVK_RightArrow,
+                        "UP": kVK_UpArrow, "ARROWUP": kVK_UpArrow,
+                        "DOWN": kVK_DownArrow, "ARROWDOWN": kVK_DownArrow,
+                        "HOME": kVK_Home, "END": kVK_End,
+                        "PAGEUP": kVK_PageUp, "PAGEDOWN": kVK_PageDown]
+        if let value = standard[key] { return CGKeyCode(value) }
         if key.uppercased().hasPrefix("F"), let number = Int(key.dropFirst()), (1...functions.count).contains(number) {
             return CGKeyCode(functions[number - 1])
         }
@@ -415,6 +442,83 @@ struct VoiceBridge {
         var bytes = [CChar](repeating: 0, count: 4096)
         guard proc_pidpath(pid, &bytes, UInt32(bytes.count)) > 0 else { return nil }
         return String(cString: bytes)
+    }
+}
+
+// Previously parsed inline in post. Preserve the complete user-saved chord,
+// accepting Electron's common aliases/case and standard punctuation without
+// replacing a custom shortcut or changing the system keyboard layout.
+struct VoiceKeyCombination {
+    let keyCode: CGKeyCode
+    let flags: CGEventFlags
+    private let baseCharacter: String?
+
+    init(_ accelerator: String) throws {
+        var parts = accelerator.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "+").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        if parts.count >= 2, parts.suffix(2).allSatisfy({ $0.isEmpty }) {
+            parts.removeLast(2); parts.append("Plus")
+        }
+        guard let name = parts.last, !name.isEmpty else { throw Self.unsupported }
+        var modifiers: CGEventFlags = []
+        for part in parts.dropLast() {
+            switch part.lowercased() {
+            case "command", "cmd", "cmdorctrl", "commandorcontrol", "super", "meta": modifiers.insert(.maskCommand)
+            case "control", "ctrl": modifiers.insert(.maskControl)
+            case "alt", "option": modifiers.insert(.maskAlternate)
+            case "shift": modifiers.insert(.maskShift)
+            case "fn": modifiers.insert(.maskSecondaryFn)
+            default: throw Self.unsupported
+            }
+        }
+        let shifted = ["~": "`", "TILDE": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5",
+                       "^": "6", "&": "7", "*": "8", "(": "9", ")": "0", "_": "-", "+": "=", "PLUS": "=",
+                       "{": "[", "}": "]", "|": "\\", ":": ";", "\"": "'", "<": ",", ">": ".", "?": "/"]
+        let normalized = name.uppercased()
+        let base = shifted[normalized] ?? normalized
+        if shifted[normalized] != nil { modifiers.insert(.maskShift) }
+        guard let code = VoiceBridge.virtualKey(for: base) else { throw Self.unsupported }
+        let namedCharacters = ["GRAVE": "`", "BACKTICK": "`", "MINUS": "-", "EQUAL": "=", "BACKSLASH": "\\",
+                               "SEMICOLON": ";", "QUOTE": "'", "COMMA": ",", "PERIOD": ".", "SLASH": "/"]
+        baseCharacter = base.count == 1 ? base.lowercased() : namedCharacters[base]
+        keyCode = code; flags = modifiers
+    }
+
+    func resolvedKeyCode(characters: [CGKeyCode: String]? = nil) -> CGKeyCode {
+        guard let baseCharacter else { return keyCode }
+        let mapping: [CGKeyCode: String]
+        if let characters { mapping = characters }
+        else if Thread.isMainThread { mapping = Self.layoutCharacters() }
+        else { mapping = DispatchQueue.main.sync { Self.layoutCharacters() } }
+        // Match Chromium's LayoutAwareGlobalHotkeys lookup: find the base key
+        // with no modifiers, then deliver the complete saved modifiers. Control
+        // characters and Dvorak-QWERTY Command's alternate table must not change
+        // this lookup. Native global registration uses the same fixed fallback.
+        return mapping.keys.sorted().first { mapping[$0]?.lowercased() == baseCharacter } ?? keyCode
+    }
+
+    private static func layoutCharacters() -> [CGKeyCode: String] {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return [:] }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+        guard let bytes = CFDataGetBytePtr(data) else { return [:] }
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        var mapping: [CGKeyCode: String] = [:]
+        for code in CGKeyCode(0)..<128 {
+            var dead: UInt32 = 0
+            var length = 0
+            var characters = [UniChar](repeating: 0, count: 4)
+            let result = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdLast()),
+                                        UInt32(kUCKeyTranslateNoDeadKeysBit), &dead, characters.count, &length, &characters)
+            if result == noErr, dead == 0, length > 0 {
+                mapping[code] = String(utf16CodeUnits: characters, count: length)
+            }
+        }
+        return mapping
+    }
+
+    private static var unsupported: BridgeError {
+        .message("Voice shortcut uses an unsupported key or key sequence.")
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @main enum CoreTests {
     static var checks = 0
@@ -226,6 +227,33 @@ import Foundation
         check(VoiceBridge.virtualKey(for: "T") != nil && VoiceBridge.virtualKey(for: "F17") != nil,
               "Custom global T and F17 can be delivered without rewriting settings")
         check(VoiceBridge.virtualKey(for: "unsupported") == nil, "Unknown keys are not silently translated")
+        let grave = try VoiceKeyCombination("Ctrl+Shift+`")
+        check(grave.keyCode == 50 && grave.flags == [.maskControl, .maskShift], "Preserve the user's exact Control-Shift-grave shortcut")
+        let aliases = try VoiceKeyCombination("cmdorctrl + option + shift + f17")
+        check(aliases.keyCode == 64 && aliases.flags == [.maskCommand, .maskAlternate, .maskShift], "Function shortcuts retain their complete case-insensitive modifier combination")
+        for binding in ["Command+Plus", "Command++", "Command+Shift+="] {
+            let plus = try VoiceKeyCombination(binding)
+            check(plus.keyCode == 24 && plus.flags == [.maskCommand, .maskShift], "Equivalent plus-key spellings produce the same complete chord")
+        }
+        try check(try VoiceKeyCombination("Control+Tilde").keyCode == 50, "Tilde resolves to the shifted grave key")
+        for binding in ["Ctrl+PageDown", "Cmd+Left", "Control+2", "Alt+;", "Shift+Backspace", "Ctrl+Space"] {
+            _ = try VoiceKeyCombination(binding); checks += 1
+        }
+        for binding in ["Ctrl+V+F8", "Ctrl+K Ctrl+V", "Cmd+", "Command"] {
+            do { _ = try VoiceKeyCombination(binding); fatalError("Invalid chords must not dispatch a partial key") }
+            catch is BridgeError { checks += 1 }
+        }
+        let dvorak: [CGKeyCode: String] = [9: "k", 47: "v", 41: "s", 6: ";", 50: "`"]
+        for binding in ["Command+Control+Shift+V", "Ctrl+Alt+Shift+V"] {
+            let chord = try VoiceKeyCombination(binding)
+            check(chord.resolvedKeyCode(characters: dvorak) == 47, "Native base-key lookup respects Dvorak while retaining each chord's complete modifiers")
+        }
+        try check(try VoiceKeyCombination("Ctrl+Shift+:").resolvedKeyCode(characters: dvorak) == 6,
+              "The user's colon binding maps to Dvorak's semicolon key, not QWERTY S")
+        try check(try VoiceKeyCombination("Ctrl+Shift+`").resolvedKeyCode(characters: dvorak) == 50,
+              "The user's grave binding stays at its mapped key")
+        try check(try VoiceKeyCombination("Cmd+Ctrl+Shift+F17").resolvedKeyCode(characters: dvorak) == 64,
+              "Named function keys are independent of letter layouts")
         let timestamp = Double(VoiceBridge.eventTimestamp()) / 1_000_000_000
         check(abs(timestamp - ProcessInfo.processInfo.systemUptime) < 1, "Event timestamps use nanoseconds, not raw CPU ticks")
         let launchedAt = Date(timeIntervalSince1970: 123)

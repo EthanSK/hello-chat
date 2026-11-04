@@ -1,5 +1,6 @@
 // Previously HeyChatApp.swift / Hey Chat. Product name: HelloChat; spoken wake phrase: Hello Chat.
 import AppKit
+import ApplicationServices
 import Combine
 import SwiftUI
 import CoreML
@@ -180,6 +181,7 @@ import CoreAudio
             info["recognition"] = savedModel.title
             info["neuralEngineAvailable"] = MLComputeDevice.allComputeDevices.contains { if case .neuralEngine = $0 { return true }; return false }
             info["microphonePermission"] = AVCaptureDevice.authorizationStatus(for: .audio).rawValue
+            info["postEventAllowed"] = CGPreflightPostEventAccess()
             if let json = try? JSONSerialization.data(withJSONObject: info, options: .sortedKeys) { print(String(decoding: json, as: UTF8.self)) }
             return
         }

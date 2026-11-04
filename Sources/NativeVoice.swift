@@ -22,7 +22,11 @@ import Foundation
                                 Diagnostics.shared.record(event, numbers: numbers, info: info)
                             })
                         }
-                        else { try VoiceBridge.post(command: command, pid: pid) }
+                        else {
+                            try VoiceBridge.post(command: command, pid: pid, record: { event, numbers, info in
+                                Diagnostics.shared.record(event, numbers: numbers, info: info)
+                            })
+                        }
                     }.value
                  },
                  activate: { pid in
@@ -90,12 +94,15 @@ import Foundation
             throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
         }
         let waitForApplication = state.pid == nil || state.applicationLaunching || !state.applicationHasWindow
+        var lastObservedPID = state.pid
+        var relaunchedAfterExit = false
         if state.pid == nil || !state.applicationReady, let launch = transport.launch {
             try checkAttached()
             diagnostics?.record("voice.application.launch_requested")
             try await launch()
             try checkAttached()
             state = await snapshot()
+            if let pid = state.pid { lastObservedPID = pid }
         }
         // Poll an actual readiness condition at the existing confirmation cadence,
         // not a fixed launch delay. Never send a shortcut into an opening process.
@@ -105,8 +112,19 @@ import Foundation
                 throw BridgeError.message("Codex didn't open. Try again.")
             }
             try checkAttached()
+            if state.pid == nil, lastObservedPID != nil, !relaunchedAfterExit, let launch = transport.launch {
+                // A user restart can remove the old process after our first
+                // reopen request. Retry launch once, never retry the Voice key.
+                relaunchedAfterExit = true
+                diagnostics?.record("voice.application.relaunch_after_exit")
+                try await launch()
+                try checkAttached()
+                state = await snapshot()
+                continue
+            }
             try await Task.sleep(nanoseconds: 300_000_000)
             state = await snapshot()
+            if let pid = state.pid { lastObservedPID = pid }
         }
         try checkAttached()
         if waitForApplication { diagnostics?.record("voice.application.ready") }
