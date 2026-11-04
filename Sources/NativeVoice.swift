@@ -49,6 +49,7 @@ import Foundation
     private(set) var lastError: String?
     private var pendingUntil: Date?
     private var ending: Task<Bool, Error>?
+    private var detachedForQuit = false
 
     init(transport: Transport = .live, diagnostics: Diagnostics? = nil, confirmationTimeout: TimeInterval = 15) {
         self.transport = transport; self.diagnostics = diagnostics; self.confirmationTimeout = confirmationTimeout
@@ -57,7 +58,7 @@ import Foundation
     // nil means an exact End Voice control confirmed the call, but the native
     // presentation didn't expose its microphone state. Never infer an unmute.
     @discardableResult func start(onRequestAccepted: () -> Void = {}) async throws -> MicrophoneState? {
-        try Task.checkCancellation()
+        try checkAttached()
         let starting = Diagnostics.now
         diagnostics?.record("voice.open.requested")
         // Ethan wants the start sound to acknowledge each accepted wake, even
@@ -69,16 +70,16 @@ import Foundation
         // an End-only presentation doesn't tell us whether its mic is muted.
         connected = false
         var state = await snapshot()
-        try Task.checkCancellation()
+        try checkAttached()
         // Electron can replace an AX node during a read. Retry a bounded,
         // incomplete result before falling back to the explicit wake request.
         for _ in 0..<2 where state.accessibilityAllowed
             && state.microphone == nil && !state.endControlAvailable
             && (state.pid == nil || !state.controlsComplete) {
             try await Task.sleep(nanoseconds: 120_000_000)
-            try Task.checkCancellation()
+            try checkAttached()
             state = await snapshot()
-            try Task.checkCancellation()
+            try checkAttached()
         }
         guard let pid = state.pid else {
             throw BridgeError.message("Open Codex, then try again.")
@@ -110,18 +111,18 @@ import Foundation
             }
             try transport.activate(pid)
             try await Task.sleep(nanoseconds: 200_000_000)
-            try Task.checkCancellation()
+            try checkAttached()
             pendingUntil = Date().addingTimeInterval(confirmationTimeout)
             do { try await transport.send(VoiceBridge.startCommand, pid) }
             catch { pendingUntil = nil; throw error }
             diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000])
         }
-        try Task.checkCancellation()
+        try checkAttached()
         while Date() < (pendingUntil ?? confirmationDeadline) {
-            try Task.checkCancellation()
+            try checkAttached()
             try await Task.sleep(nanoseconds: 300_000_000)
             let fresh = await snapshot()
-            try Task.checkCancellation()
+            try checkAttached()
             // A transient application lookup is unknown, not proof of exit.
             // Keep waiting for this start without resending its toggle.
             if fresh.pid == nil { continue }
@@ -141,6 +142,7 @@ import Foundation
     }
 
     func setMicrophone(_ state: MicrophoneState) async throws {
+        try checkAttached()
         if state == .muted { _ = try await end() }
         else {
             guard connected else { throw BridgeError.message("Codex Voice is off.") }
@@ -149,6 +151,7 @@ import Foundation
                 throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
             }
             if microphone == .listening { return }
+            try checkAttached()
             try transport.activate(pid)
             try await transport.send(VoiceBridge.muteCommand, pid)
             try await Task.sleep(nanoseconds: 300_000_000)
@@ -158,15 +161,35 @@ import Foundation
         }
     }
 
+    // Normal H Chat Quit stops our control work, not the Codex conversation.
+    // Set this before cancelling a pending start: its cancellation handler must
+    // not interpret quitting as an explicit request to end a late-opened call.
+    func detachForQuit() {
+        detachedForQuit = true
+        pendingUntil = nil
+        connected = false
+        lastError = nil
+        ending?.cancel()
+        ending = nil
+        diagnostics?.record("voice.detached_for_quit")
+    }
+
+    private func checkAttached() throws {
+        try Task.checkCancellation()
+        if detachedForQuit { throw CancellationError() }
+    }
+
     func stop() async {
+        guard !detachedForQuit else { return }
         do { _ = try await end(); lastError = nil }
         catch { lastError = error.localizedDescription }
     }
 
     // Ethan's "24/7" reliability: failed confirmation must not tear down a
-    // working native call. Explicit cancellation (Bye Chat, off, or Quit)
-    // still cleans up an owned late opening through the existing stop path.
+    // working native call. Explicit End/off still clean up owned late openings;
+    // normal Quit detaches and preserves the conversation instead.
     func recoverFromStartFailure(_ error: Error) async {
+        guard !detachedForQuit else { return }
         if error is CancellationError || Task.isCancelled { await stop() }
         else {
             pendingUntil = nil; connected = false
@@ -188,6 +211,7 @@ import Foundation
     // A spoken end command may address a call opened directly in Codex. Adopt
     // only freshly identified Voice controls; cleanup never takes this path.
     @discardableResult func endIfPresent() async throws -> Bool {
+        guard !detachedForQuit else { return false }
         if transport.requestEnd != nil, pendingUntil == nil { return try await end(explicit: true) }
         let state = await snapshot()
         guard state.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.") }
@@ -209,11 +233,12 @@ import Foundation
     }
 
     private func endOnce(explicit: Bool, initial: VoiceSnapshot?) async throws -> Bool {
+        try checkAttached()
         guard explicit || connected || pendingUntil != nil else { return false }
         let starting = Diagnostics.now
         diagnostics?.record("voice.end.requested")
         // Only an explicit spoken/button End can take the direct action path.
-        // Quit/recovery cleanup must refresh stale ownership first and must
+        // Recovery cleanup must refresh stale ownership first and must
         // never use Codex's start-capable toggle to dispose of a closed call.
         if explicit, pendingUntil == nil, let requestEnd = transport.requestEnd {
             guard let pid = try await requestEnd() else { connected = false; return false }
@@ -235,11 +260,13 @@ import Foundation
             if !state.inputRunning && state.controlsComplete { connected = false; return false }
             throw BridgeError.message("Couldn't confirm Codex Voice. End the call in Codex.")
         }
+        try checkAttached()
         // Match start/unmute: activate Codex before requesting its native action.
         // An AXPress acknowledgement is not confirmation that the call ended.
         try transport.activate(pid)
         diagnostics?.record("voice.end.activation_requested")
         try await Task.sleep(nanoseconds: 200_000_000)
+        try checkAttached()
         if !explicit, let pressEnd = transport.retryEnd {
             try await pressEnd(pid)
         } else {

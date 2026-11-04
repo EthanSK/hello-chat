@@ -430,6 +430,60 @@ import Foundation
         refreshed = state(input: true); refreshed.controlsComplete = false
         let unknown = await refreshing.refresh()
         precondition(unknown == nil && !refreshing.connected, "An incomplete read counts as off, so it never blocks the next start")
+        // Quit detaches without making the active conversation ours to end.
+        for adopted in [false, true] {
+            var quitState = adopted ? state(.listening) : state()
+            var quitCommands: [String] = []
+            let quitting = NativeVoice(transport: .init(snapshot: { quitState }, send: { command, _ in
+                quitCommands.append(command)
+                quitState = state(.listening)
+            }, activate: { _ in }))
+            _ = try await quitting.start()
+            let beforeQuit = quitCommands
+            quitting.detachForQuit()
+            await quitting.stop()
+            await quitting.recoverFromStartFailure(CancellationError())
+            let endedAfterQuit = try await quitting.endIfPresent()
+            precondition(quitState.microphone == .listening && quitCommands == beforeQuit && !endedAfterQuit,
+                         "Normal Quit preserves both owned and adopted active calls")
+        }
+        var openingEntered = false
+        var releaseOpening: CheckedContinuation<Void, Never>?
+        var quitDuringOpenState = state()
+        var quitDuringOpenCommands: [String] = []
+        let quitDuringOpen = NativeVoice(transport: .init(snapshot: { quitDuringOpenState }, send: { command, _ in
+            quitDuringOpenCommands.append(command)
+            quitDuringOpenState = state(.listening)
+            openingEntered = true
+            await withCheckedContinuation { releaseOpening = $0 }
+        }, activate: { _ in }))
+        let quitOpeningTask = Task { @MainActor in
+            do { _ = try await quitDuringOpen.start() }
+            catch { await quitDuringOpen.recoverFromStartFailure(error) }
+        }
+        while !openingEntered { await Task.yield() }
+        quitDuringOpen.detachForQuit()
+        quitOpeningTask.cancel()
+        releaseOpening?.resume()
+        await quitOpeningTask.value
+        precondition(quitDuringOpenCommands == [VoiceBridge.startCommand] && quitDuringOpenState.microphone == .listening,
+                     "Quit during an in-flight Start does not hang up the late-opened call")
+        var quitReadEntered = false
+        var releaseQuitRead: CheckedContinuation<VoiceSnapshot, Never>?
+        let quitBeforeStart = NativeVoice(transport: .init(snapshot: {
+            quitReadEntered = true
+            return await withCheckedContinuation { releaseQuitRead = $0 }
+        }, send: { _, _ in fatalError("Quit before Start must send no command") },
+        activate: { _ in fatalError("Quit before Start must not activate Codex") }))
+        let quitBeforeTask = Task { @MainActor in
+            do { _ = try await quitBeforeStart.start() }
+            catch { await quitBeforeStart.recoverFromStartFailure(error) }
+        }
+        while !quitReadEntered { await Task.yield() }
+        quitBeforeStart.detachForQuit()
+        quitBeforeTask.cancel()
+        releaseQuitRead?.resume(returning: state())
+        await quitBeforeTask.value
         print("Passed native Voice transport checks including stale closed-call and active-call cleanup. No desktop events or real calls sent.")
     }
 }

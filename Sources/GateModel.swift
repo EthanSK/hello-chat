@@ -619,8 +619,9 @@ import SwiftUI
         Diagnostics.shared.record("app.quit.requested")
         quitting = true
         let previous = voiceTask
+        voice.detachForQuit()
         stopLocal()
-        await voice.stop(); await previous?.value
+        await previous?.value
         archive.flush()
         return true
     }
