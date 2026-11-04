@@ -9,7 +9,7 @@ HelloChat is a native macOS app that listens for both phrases with a local speec
 **Website:** https://ethansk.github.io/hello-chat/
 
 > [!NOTE]
-> Source only for now. There's no signed, notarised download yet, so [build it yourself](#build-from-source).
+> No app download has been published yet. The [release workflow](RELEASE.md) is ready for signed, notarised releases once its signing credentials are configured. Until then, [build from source](#build-from-source).
 
 ## How It Works
 

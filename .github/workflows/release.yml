@@ -1,0 +1,95 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (vX.Y.Z)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      HELLOCHAT_BUILD_DIR: ${{ github.workspace }}/.build.noindex
+      HELLOCHAT_RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      HELLOCHAT_NOTARY_PROFILE: HelloChat-CI
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+      - name: Validate release credentials and version
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in APPLE_CERTIFICATE_P12_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing $name. See RELEASE.md."
+              exit 1
+            fi
+          done
+          version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' Info.plist)
+          [[ "$HELLOCHAT_RELEASE_TAG" == "v$version" ]]
+          [[ "$HELLOCHAT_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          swift --version
+      - name: Select Swift 6.2 or newer
+        run: |
+          developer_dir=$(python3 -c 'import glob; from pathlib import Path; apps=glob.glob("/Applications/Xcode_26*.app"); assert apps, "Xcode 26 is required"; print(sorted(apps)[-1] + "/Contents/Developer")')
+          echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+      - name: Import signing identity
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/hellochat.keychain-db"
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$password"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -k "$keychain" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          security default-keychain -s "$keychain"
+          rm "$RUNNER_TEMP/certificate.p12"
+          xcrun notarytool store-credentials "$HELLOCHAT_NOTARY_PROFILE" --apple-id "$APPLE_ID" --team-id T34G959ZG8 --password "$APPLE_APP_SPECIFIC_PASSWORD" --keychain "$keychain"
+      - name: Run tests
+        run: zsh scripts/test.sh
+      - name: Build signed Apple Silicon app
+        run: zsh scripts/build.sh
+      - name: Notarize and package
+        run: zsh scripts/package-release.sh
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$HELLOCHAT_RELEASE_TAG" \
+            "$HELLOCHAT_BUILD_DIR/HelloChat-macOS-arm64.zip" \
+            "$HELLOCHAT_BUILD_DIR/SHA256SUMS" \
+            --verify-tag --title "HelloChat ${HELLOCHAT_RELEASE_TAG#v}" \
+            --generate-notes --notes 'Signed and notarized for Apple Silicon Macs running macOS 15 or later. Download the ZIP, extract it, and move HelloChat to Applications. Allow Microphone and Accessibility when prompted.'
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          if [[ -f "$RUNNER_TEMP/hellochat.keychain-db" ]]; then
+            security delete-keychain "$RUNNER_TEMP/hellochat.keychain-db"
+          fi

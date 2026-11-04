@@ -11,8 +11,8 @@ for spec in '16 16' '16@2x 32' '32 32' '32@2x 64' '128 128' '128@2x 256' '256 25
   cp "$build_dir/icons/icon-${parts[2]}.png" "$build_dir/HelloChat.iconset/icon_${parts[1]%%@*}x${parts[1]%%@*}${parts[1]#${parts[1]%%@*}}.png"
 done
 iconutil -c icns "$build_dir/HelloChat.iconset" -o "$app/Contents/Resources/HelloChat.icns"
-swift build --scratch-path "$build_dir" -c release --jobs 3
-bin_dir="$(swift build --scratch-path "$build_dir" -c release --show-bin-path)"
+swift build --scratch-path "$build_dir" --arch arm64 -c release --jobs 3
+bin_dir="$(swift build --scratch-path "$build_dir" --arch arm64 -c release --show-bin-path)"
 cp "$bin_dir/HelloChat" "$app/Contents/MacOS/HelloChat"
 python3 scripts/fetch-speech-models.py --output "$build_dir/models"
 mkdir -p "$app/Contents/Resources/LocalSpeech"
@@ -35,9 +35,9 @@ if [[ -z "$identity" ]]; then
 fi
 # Keep the original signing identifier so installed users retain privacy grants.
 if [[ -n "$identity" ]]; then
-  codesign --force --options runtime --timestamp --sign "$identity" --identifier com.ethansk.HeyChat "$app"
+  codesign --force --options runtime --timestamp --sign "$identity" --identifier com.ethansk.HeyChat --entitlements Resources/HelloChat.entitlements "$app"
 else
-  codesign --force --sign - --identifier com.ethansk.HeyChat "$app"
+  codesign --force --sign - --identifier com.ethansk.HeyChat --entitlements Resources/HelloChat.entitlements "$app"
 fi
 codesign --verify --deep --strict "$app"
 echo "$app"
