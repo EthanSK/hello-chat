@@ -24,7 +24,7 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 - Build with `zsh scripts/build.sh`; test with `zsh scripts/test.sh`, from the repository root. The canonical scripts are [build.sh](../../../scripts/build.sh) and [test.sh](../../../scripts/test.sh).
 - Set `HELLOCHAT_BUILD_DIR` to task-owned `.noindex` scratch. Follow the host's scratch-disk instructions for large outputs. Do not clean or overwrite another task's build.
 - Recognition and model assets stay local. Never silently add network transcription, voice identification, or background microphone behavior. Model pinning and downloads belong to [SpeechModels.json](../../../Resources/SpeechModels.json) and [fetch-speech-models.py](../../../scripts/fetch-speech-models.py).
-- Use injected transports and recorded fixtures for tests. Never automate real Codex Voice calls as an incidental build/test side effect. Recorded recognition and key-translation checks do not prove physical-microphone or live Voice acceptance.
+- Use injected transports and recorded fixtures for tests. Never automate real Codex Voice calls in tests. Recorded recognition and key-translation checks do not prove physical-microphone or live Voice acceptance.
 
 ## Voice and keyboard behavior
 
