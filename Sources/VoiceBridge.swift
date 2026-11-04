@@ -114,12 +114,26 @@ struct VoiceBridge {
                                 && (controls.windowReady || controls.microphone != nil || controls.end != nil),
                              applicationLaunching: app.map { !$0.isFinishedLaunching } ?? false,
                              applicationHasWindow: controls.hasWindow,
-                             applicationHasWebContent: controls.webContentReady)
+                             applicationHasWebContent: controls.webContentReady,
+                             applicationAbsent: candidates.isEmpty)
     }
 
     // Passive, one-shot reads only. No AXPress, focus/activation writes or pointer automation.
     static func microphoneState(_ pid: pid_t?) -> MicrophoneState? {
         voiceControls(pid).microphone
+    }
+
+    // Wake an existing muted conversation through its fresh native microphone
+    // action. New users need no third shortcut, and no Toggle command is sent.
+    static func pressUnmute(pid: pid_t) throws {
+        guard codexProcess(pid) else { throw BridgeError.message("Codex closed while opening chat.") }
+        let controls = voiceControls(pid)
+        if controls.microphone == .listening { return }
+        guard controls.microphone == .muted, let button = controls.microphoneButton,
+              usableMicrophone(button, pid: pid),
+              AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
+            throw BridgeError.message("Couldn't unmute chat. Use the microphone in Codex.")
+        }
     }
 
     // Exact native end actions from the installed Codex Voice presentations.
@@ -459,6 +473,17 @@ struct VoiceKeyCombination {
     let flags: CGEventFlags
     private let baseCharacter: String?
 
+    static func modifierFlag(_ value: String) -> CGEventFlags? {
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "command", "cmd", "cmdorctrl", "commandorcontrol", "super", "meta": return .maskCommand
+        case "control", "ctrl": return .maskControl
+        case "alt", "option": return .maskAlternate
+        case "shift": return .maskShift
+        case "fn": return .maskSecondaryFn
+        default: return nil
+        }
+    }
+
     init(_ accelerator: String) throws {
         var parts = accelerator.trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: "+").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -468,14 +493,8 @@ struct VoiceKeyCombination {
         guard let name = parts.last, !name.isEmpty else { throw Self.unsupported }
         var modifiers: CGEventFlags = []
         for part in parts.dropLast() {
-            switch part.lowercased() {
-            case "command", "cmd", "cmdorctrl", "commandorcontrol", "super", "meta": modifiers.insert(.maskCommand)
-            case "control", "ctrl": modifiers.insert(.maskControl)
-            case "alt", "option": modifiers.insert(.maskAlternate)
-            case "shift": modifiers.insert(.maskShift)
-            case "fn": modifiers.insert(.maskSecondaryFn)
-            default: throw Self.unsupported
-            }
+            guard let flag = Self.modifierFlag(part) else { throw Self.unsupported }
+            modifiers.insert(flag)
         }
         let shifted = ["~": "`", "TILDE": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5",
                        "^": "6", "&": "7", "*": "8", "(": "9", ")": "0", "_": "-", "+": "=", "PLUS": "=",
@@ -568,12 +587,9 @@ struct VoiceShortcutConfiguration {
     // Modifier aliases and ordering must not hide another command's binding.
     static func normalizedKey(_ key: String) -> String {
         let parts = key.split(separator: "+").map { value -> String in
-            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            case "cmd", "command", "cmdorctrl", "commandorcontrol": return "command"
-            case "ctrl", "control": return "control"
-            case "alt", "option": return "option"
-            default: return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            }
+            let part = String(value)
+            return VoiceKeyCombination.modifierFlag(part).map { String($0.rawValue) }
+                ?? part.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }
         return Set(parts).sorted().joined(separator: "+")
     }

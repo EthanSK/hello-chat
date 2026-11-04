@@ -31,7 +31,10 @@ import SwiftUI
     let dock = DockMonitor()
     private let listeningPreferences = ListeningPreferences()
     @Published private(set) var manualListeningEnabled = ListeningPreferences().manualEnabled {
-        didSet { listeningPreferences.manualEnabled = manualListeningEnabled }
+        didSet {
+            listeningPreferences.manualEnabled = manualListeningEnabled
+            if oldValue != manualListeningEnabled { updateListeningDelay = nil }
+        }
     }
     // Manual On is remembered independently of docking and playback pauses.
     // An automatic dock start also appears On, without saving a manual override.
@@ -41,6 +44,7 @@ import SwiftUI
     @Published var automaticListening = ListeningPreferences().automatic {
         didSet {
             listeningPreferences.automatic = automaticListening
+            if oldValue != automaticListening { updateListeningDelay = nil }
             if oldValue, !automaticListening {
                 manualListeningEnabled = enabled || (busy && status == "Starting") || resumeAfterPlaybackPause
             }
@@ -93,6 +97,7 @@ import SwiftUI
     })
     private var generation = UUID()
     private var voiceTask: Task<Void, Never>?
+    private var voiceStartContext: VoiceStartContext?
     private var timeoutTask: Task<Void, Never>?
     private var listeningTask: Task<Void, Never>?
     private var quitting = false
@@ -103,6 +108,7 @@ import SwiftUI
     private var resumeAfterPlaybackPause = false
     private var policy = ListeningPolicy()
     private var dockDelay = DockListeningDelay()
+    private var updateListeningDelay: DockListeningDelay?
     private var automaticStartTask: Task<Void, Never>?
     private var inputTask: Task<Void, Never>?
     private var phraseUpdateTask: Task<Void, Never>?
@@ -171,6 +177,7 @@ import SwiftUI
         listener.onConfigurationChange = { [weak self] in self?.restartMicrophone(settle: true) }
         dock.onChange = { [weak self] in
             guard let self else { return }
+            self.updateListeningDelay = nil
             if self.automaticListening {
                 self.dockDelay.invalidateStartup()
                 self.applyAutomaticListening()
@@ -193,11 +200,12 @@ import SwiftUI
             dockDelay = DockListeningDelay(alreadyDockedAtStartup: automaticListening && dock.eligible)
         }
         guard allowed != playbackAllowed else { return }
+        updateListeningDelay = nil
         playbackAllowed = allowed
         Diagnostics.shared.record("playback.capture.allowed", info: ["allowed": String(allowed)])
         if !allowed {
             resumeAfterPlaybackPause = enabled || listeningTask != nil
-            stopLocal(); busy = false; status = "Off"; detail = ""
+            stopLocal(preservingCall: true); busy = false; status = "Off"; detail = ""
         } else if !automaticListening, resumeAfterPlaybackPause, manualListeningEnabled {
             resumeAfterPlaybackPause = false
             listeningTask = Task { await turnOn() }
@@ -218,7 +226,7 @@ import SwiftUI
         if !dock.eligible {
             // Dock policy owns local capture only; it does not hang up a native conversation.
             Diagnostics.shared.record("dock.listening.stopped", info: ["onPower": String(dock.onPower), "externalDisplays": String(dock.externalDisplays)])
-            stopLocal(); busy = false
+            stopLocal(preservingCall: true); busy = false
             status = "Waiting for dock"; detail = "Turn listening on now, or connect power and an external display to start automatically."
         } else if shouldListen, !enabled, !busy {
             guard let remaining = dockDelay.remaining(shouldListen: true, now: Diagnostics.now) else { return }
@@ -439,7 +447,11 @@ import SwiftUI
         voiceText = voice.connected ? "Check chat" : "Chat is off"
         if !voice.connected { microphone = .muted }
     }
-    private func stopLocal() {
+    private func stopLocal(preservingCall: Bool = false) {
+        // Undocking and playback pauses own local capture, not the conversation.
+        // Mark this exact opening before cancellation; do not permanently detach
+        // NativeVoice, since a later wake must still work after capture resumes.
+        if preservingCall { voiceStartContext?.preserveCallOnCancellation = true }
         cancelAutomaticStart(reason: "stopping")
         inputGeneration = UUID(); inputTask?.cancel(); inputTask = nil
         captureRestartThrottle = CaptureRestartThrottle()
@@ -529,20 +541,23 @@ import SwiftUI
         // Acknowledge the request before scheduling Voice work. The sound does
         // not mean Codex connected, and the busy reservation prevents reentry.
         feedback.play(.wake)
-        voiceTask = Task { await openVoice(trigger: trigger) }
+        let context = VoiceStartContext()
+        voiceStartContext = context
+        voiceTask = Task { await openVoice(trigger: trigger, context: context) }
     }
-    private func openVoice(trigger: String) async {
+    private func openVoice(trigger: String, context: VoiceStartContext) async {
         guard enabled, !quitting, !Task.isCancelled else { busy = false; return }
         shortcutNotice = VoiceBridge.shortcutSetupMessage()
         let token = generation
         busy = true; error = nil; status = "Connecting"; detail = "Opening chat…"; lastEvent = trigger
         defer {
+            if voiceStartContext === context { voiceStartContext = nil }
             if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
         }
         do {
             // Refresh native state on each explicit wake, including after a
             // call was closed in Codex, rather than trusting our cached state.
-            let openedMicrophone = try await voice.start()
+            let openedMicrophone = try await voice.start(context: context)
             try Task.checkCancellation()
             guard enabled, generation == token else { return }
             if let openedMicrophone, openedMicrophone != .listening { try await voice.setMicrophone(.listening) }
@@ -553,7 +568,7 @@ import SwiftUI
             scheduleMute()
         } catch {
             Diagnostics.shared.failure("voice.open.failed", error)
-            await voice.recoverFromStartFailure(error)
+            await voice.recoverFromStartFailure(error, context: context)
             guard generation == token, enabled else { return }
             showListening()
             if !(error is CancellationError) { self.error = error.localizedDescription }
@@ -638,9 +653,25 @@ import SwiftUI
         } else { beginVoice(trigger: "Heard \(wakePhrase)") }
     }
     func quit() { NSApp.terminate(nil) }
+    func restoreAfterFailedUpdate() async {
+        guard quitting else { return }
+        // Keep an in-progress dock deadline (or an already-active session).
+        // Real setting, playback or dock changes invalidate this saved state.
+        dock.refresh()
+        if let saved = updateListeningDelay { dockDelay = saved }
+        updateListeningDelay = nil
+        quitting = false; busy = false; voiceTask = nil
+        microphone = await voice.reattachAfterFailedUpdate()
+        showListening()
+        // Re-evaluate the existing saved choice and live power/output state.
+        // Never turn a user's manual Off into On or persist a temporary pause.
+        applyAutomaticListening()
+    }
     func prepareToQuit() async -> Bool {
         guard !quitting else { return false }
         Diagnostics.shared.record("app.quit.requested")
+        updateListeningDelay = dockDelay
+        if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
         let previous = voiceTask
         voice.detachForQuit()

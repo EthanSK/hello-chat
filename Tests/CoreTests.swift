@@ -288,7 +288,7 @@ import CoreGraphics
         try check(try setup.ensureDefaults() == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fill both null and blank required shortcuts")
         configured = try setup.read()
         check(configured.count == 2 && configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "Filling an unset key does not append a duplicate command")
-        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V", "Shift+Control+Command+V"] {
+        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V", "Shift+Control+Command+V", "Super+Ctrl+Shift+V", "Meta+Control+Shift+V"] {
             try writeSetup([["command": "other.command", "key": conflictingKey]])
             let beforeSetup = try Data(contentsOf: setupURL)
             do { try setup.ensureDefaults(); fatalError("Must reject a default collision") } catch is BridgeError { checks += 1 }

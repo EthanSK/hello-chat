@@ -103,6 +103,21 @@ import Foundation
         precondition(disabledAtStartup.remaining(shouldListen: true, now: 50) == 120,
                      "Enabling automatic listening later does not invent an already-docked launch")
 
+        var resumedActive = DockListeningDelay()
+        resumedActive.resumeActiveSession()
+        precondition(resumedActive.remaining(shouldListen: true, now: 100) == 0,
+                     "An active listener resumes immediately after an aborted update")
+        var interruptedWait = DockListeningDelay()
+        precondition(interruptedWait.remaining(shouldListen: true, now: 100) == 120)
+        var restoredWait = interruptedWait
+        precondition(restoredWait.remaining(shouldListen: true, now: 140) == 80,
+                     "Restoring an interrupted update preserves the existing dock deadline")
+        precondition(restoredWait.remaining(shouldListen: false, now: 150) == nil,
+                     "Current Off or ineligible policy still prevents listening after restoration")
+        resumedActive.cancel()
+        precondition(resumedActive.remaining(shouldListen: true, now: 160) == 120,
+                     "A real environment change still starts a new dock delay")
+
         // Virtual time tests the real two-minute policy without using the mic,
         // playing speech or shortening the installed app's delay.
         var delay = DockListeningDelay()

@@ -1,37 +1,45 @@
 # Releasing HelloChat
 
-The release workflow builds an Apple Silicon app, runs the tests, verifies its Developer ID signature and microphone entitlement, notarises it with Apple, staples the ticket, and publishes a ZIP with SHA-256 checksums. It runs when a `vX.Y.Z` tag is pushed. Ordinary source pushes do not publish a release. The manual action retries an existing version tag.
+Every push to `main` starts the Release workflow on a dedicated Apple Silicon signing runner. The job tests, builds, verifies the Developer ID signature and microphone entitlement, notarises and staples the app, signs the final ZIP for Sparkle, and publishes a new immutable release. No signing private key is exported to GitHub.
 
-## One-time signing setup
+## One-time signing runner setup
 
-The repository currently has no release signing secrets. A maintainer must configure these Actions secrets before the first release:
+Use the GitHub repository’s Actions → Runners setup for an official macOS ARM64 runner. Add the `hello-chat-release` label and run it in the signing user’s logged-in macOS session. Keep its work/temp directories on suitable scratch storage. This workflow runs only for trusted main pushes and manual dispatches, never pull requests from forks.
 
-- `APPLE_CERTIFICATE_P12_BASE64`: the base64-encoded Developer ID Application signing identity, including its private key.
-- `APPLE_CERTIFICATE_PASSWORD`: the password protecting that archive.
-- `APPLE_ID`: the Apple developer account used for notarisation.
-- `APPLE_APP_SPECIFIC_PASSWORD`: its app-specific password.
+The signing user must have:
 
-Use the existing **Developer ID Application** identity from team `T34G959ZG8`. Never commit credentials or signing archives. Setting up the pipeline does not export any local private key; a maintainer must separately authorise and provision signing credentials. Imported credentials live only in the job's temporary keychain and are removed at the end.
+- Developer ID Application identity from team `T34G959ZG8`, accessible to `codesign`.
+- An existing working `notarytool` profile. Set repository variable `HELLOCHAT_NOTARY_PROFILE` to its name; the default is `HelloChatRelease`.
+- A Sparkle signing key in Keychain account `com.ethansk.HelloChat`.
 
-## Publish a version
+Use the verified Sparkle distribution’s `generate_keys --account com.ethansk.HelloChat` once. It saves the private key in Keychain and prints the public key. Add only that public value as `SUPublicEDKey` in `Info.plist`. Never use its private-key export option. The workflow checks that the stored key matches the app before building.
 
-1. Update `CFBundleShortVersionString` and increase `CFBundleVersion` in `Info.plist`.
-2. Commit and push the reviewed change, then create a matching version tag, such as `v0.10.1`, and push that tag.
-3. Wait for the Release action to pass. A missing secret, version mismatch, test failure, incorrect signature, or rejected notarisation stops publication.
-4. Download `HelloChat-macOS-arm64.zip` and `SHA256SUMS` from that exact release. Run `shasum -a 256 -c SHA256SUMS` in the download directory. Extract the ZIP and verify `codesign --verify --deep --strict HelloChat.app`, `xcrun stapler validate HelloChat.app`, and `spctl --assess --type execute --verbose=2 HelloChat.app`.
-5. Quit the old app when no Voice call or recording is active. Move the old bundle aside before copying the new app to Applications: copying over a bundle can leave old resources behind. Keep existing preferences and startup settings.
-6. Open the downloaded app. Allow Microphone and Accessibility when macOS asks, then check local listening with the intended microphone. A signed archive and passing unit tests do not prove physical microphone acceptance or Codex Voice operation.
+An offline runner, locked keychain, missing public key or rejected notarisation blocks publication. A configured workflow alone is not an operational release pipeline. The signing Mac must remain awake and connected while a release runs; locking the screen and putting the Mac to sleep are different states.
 
-The download page is https://github.com/EthanSK/hello-chat/releases/latest after the first successful release. There is no in-app automatic updater; this workflow automates publishing only.
+## Version ownership
 
-## Release from the signing Mac
+`Info.plist` owns the requested major/minor version baseline. The serialized release job selects the next public patch above existing releases, starting with `1.0.0`. It assigns a build above both the workflow counter offset and the last published build. The generated `release-manifest.json` records the source commit, version and build; it is an immutable receipt, not another editable configuration file.
 
-The same packaging checks can run locally without exporting a signing key:
+Do not bump a second version file or commit generated release metadata back to main. Do not replace published tags/assets. A retry or later push must still produce a build newer than the one offered to installed clients.
+
+## Verify a public release
+
+1. Require a successful Release workflow and an online runner with the required label.
+2. Download the exact release’s ZIP, appcast and checksums. Run `shasum -a 256 -c SHA256SUMS`.
+3. Extract and verify `codesign --verify --deep --strict HelloChat.app`, `xcrun stapler validate HelloChat.app`, and `spctl --assess --type execute --verbose=2 HelloChat.app`.
+4. From an older installed build, check that Sparkle finds the newer version, downloads it, validates its signature and relaunches into that exact build. Verify preferences, startup configuration, microphone permission and Accessibility permission remain intact.
+5. Keep real microphone/Voice acceptance separate from fixture and transport tests. Never automate live Codex calls to test a release.
+
+The public download is `https://github.com/EthanSK/hello-chat/releases/latest`. Sparkle reads the latest release’s `appcast.xml` asset. That feed points to the exact immutable version ZIP and contains its Ed25519 signature and length.
+
+## Package on the signing Mac
 
 ```sh
 zsh scripts/test.sh
 zsh scripts/build.sh
-HELLOCHAT_NOTARY_PROFILE=your-existing-profile zsh scripts/package-release.sh
+HELLOCHAT_NOTARY_PROFILE=your-existing-profile \
+HELLOCHAT_SPARKLE_TOOLS=/path/to/verified/Sparkle/bin \
+zsh scripts/package-release.sh
 ```
 
-The profile must already be configured in `notarytool`. Both scripts use `HELLOCHAT_BUILD_DIR` when set. The package script accepts only the original bundle identity, the expected team, an arm64 executable, hardened runtime and the microphone entitlement. It recreates the ZIP after stapling so the downloaded app carries its Apple ticket.
+Both scripts use `HELLOCHAT_BUILD_DIR` when set. Packaging accepts only the original bundle identity, expected team, arm64 executable, hardened runtime and microphone entitlement. The archive is recreated after stapling and only those final bytes are signed for Sparkle. The app’s updater postpones its relaunch while a chat action, a confirmed call, an unknown call state or Agent Flow recording is active. Pending-only rechecks resume installation without requiring app focus. An abort after preparation restores local listening according to current saved settings. A matching installed startup job retains ownership after the update.

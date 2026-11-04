@@ -5,6 +5,8 @@ cd "${0:A:h:h}"
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 app="$build_dir/HelloChat.app"
 profile="${HELLOCHAT_NOTARY_PROFILE:?Set HELLOCHAT_NOTARY_PROFILE to a notarytool keychain profile}"
+tools="${HELLOCHAT_SPARKLE_TOOLS:?Set HELLOCHAT_SPARKLE_TOOLS to the verified Sparkle bin directory}"
+account="${HELLOCHAT_SPARKLE_ACCOUNT:-com.ethansk.HelloChat}"
 version=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")
 [[ "$version" == <->.<->.<-> ]] || { echo 'Invalid release version' >&2; exit 1; }
 [[ "${HELLOCHAT_RELEASE_TAG:-v$version}" == "v$version" ]] || { echo 'Release tag differs from app version' >&2; exit 1; }
@@ -31,5 +33,14 @@ xcrun stapler validate "$app"
 spctl --assess --type execute --verbose=2 "$app"
 # Ship the stapled app, not the pre-notarization archive.
 ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
-(cd "$build_dir" && shasum -a 256 HelloChat-macOS-arm64.zip > SHA256SUMS)
+# Sign the final stapled bytes, not the earlier notarization submission. Only
+# public signatures leave the Keychain; the private signing key is never exported.
+public_key=$("$tools/generate_keys" --account "$account" -p)
+[[ "$public_key" == "$(/usr/libexec/PlistBuddy -c 'Print SUPublicEDKey' "$app/Contents/Info.plist")" ]]
+"$tools/sign_update" --account "$account" -p "$zip_path" > "$build_dir/update-signature.txt"
+python3 scripts/create-appcast.py --plist "$app/Contents/Info.plist" --archive "$zip_path" \
+  --signature-file "$build_dir/update-signature.txt" \
+  --url "https://github.com/EthanSK/hello-chat/releases/download/v$version/HelloChat-macOS-arm64.zip" \
+  --output "$build_dir/appcast.xml"
+(cd "$build_dir" && shasum -a 256 HelloChat-macOS-arm64.zip appcast.xml > SHA256SUMS)
 echo "$zip_path"

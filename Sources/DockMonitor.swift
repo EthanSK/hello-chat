@@ -43,6 +43,9 @@ struct DockListeningDelay {
     init(alreadyDockedAtStartup: Bool = false) { immediateStartup = alreadyDockedAtStartup }
     mutating func invalidateStartup() { immediateStartup = false }
     mutating func cancel() { deadline = nil; immediateStartup = false }
+    // An aborted update resumes an already-active session, rather than
+    // pretending that the same dock has just been connected again.
+    mutating func resumeActiveSession() { deadline = 0; immediateStartup = false }
     mutating func remaining(shouldListen: Bool, now: TimeInterval) -> TimeInterval? {
         guard shouldListen else { cancel(); return nil }
         if deadline == nil {

@@ -3,6 +3,8 @@
 import argparse
 import importlib.util
 import json
+import plistlib
+import sys
 from pathlib import Path
 import stat
 import tempfile
@@ -206,6 +208,21 @@ class TranscriptBackupTests(unittest.TestCase):
         self.assertNotIn('StartInterval', config)
         self.assertNotIn('RunAtLoad', config)
         self.assertTrue(config['LowPriorityIO'])
+
+    def test_reinstall_preserves_omitted_private_route(self):
+        spec = importlib.util.spec_from_file_location("installer", Path(__file__).with_name("install-transcript-backup.py"))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        root = Path(self.temporary.name)
+        config = root / 'private.conf'; config.write_text('[test]\n')
+        target = root / 'Library/LaunchAgents' / (installer.LABEL + '.plist')
+        target.parent.mkdir(parents=True)
+        target.write_bytes(plistlib.dumps(installer.configuration(root, Path('/old/backup-transcripts.py'), config, 'test:archive')))
+        with patch.object(installer.Path, 'home', return_value=root), patch.object(sys, 'argv', ['installer', '--install']), patch.object(installer.subprocess, 'run'):
+            installer.main()
+        actual = plistlib.loads(target.read_bytes())['ProgramArguments']
+        self.assertEqual(actual[-4:], ['--rclone-config', str(config), '--destination', 'test:archive'])
+        self.assertNotIn('RunAtLoad', plistlib.loads(target.read_bytes()))
+
 
 
 if __name__ == "__main__":

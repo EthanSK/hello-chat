@@ -11,6 +11,22 @@ import tempfile
 LABEL = "com.ethansk.hello-chat-transcript-backup"
 
 
+def saved_route(path):
+    if not path.exists():
+        return None, None
+    settings = plistlib.loads(path.read_bytes())
+    arguments = settings.get("ProgramArguments", [])
+    if settings.get("Label") != LABEL or len(arguments) < 2 or Path(arguments[1]).name != "backup-transcripts.py":
+        raise ValueError("Existing backup job is not owned by this installer")
+    parsed = argparse.ArgumentParser(add_help=False)
+    parsed.add_argument("--rclone-config", type=Path)
+    parsed.add_argument("--destination")
+    values, extra = parsed.parse_known_args(arguments[2:])
+    if extra:
+        raise ValueError("Existing backup job has custom arguments; refusing to replace them")
+    return values.rclone_config, values.destination
+
+
 def configuration(home, script, rclone_config=None, destination=None):
     arguments = ["/usr/bin/python3", str(script)]
     if rclone_config:
@@ -39,9 +55,15 @@ def main():
     args = parser.parse_args()
     home = Path.home()
     script = Path(__file__).resolve().with_name("backup-transcripts.py")
-    if args.rclone_config and not args.rclone_config.is_file():
+    path = home / "Library/LaunchAgents" / (LABEL + ".plist")
+    # An ordinary reinstall refreshes the script/schedule, not the private Drive
+    # account or destination. Only explicitly supplied route options replace it.
+    saved_config, saved_destination = saved_route(path)
+    rclone_config = args.rclone_config if args.rclone_config is not None else saved_config
+    destination = args.destination if args.destination is not None else saved_destination
+    if rclone_config and not rclone_config.is_file():
         parser.error("Dedicated rclone configuration does not exist")
-    contents = plistlib.dumps(configuration(home, script, args.rclone_config, args.destination))
+    contents = plistlib.dumps(configuration(home, script, rclone_config, destination))
     if not args.install:
         sys.stdout.buffer.write(contents)
         return
@@ -51,7 +73,6 @@ def main():
     logs = home / "Library/Logs/HelloChat"
     logs.mkdir(mode=0o700, parents=True, exist_ok=True)
     logs.chmod(0o700)
-    path = agents / (LABEL + ".plist")
     descriptor, name = tempfile.mkstemp(prefix=".hello-chat-backup-", dir=agents)
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(contents)

@@ -2,6 +2,13 @@
 import AppKit
 import Foundation
 
+// Cancellation is owned by the specific opening task, so a later wake cannot
+// overwrite an environmental pause's instruction to preserve the current call.
+@MainActor final class VoiceStartContext {
+    let id = UUID()
+    var preserveCallOnCancellation = false
+}
+
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
 // starts no App Server. Start uses Codex's global "Voice chat hotkey"; the
 // composer's "Toggle voice chat" remains untouched. End stays dedicated.
@@ -13,6 +20,7 @@ import Foundation
         var requestEnd: (() async throws -> Int32?)? = nil
         var retryEnd: ((Int32) async throws -> Void)? = nil
         var launch: (() async throws -> Void)? = nil
+        var unmute: ((Int32) async throws -> Void)? = nil
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
         static var live: Self {
@@ -46,7 +54,9 @@ import Foundation
                     try await Task.detached(priority: .userInitiated) {
                         try VoiceBridge.pressEnd(pid: pid)
                     }.value
-                 }, launch: { try await VoiceBridge.launchCodex() })
+                 }, launch: { try await VoiceBridge.launchCodex() }, unmute: { pid in
+                    try await Task.detached(priority: .userInitiated) { try VoiceBridge.pressUnmute(pid: pid) }.value
+                 })
         }
     }
     private let transport: Transport
@@ -58,6 +68,7 @@ import Foundation
     private(set) var connected = false
     private(set) var lastError: String?
     private var pendingUntil: Date?
+    private var pendingOpeningID: UUID?
     private var ending: Task<Bool, Error>?
     private var detachedForQuit = false
 
@@ -70,8 +81,9 @@ import Foundation
 
     // nil means an exact End Voice control confirmed the call, but the native
     // presentation didn't expose its microphone state. Never infer an unmute.
-    @discardableResult func start(onRequestAccepted: () -> Void = {}) async throws -> MicrophoneState? {
+    @discardableResult func start(context: VoiceStartContext? = nil, onRequestAccepted: () -> Void = {}) async throws -> MicrophoneState? {
         try checkAttached()
+        let opening = context ?? VoiceStartContext()
         let starting = Diagnostics.now
         diagnostics?.record("voice.open.requested")
         // Ethan wants the start sound to acknowledge each accepted wake, even
@@ -102,7 +114,7 @@ import Foundation
         var lastObservedPID = state.pid
         var relaunchedAfterExit = false
         var launchedAt = transport.now()
-        let launchDeadline = launchedAt + launchTimeout
+        var launchDeadline = launchedAt + launchTimeout
         if waitForApplication, let launch = transport.launch {
             try checkAttached()
             diagnostics?.record("voice.application.launch_requested")
@@ -113,15 +125,14 @@ import Foundation
         }
         // Ethan confirmed that a visible launch shell accepted Start too early.
         // After opening/reopening only, allow five seconds for registration and
-        // require a real app action. At seven seconds a loaded web window is a
-        // bounded fallback for app versions whose accessible labels differ.
+        // require a real app action. An explicitly unready web shell must never
+        // become ready merely because a timer expires.
         // Already-open chats retain their immediate path; no retry sends Start.
         while waitForApplication {
             if state.microphone != nil || state.endControlAvailable { break }
             let elapsed = transport.now() - launchedAt
             if state.pid != nil && !state.applicationLaunching && state.applicationHasWindow
-                && ((state.applicationReady && elapsed >= minimumLaunchWait)
-                    || (state.applicationHasWebContent && elapsed >= max(7, minimumLaunchWait))) { break }
+                && state.applicationReady && elapsed >= minimumLaunchWait { break }
             guard transport.launch != nil, transport.now() < launchDeadline else {
                 throw BridgeError.message("Codex didn't open. Try again.")
             }
@@ -131,6 +142,9 @@ import Foundation
                 // reopen request. Retry launch once, never retry the Voice key.
                 relaunchedAfterExit = true
                 launchedAt = transport.now()
+                // The replacement gets its own bounded readiness window. Its
+                // five-second settling time must fit inside that window.
+                launchDeadline = launchedAt + launchTimeout
                 diagnostics?.record("voice.application.relaunch_after_exit")
                 try await launch()
                 try checkAttached()
@@ -149,9 +163,9 @@ import Foundation
         guard state.accessibilityAllowed else {
             throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
         }
-        if let microphone = state.microphone { connected = true; return microphone }
+        if let microphone = state.microphone { connected = true; clearPendingOpening(); return microphone }
         if state.endControlAvailable {
-            connected = true; pendingUntil = nil
+            connected = true; clearPendingOpening()
             diagnostics?.record("voice.open.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000], info: ["microphone": "unknown", "confirmation": "end_control"])
             return nil
         }
@@ -178,12 +192,16 @@ import Foundation
             // of sending the global start action into an already-active call.
             let activated = await snapshot()
             try checkAttached()
-            if let microphone = activated.microphone { connected = true; return microphone }
-            if activated.endControlAvailable { connected = true; return nil }
+            if let microphone = activated.microphone { connected = true; clearPendingOpening(); return microphone }
+            if activated.endControlAvailable { connected = true; clearPendingOpening(); return nil }
             guard activated.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
+            if waitForApplication, !activated.applicationReady || !activated.applicationHasWindow || activated.applicationLaunching {
+                throw BridgeError.message("Codex didn't open. Try again.")
+            }
             pendingUntil = Date().addingTimeInterval(confirmationTimeout)
+            pendingOpeningID = opening.id
             do { try await transport.send(VoiceBridge.startCommand, pid) }
-            catch { pendingUntil = nil; throw error }
+            catch { clearPendingOpening(ownedBy: opening.id); throw error }
             diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],
                                 info: ["command": VoiceBridge.startCommand, "delivery": "global_hotkey"])
         }
@@ -198,12 +216,12 @@ import Foundation
             if fresh.pid == nil { continue }
             guard fresh.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
             if let microphone = fresh.microphone {
-                connected = true; pendingUntil = nil
+                connected = true; clearPendingOpening()
                 diagnostics?.record("voice.open.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000])
                 return microphone
             }
             if fresh.endControlAvailable {
-                connected = true; pendingUntil = nil
+                connected = true; clearPendingOpening()
                 diagnostics?.record("voice.open.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000], info: ["microphone": "unknown", "confirmation": "end_control"])
                 return nil
             }
@@ -223,7 +241,10 @@ import Foundation
             if microphone == .listening { return }
             try checkAttached()
             try transport.activate(pid)
-            try await transport.send(VoiceBridge.muteCommand, pid)
+            guard let unmute = transport.unmute else {
+                throw BridgeError.message("Couldn't unmute chat. Use the microphone in Codex.")
+            }
+            try await unmute(pid)
             try await Task.sleep(nanoseconds: 300_000_000)
             guard await snapshot().microphone == .listening else {
                 throw BridgeError.message("Codex Voice is still muted. Check the microphone in Codex.")
@@ -236,12 +257,16 @@ import Foundation
     // not interpret quitting as an explicit request to end a late-opened call.
     func detachForQuit() {
         detachedForQuit = true
-        pendingUntil = nil
+        clearPendingOpening()
         connected = false
         lastError = nil
         ending?.cancel()
         ending = nil
         diagnostics?.record("voice.detached_for_quit")
+    }
+    func reattachAfterFailedUpdate() async -> MicrophoneState? {
+        detachedForQuit = false
+        return await refresh()
     }
 
     private func checkAttached() throws {
@@ -258,13 +283,24 @@ import Foundation
     // Ethan's "24/7" reliability: failed confirmation must not tear down a
     // working native call. Explicit End/off still clean up owned late openings;
     // normal Quit detaches and preserves the conversation instead.
-    func recoverFromStartFailure(_ error: Error) async {
+    func recoverFromStartFailure(_ error: Error, context: VoiceStartContext) async {
         guard !detachedForQuit else { return }
+        if context.preserveCallOnCancellation {
+            clearPendingOpening(ownedBy: context.id)
+            diagnostics?.record("voice.open.environment_pause_preserved")
+            return
+        }
         if error is CancellationError || Task.isCancelled { await stop() }
         else {
-            pendingUntil = nil; connected = false
+            clearPendingOpening(ownedBy: context.id)
+            connected = false
             diagnostics?.record("voice.open.unconfirmed_preserved")
         }
+    }
+
+    private func clearPendingOpening(ownedBy id: UUID? = nil) {
+        if let id, pendingOpeningID != id { return }
+        pendingUntil = nil; pendingOpeningID = nil
     }
 
     // Ethan's 2 Nov Refresh button: one fresh read so HelloChat's on/off state
@@ -325,7 +361,7 @@ import Foundation
             try await Task.sleep(nanoseconds: 300_000_000)
             state = await snapshot()
         }
-        pendingUntil = nil
+        clearPendingOpening()
         guard state.microphone != nil || state.endControlAvailable, let pid = state.pid else {
             if !state.inputRunning && state.controlsComplete { connected = false; return false }
             throw BridgeError.message("Couldn't confirm Codex Voice. End the call in Codex.")

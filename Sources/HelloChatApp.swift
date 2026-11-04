@@ -185,6 +185,7 @@ import CoreAudio
             if let json = try? JSONSerialization.data(withJSONObject: info, options: .sortedKeys) { print(String(decoding: json, as: UTF8.self)) }
             return
         }
+        if StartupOwnership.handoffIfNeeded() { return }
         do {
             let url = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/Hey Chat/instance.lock")
@@ -221,15 +222,23 @@ struct HelloChatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = GateModel()
     @StateObject private var zoom = InterfaceZoom()
+    @StateObject private var updater = AppUpdater()
     var body: some Scene {
         Window("HelloChat · \(AppVersion.display)", id: "main") {
-            MainView(model: model, zoom: zoom)
+            MainView(model: model, zoom: zoom, updater: updater)
                 .background(InitialWindowPlacement())
-                .onAppear { delegate.model = model; delegate.refreshPlayback() }
+                .onAppear {
+                    delegate.model = model; delegate.refreshPlayback()
+                    updater.start(model: model, prepareToQuit: { await delegate.prepareForUpdate() },
+                                  restoreAfterAbort: { await delegate.restoreAfterFailedUpdate() })
+                }
         }
         .defaultSize(width: 474, height: 630)
         .windowResizability(.contentMinSize)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updater.checkForUpdates() }.disabled(!updater.canCheck)
+            }
             CommandGroup(replacing: .appSettings) {
                 OpenSettingsButton().keyboardShortcut(",", modifiers: .command)
             }
@@ -246,7 +255,7 @@ struct HelloChatApp: App {
             }
         }
         Window("HelloChat Settings", id: "settings") {
-            SettingsView(model: model, zoom: zoom)
+            SettingsView(model: model, zoom: zoom, updater: updater)
                 .background(InitialWindowPlacement())
         }
         .defaultSize(width: 560, height: 660)
@@ -263,6 +272,21 @@ struct HelloChatApp: App {
     private var readyToTerminate = false
     private var outputListener: AudioObjectPropertyListenerBlock?
     private var playbackMonitoringReady = false
+    // Sparkle's first termination request must be accepted. Finish the same
+    // call-preserving cleanup used by Quit before invoking its install handler.
+    func prepareForUpdate() async -> Bool {
+        if readyToTerminate { return true }
+        guard !terminating else { return false }
+        terminating = true
+        let ready = await model?.prepareToQuit() ?? true
+        readyToTerminate = ready
+        if !ready { terminating = false }
+        return ready
+    }
+    func restoreAfterFailedUpdate() async {
+        readyToTerminate = false; terminating = false
+        await model?.restoreAfterFailedUpdate()
+    }
     func refreshPlayback() {
         guard playbackMonitoringReady else { return }
         model?.playbackChanged(allowed: outputListener != nil && BosePlayback.isSelected == false)
@@ -307,12 +331,20 @@ struct HelloChatApp: App {
 struct MainView: View {
     @ObservedObject var model: GateModel
     @ObservedObject var zoom: InterfaceZoom
+    @ObservedObject var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
     private var preparing: Bool { (model.busy && model.status == "Starting") || model.changingModel }
     private var connecting: Bool { model.status == "Connecting" }
     var body: some View {
         GeometryReader { viewport in
             Form {
+                if updater.waitingToInstall {
+                    Section {
+                        Text("Update ready. Restart when chat and recording are idle.")
+                        Button("Restart to update") { updater.resumeIfIdle() }
+                            .disabled(model.busy || model.phrasesPausedForAgentFlow)
+                    }
+                }
                 if let notice = model.shortcutNotice {
                     Section {
                         Label(notice, systemImage: "exclamationmark.triangle")
@@ -420,6 +452,7 @@ struct OpenSettingsButton: View {
 struct SettingsView: View {
     @ObservedObject var model: GateModel
     @ObservedObject var zoom: InterfaceZoom
+    @ObservedObject var updater: AppUpdater
     var body: some View {
         Form {
             Section("About") {
@@ -438,7 +471,7 @@ struct SettingsView: View {
             Section("Phrases") {
                 TextField("Wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
                 TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
-                Text("Say the wake phrase, then finish speaking to talk to Chat. Clear mentions of the phrase are ignored. The end phrase acts immediately, including while chat is connecting.")
+                Text("Say the wake phrase to start chat. Clear mentions of the phrase are ignored. The end phrase acts immediately, including while chat is connecting.")
                     .foregroundStyle(.secondary)
                 Toggle("Allow small spelling differences", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
@@ -481,6 +514,17 @@ struct SettingsView: View {
                 Text(TranscriptBackupConfiguration.message).foregroundStyle(.secondary)
                     .accessibilityIdentifier("transcriptBackupStatus")
                 if let error = model.archiveError { Text(error).foregroundStyle(.red).accessibilityIdentifier("transcriptArchiveError") }
+            }
+            Section("Updates") {
+                if !updater.configured { Text("Updates aren't available in this build.").foregroundStyle(.secondary) }
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheck)
+                Toggle("Check for updates automatically", isOn: Binding(
+                    get: { updater.automaticChecks }, set: { updater.automaticChecks = $0 }))
+                    .disabled(!updater.configured)
+                Toggle("Download updates automatically", isOn: Binding(
+                    get: { updater.automaticDownloads }, set: { updater.automaticDownloads = $0 }))
+                    .disabled(!updater.configured || !updater.automaticChecks)
             }
             Section("Diagnostics") { DiagnosticsView() }
             Section("Appearance") {

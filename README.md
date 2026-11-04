@@ -9,7 +9,7 @@ HelloChat is a native macOS app that listens for both phrases with a local speec
 **Website:** https://ethansk.github.io/hello-chat/
 
 > [!NOTE]
-> No app download has been published yet. The [release workflow](RELEASE.md) is ready for signed, notarised releases once its signing credentials are configured. Until then, [build from source](#build-from-source).
+> No app download has been published yet. The [release setup](RELEASE.md) needs an online signing runner and its Keychain credentials before the first signed, notarised download. Until then, [build from source](#build-from-source).
 
 ## How It Works
 
@@ -17,7 +17,7 @@ HelloChat is a native macOS app that listens for both phrases with a local speec
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
-| *Nothing* | Voice ends after 1 minute without new words. Choose 30 seconds, 1 minute or 2 minutes with **End Voice after silence**. |
+| *Nothing* | Voice ends after 1 minute without new words. Choose 30 seconds, 1 minute or 2 minutes with **End chat after silence**. |
 
 Speech recognition runs on your Mac with a bundled Parakeet model through Core ML, using CPU and Neural Engine with GPU off. HelloChat then drives Codex through its own Voice shortcut and End Voice control. There's no Agent Flow, proxy, server, account or API key involved in detection.
 
@@ -77,11 +77,10 @@ These checks use fixed recordings and text. They don't show how well HelloChat h
 
 ## In the App
 
-The main window has three sections:
+The main window has two sections:
 
 - **Listening**: **Listen for wake phrase**, editable **Wake phrase** and **End phrase** fields, the current status, **Speech model** and the microphone level. Phrase edits save immediately and stay in sync with Settings.
-- **Heard (local model)**: the latest local transcript in its own scrolling panel. The panel fits the visible window when there is room, follows new words while you are at the bottom, and lets you scroll back without being pulled down. There is no timestamp row. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
-- **Codex Voice**: Voice status, the latest event, **Start Voice in Codex** / **End Voice in Codex**, and **Refresh**, which checks Codex again after you open or close Voice there. If HelloChat can't tell, it shows Voice as off, so **Start Voice in Codex** stays available.
+- **Heard (local model)**: **Start chat** / **End chat** and Refresh sit beside the heading, above the latest local transcript in its own scrolling panel. The panel fits the visible window when there is room, follows new words while you are at the bottom, and lets you scroll back without being pulled down. There is no timestamp row. Wake and end phrase matches are green when exact, orange for a known mishearing and purple for another small spelling difference. Highlighting shows text matches, not that a Voice action ran.
 
 Waking happens as soon as HelloChat hears the wake phrase, so you can keep talking straight after it. Words you said before the phrase still filter out clear mentions, but words after it can't cancel a wake: “Hello Chat is broken” can still open Voice. The end phrase also acts immediately.
 
@@ -99,12 +98,19 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | --- | --- |
 | Microphone | **System default** or a named input, which stays selected by device. If it's disconnected, listening stops with an error instead of switching microphones. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
-| Phrases | **Wake phrase** and **End phrase**, **Allow small spelling differences** (on by default), **End Voice after silence** and **Check speech recognition**. |
+| Phrases | **Wake phrase** and **End phrase**, **Allow small spelling differences** (on by default), **End chat after silence** and **Check speech recognition**. |
 | Resources | HelloChat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |
-| Transcript Archive | **Save transcripts** (on by default) and the archive location. |
+| Transcript Archive | **Save transcripts** (on by default), the archive location, and this Mac’s optional backup configuration. |
+| Updates | **Check for Updates…**, automatic checking and automatic downloads on release-configured builds. |
 | Diagnostics | Timing and error logs, which exclude recognised words. |
-| Appearance | **Open windows on** remembers your display choice and uses an available display when disconnected. Zoom. **View → Zoom In / Zoom Out / Actual Size** works too. |
+| Appearance | **Open windows on** remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. **View → Zoom In / Zoom Out / Actual Size** works too. |
+
+## Updates
+
+Release-configured builds use Sparkle 2.10.1. **Check for Updates…** is in the app menu and Settings. Automatic checks/downloads use Sparkle’s saved preferences; the app does not overwrite your choices on launch. Updates are signed with Ed25519, as well as the app’s Developer ID signature.
+
+A requested update waits for chat actions and Agent Flow recording to finish before relaunching. Normal Quit and update cleanup detach from Codex without ending its call. Development builds without the production public key leave update controls disabled. See [release setup and verification](RELEASE.md).
 
 ## Speech Models
 
@@ -125,14 +131,14 @@ The three Core ML models run with `cpuAndNeuralEngine`, so GPU is excluded. Befo
 - **Transcripts** are saved locally by default in `~/Library/Application Support/HelloChat/Transcripts/YYYY-MM-DD/`, one JSON file per recognition context with the latest text, model, microphone name and rough phrase timestamps. Files are `0600` and folders `0700`. Turn off **Save transcripts** to stop; existing files stay.
 - HelloChat keeps listening while Voice is on, so it can hear Bye Chat. Transcripts can include your side of the conversation and anything else the microphone picks up.
 - **Logs** in `~/Library/Logs/HelloChat/` (`events.jsonl` and `events.previous.jsonl`, each capped at 512 KiB) contain timings and errors, never recognised words.
-- **Network**: listening makes no network requests, and models are never downloaded at runtime. Only the build and the optional backup script use the network.
-- **Codex**: HelloChat reads Codex's Voice shortcut from `~/.codex/keybindings.json` and inspects Codex's accessibility tree only while starting or ending Voice. The conversation, its audio, network connection and sign-in all belong to Codex.
+- **Network**: listening makes no network requests, and models are never downloaded at runtime. The build, Sparkle update checks/downloads and the optional backup script use the network. Update checks do not include saved transcripts or audio.
+- **Codex**: HelloChat reads Codex's Voice shortcut from `~/.codex/keybindings.json` and inspects Codex's accessibility tree during Start, End, Refresh, or while a downloaded update is waiting to relaunch. The conversation, its audio, network connection and sign-in all belong to Codex.
 
 ### Optional Google Drive Backup
 
 Transcripts stay on your Mac unless you install this separate script. It isn't installed by the build and needs [rclone](https://rclone.org/drive/) with your own Google Drive remote.
 
-The Transcript Archive pane's backup text describes this optional job; it doesn't detect whether you've installed it.
+The Transcript Archive pane checks this Mac’s LaunchAgent before saying backup is configured. A configuration file is not proof that a recent upload succeeded.
 
 ```sh
 # Print the LaunchAgent without installing it
@@ -144,7 +150,7 @@ python3 scripts/install-transcript-backup.py --install \
   --destination 'remote:HelloChat Backup/Transcripts'
 ```
 
-The job runs daily at 05:45 local time, only while the Mac is on power; it does not start at login. If the Mac is asleep at the scheduled time, macOS starts the job after it wakes. It uploads one immutable JSON snapshot per changed UTC day with `rclone copy`, so it never deletes remote files, and it never uploads audio. With `--rclone-config`, it uses only that file and fails if it's missing. Without options, it uses rclone's default configuration and `gdrive:HelloChat Backup/Transcripts`. Consider your own Google client ID, following [rclone's guidance](https://rclone.org/drive/#making-your-own-client-id), to avoid shared quota errors.
+The job runs daily at 05:45 local time, only while the Mac is on power; it does not start at login. If the Mac is asleep at the scheduled time, macOS starts the job after it wakes. It uploads one immutable JSON snapshot per changed UTC day with `rclone copy`, so it never deletes remote files, and it never uploads audio. With `--rclone-config`, it uses only that file and fails if it's missing. On a first installation without route options, it uses rclone's default configuration and `gdrive:HelloChat Backup/Transcripts`. Reinstalling preserves an existing dedicated configuration and destination unless you explicitly replace them. Consider your own Google client ID, following [rclone's guidance](https://rclone.org/drive/#making-your-own-client-id), to avoid shared quota errors.
 
 ### Start at Login
 
@@ -154,7 +160,7 @@ After copying HelloChat to `/Applications`, quit it and run:
 python3 scripts/install-startup.py
 ```
 
-This adds a `com.ethansk.hello-chat` LaunchAgent that opens HelloChat at login and reopens it after a crash. Quit still quits. Use `--dry-run` to print it first. To remove it:
+This adds a `com.ethansk.hello-chat` LaunchAgent that opens HelloChat at login and reopens it after a crash. Quit still quits. A Sparkle relaunch returns to this existing job before opening the UI, preserving crash recovery. No job is added for users who have not installed one. Use `--dry-run` to print it first. To remove it:
 
 ```sh
 launchctl bootout "gui/$(id -u)/com.ethansk.hello-chat"
@@ -165,7 +171,8 @@ rm ~/Library/LaunchAgents/com.ethansk.hello-chat.plist
 
 - HelloChat identifies Codex by the bundle identifier `com.openai.codex` and checks that the running executable belongs to that bundle. It doesn't depend on one install path.
 - **Start** sends the **Voice chat hotkey** (`realtimeVoice`) through macOS’s global shortcut path. The default is Command-Control-Shift-V. **Toggle voice chat** (`composer.startVoiceMode`) is separate and is never configured or sent by HelloChat. Custom letters, digits, punctuation (including grave/tilde), F1–F20 and navigation keys are preserved, including their modifiers. Unsupported keys or multi-step sequences produce a setup error.
-- If Codex is closed, HelloChat launches the registered Codex app, waits for its native window to be ready, then sends Start once. A call that is already open is reused.
+- If Codex is closed, HelloChat launches the registered Codex app, waits for its native window to be ready, then sends Start once. Opening/reopening gets a five-second minimum and up to ten seconds for interactive readiness; an explicitly unready window never becomes ready just because time passes. A replacement process gets one fresh bounded window. An already-open call is reused without the launch delay.
+- An existing muted call is unmuted through its freshly checked native microphone control, without adding a third shortcut.
 - **End** sends the dedicated `realtimeVoice.endCall` shortcut after a fresh Voice-control check. A retry presses the exact End control itself. If closure cannot be confirmed, HelloChat says the status is unknown instead of claiming the End action failed.
 - Shortcut writes are marked as saved, not proof of live registration. If HelloChat adds bindings while Codex is running, it shows a restart message. Voice confirmation still depends on the actual call controls.
 - New Voice chats use Codex's normal new-chat model and speed defaults.

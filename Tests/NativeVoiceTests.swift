@@ -32,7 +32,9 @@ import Foundation
             sent.append(command)
             if command == VoiceBridge.muteCommand { current = state(.listening) }
             else { current = current.microphone == nil ? state(.listening) : state() }
-        }, activate: { _ in }))
+        }, activate: { _ in }, unmute: { _ in
+            sent.append("native.unmute"); current = state(.listening)
+        }))
         var startCues = 0
         try await voice.start(onRequestAccepted: { startCues += 1 })
         precondition(startCues == 1, "New native Voice gets its start cue")
@@ -50,7 +52,7 @@ import Foundation
         precondition(openedMicrophone == .muted, "Start returns fresh state so callers can skip a redundant snapshot when already listening")
         precondition(sent.count == beforeMutedWake, "Hello Chat adopts an existing muted call without sending the new-chat shortcut")
         try await voice.setMicrophone(.listening)
-        precondition(Array(sent.dropFirst(beforeMutedWake)) == [VoiceBridge.muteCommand], "Hello Chat sends only unmute for an existing muted native call")
+        precondition(Array(sent.dropFirst(beforeMutedWake)) == ["native.unmute"], "Hello Chat sends only unmute for an existing muted native call")
         precondition(startCues == 2, "An accepted wake acknowledges reuse and unmute without a new-call shortcut")
         let beforeRepeatedWake = sent.count
         let alreadyListening = try await voice.start(onRequestAccepted: { startCues += 1 })
@@ -115,25 +117,51 @@ import Foundation
 
         // Virtual time exercises production's launch delay without making the
         // test suite sleep or starting a real Codex conversation.
-        for semanticReady in [true, false] {
+        for readyAt in [0.0, 9.0, 99.0] {
             var clock: TimeInterval = 0
             var opened = false, commands = 0
             let settled = NativeVoice(transport: .init(snapshot: {
                 var value = state()
                 value.pid = opened ? 123 : nil
-                value.applicationReady = opened && semanticReady
+                value.applicationReady = opened && clock >= readyAt
                 value.applicationHasWebContent = opened
                 if commands > 0 { value = state(.listening) }
                 return value
             }, send: { command, _ in
-                precondition(clock >= (semanticReady ? 5 : 7), "A visible launch shell cannot receive Start early")
+                precondition(clock >= max(5, readyAt), "A visible launch shell cannot receive Start early")
                 precondition(command == "realtimeVoice", "Never use Toggle as a launch fallback")
                 commands += 1
             }, activate: { _ in }, launch: { opened = true },
             now: { clock }, wait: { clock += $0 }))
-            _ = try await settled.start()
-            precondition(commands == 1, "Semantic readiness and the bounded web fallback both send Start once")
+            if readyAt < 10 {
+                _ = try await settled.start()
+                precondition(commands == 1, "Interactive readiness sends Start once, never early")
+            } else {
+                do { _ = try await settled.start(); fatalError("An unready web shell must time out") }
+                catch { precondition(commands == 0, "A timer never overrides explicit unready state") }
+            }
         }
+
+        var replacementClock: TimeInterval = 0
+        var replacementLaunches = 0, replacementSends = 0
+        let slowReplacement = NativeVoice(transport: .init(snapshot: {
+            var value = state()
+            if replacementLaunches == 0 { value.pid = nil }
+            else if replacementLaunches == 1 {
+                value.pid = replacementClock >= 6 ? nil : 123
+                value.applicationReady = false
+            } else {
+                value.pid = 456
+                if replacementSends > 0 { value.microphone = .listening }
+            }
+            return value
+        }, send: { _, pid in
+            precondition(pid == 456 && replacementClock >= 11, "Replacement receives its full five-second minimum")
+            replacementSends += 1
+        }, activate: { _ in }, launch: { replacementLaunches += 1 },
+        now: { replacementClock }, wait: { replacementClock += $0 }))
+        _ = try await slowReplacement.start()
+        precondition(replacementLaunches == 2 && replacementSends == 1, "A late process exit gets one bounded replacement launch")
 
         var launchFoundCall = false, adoptedLaunches = 0
         let launchAdoption = NativeVoice(transport: .init(snapshot: {
@@ -225,30 +253,32 @@ import Foundation
 
         var timeoutStarted = false, timeoutRecovered = false
         var timeoutCommands: [String] = []
+        let timedOutOpeningContext = VoiceStartContext()
         let timedOutOpening = NativeVoice(transport: .init(snapshot: {
             if timeoutRecovered { return state(.listening) }
             var value = state()
             if timeoutStarted { value.pid = nil; value.controlsComplete = false }
             return value
         }, send: { command, _ in timeoutCommands.append(command); timeoutStarted = true }, activate: { _ in }), confirmationTimeout: 0.05)
-        do { _ = try await timedOutOpening.start(); fatalError("Unknown opening must remain bounded") }
-        catch { await timedOutOpening.recoverFromStartFailure(error) }
+        do { _ = try await timedOutOpening.start(context: timedOutOpeningContext); fatalError("Unknown opening must remain bounded") }
+        catch { await timedOutOpening.recoverFromStartFailure(error, context: timedOutOpeningContext) }
         await timedOutOpening.stop()
         precondition(timeoutCommands == [VoiceBridge.startCommand] && !timedOutOpening.connected,
                      "An opening timeout releases stale ownership without ending a possibly working call")
         timeoutRecovered = true
-        _ = try await timedOutOpening.start()
+        _ = try await timedOutOpening.start(context: timedOutOpeningContext)
         precondition(timedOutOpening.connected && timeoutCommands == [VoiceBridge.startCommand],
                      "The next wake adopts the late successful call without creating another chat")
 
         var replacementStarted = false, replacementCommands: [String] = []
+        let replacedOpeningContext = VoiceStartContext()
         let replacedOpening = NativeVoice(transport: .init(snapshot: {
             var value = state()
             if replacementStarted { value.pid = 456; value.endControlAvailable = true }
             return value
         }, send: { command, _ in replacementCommands.append(command); replacementStarted = true }, activate: { _ in }))
-        do { _ = try await replacedOpening.start(); fatalError("A different process cannot confirm our opening") }
-        catch { await replacedOpening.recoverFromStartFailure(error) }
+        do { _ = try await replacedOpening.start(context: replacedOpeningContext); fatalError("A different process cannot confirm our opening") }
+        catch { await replacedOpening.recoverFromStartFailure(error, context: replacedOpeningContext) }
         await replacedOpening.stop()
         precondition(replacementCommands == [VoiceBridge.startCommand], "A changed Codex process must not receive cleanup End")
         current = state(allowed: false)
@@ -277,6 +307,7 @@ import Foundation
 
         var late = state()
         var lateSends = 0
+        let cancelledContext = VoiceStartContext()
         let cancelled = NativeVoice(transport: .init(snapshot: { late }, send: { _, _ in
             lateSends += 1
             if lateSends == 1 {
@@ -287,8 +318,8 @@ import Foundation
             } else { late = state() }
         }, activate: { _ in }))
         let opening = Task { @MainActor in
-            do { try await cancelled.start() }
-            catch { await cancelled.recoverFromStartFailure(error) }
+            do { try await cancelled.start(context: cancelledContext) }
+            catch { await cancelled.recoverFromStartFailure(error, context: cancelledContext) }
         }
         try await Task.sleep(nanoseconds: 250_000_000)
         opening.cancel()
@@ -300,6 +331,7 @@ import Foundation
         // Cleanup must wait for that owned opening and end it exactly once.
         var asynchronous = state()
         var asynchronousSends: [String] = []
+        let inFlightContext = VoiceStartContext()
         let inFlight = NativeVoice(transport: .init(snapshot: { asynchronous }, send: { command, _ in
             asynchronousSends.append(command)
             if command == VoiceBridge.startCommand {
@@ -308,14 +340,76 @@ import Foundation
             } else { asynchronous = state() }
         }, activate: { _ in }))
         let sending = Task { @MainActor in
-            do { try await inFlight.start() }
-            catch { await inFlight.recoverFromStartFailure(error) }
+            do { try await inFlight.start(context: inFlightContext) }
+            catch { await inFlight.recoverFromStartFailure(error, context: inFlightContext) }
         }
         try await Task.sleep(nanoseconds: 250_000_000)
         sending.cancel()
         await inFlight.stop(); await sending.value
         precondition(asynchronousSends == [VoiceBridge.startCommand, VoiceBridge.endCommand] && !inFlight.connected,
                      "Cancellation during an asynchronous send cannot leave an owned call running")
+
+        var preservedState = state(), preservedCommands: [String] = []
+        let preserveContext = VoiceStartContext()
+        let environmental = NativeVoice(transport: .init(snapshot: { preservedState }, send: { command, _ in
+            precondition(command != VoiceBridge.endCommand, "A microphone-only call must use fresh explicit End")
+            preservedCommands.append(command)
+            if command == VoiceBridge.startCommand {
+                try await Task.detached { try await Task.sleep(nanoseconds: 100_000_000) }.value
+                preservedState = state(.listening)
+            } else { preservedState = state() }
+        }, activate: { _ in }, requestEnd: {
+            preservedCommands.append("native.end"); preservedState = state(); return 123
+        }))
+        let environmentalTask = Task { @MainActor in
+            do { _ = try await environmental.start(context: preserveContext) }
+            catch { await environmental.recoverFromStartFailure(error, context: preserveContext) }
+        }
+        while preservedCommands.isEmpty { await Task.yield() }
+        preserveContext.preserveCallOnCancellation = true
+        environmentalTask.cancel()
+        await environmentalTask.value
+        precondition(preservedCommands == [VoiceBridge.startCommand], "An environmental capture pause never sends End")
+        _ = try await environmental.endIfPresent()
+        precondition(preservedCommands == [VoiceBridge.startCommand, "native.end"], "The first End after preservation uses the fresh microphone-only path")
+        preservedState = state(.listening)
+        _ = try await environmental.start()
+        precondition(environmental.connected && preservedCommands.count == 2, "Capture can resume and reuse the call after a temporary pause")
+        _ = try await environmental.endIfPresent()
+        precondition(preservedCommands.last == "native.end", "A later explicit End still works")
+        preservedState = state(.listening)
+        environmental.detachForQuit()
+        _ = await environmental.reattachAfterFailedUpdate()
+        _ = try await environmental.start()
+        precondition(environmental.connected, "Aborted update preparation can reattach without ending an existing call")
+
+        // An older cancelled opening must not clear a newer request's pending
+        // ownership, or explicit End could bypass late-opening cleanup.
+        var raceState = state(), raceStarts = 0, directEnds = 0, strictEnds = 0
+        var finishNewSend: CheckedContinuation<Void, Never>?
+        let oldContext = VoiceStartContext(), newContext = VoiceStartContext()
+        oldContext.preserveCallOnCancellation = true
+        let ownership = NativeVoice(transport: .init(snapshot: { raceState }, send: { command, _ in
+            if command == VoiceBridge.startCommand {
+                raceStarts += 1
+                if raceStarts == 2 {
+                    await withCheckedContinuation { finishNewSend = $0 }
+                    raceState = state(.listening)
+                }
+            } else { strictEnds += 1; raceState = state() }
+        }, activate: { _ in }, requestEnd: { directEnds += 1; raceState = state(); return 123 }))
+        let oldRequest = Task { try? await ownership.start(context: oldContext) }
+        while raceStarts == 0 { await Task.yield() }
+        oldRequest.cancel(); _ = await oldRequest.value
+        let newRequest = Task { try? await ownership.start(context: newContext) }
+        while finishNewSend == nil { await Task.yield() }
+        await ownership.recoverFromStartFailure(CancellationError(), context: oldContext)
+        let endNew = Task { try await ownership.endIfPresent() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        precondition(directEnds == 0, "An old cancellation cannot erase a newer pending Start")
+        finishNewSend?.resume(); newRequest.cancel(); _ = await newRequest.value
+        _ = try await endNew.value
+        precondition(strictEnds == 1 && directEnds == 0, "Explicit cancellation still cleans up its late opening")
 
         // An exact End action establishes a call, but not its microphone state.
         // Confirm the call without guessing a microphone state or toggling it.
@@ -559,7 +653,7 @@ import Foundation
             let beforeQuit = quitCommands
             quitting.detachForQuit()
             await quitting.stop()
-            await quitting.recoverFromStartFailure(CancellationError())
+            await quitting.recoverFromStartFailure(CancellationError(), context: VoiceStartContext())
             let endedAfterQuit = try await quitting.endIfPresent()
             precondition(quitState.microphone == .listening && quitCommands == beforeQuit && !endedAfterQuit,
                          "Normal Quit preserves both owned and adopted active calls")
@@ -568,6 +662,7 @@ import Foundation
         var releaseOpening: CheckedContinuation<Void, Never>?
         var quitDuringOpenState = state()
         var quitDuringOpenCommands: [String] = []
+        let quitDuringOpenContext = VoiceStartContext()
         let quitDuringOpen = NativeVoice(transport: .init(snapshot: { quitDuringOpenState }, send: { command, _ in
             quitDuringOpenCommands.append(command)
             quitDuringOpenState = state(.listening)
@@ -575,8 +670,8 @@ import Foundation
             await withCheckedContinuation { releaseOpening = $0 }
         }, activate: { _ in }))
         let quitOpeningTask = Task { @MainActor in
-            do { _ = try await quitDuringOpen.start() }
-            catch { await quitDuringOpen.recoverFromStartFailure(error) }
+            do { _ = try await quitDuringOpen.start(context: quitDuringOpenContext) }
+            catch { await quitDuringOpen.recoverFromStartFailure(error, context: quitDuringOpenContext) }
         }
         while !openingEntered { await Task.yield() }
         quitDuringOpen.detachForQuit()
@@ -587,14 +682,15 @@ import Foundation
                      "Quit during an in-flight Start does not hang up the late-opened call")
         var quitReadEntered = false
         var releaseQuitRead: CheckedContinuation<VoiceSnapshot, Never>?
+        let quitBeforeStartContext = VoiceStartContext()
         let quitBeforeStart = NativeVoice(transport: .init(snapshot: {
             quitReadEntered = true
             return await withCheckedContinuation { releaseQuitRead = $0 }
         }, send: { _, _ in fatalError("Quit before Start must send no command") },
         activate: { _ in fatalError("Quit before Start must not activate Codex") }))
         let quitBeforeTask = Task { @MainActor in
-            do { _ = try await quitBeforeStart.start() }
-            catch { await quitBeforeStart.recoverFromStartFailure(error) }
+            do { _ = try await quitBeforeStart.start(context: quitBeforeStartContext) }
+            catch { await quitBeforeStart.recoverFromStartFailure(error, context: quitBeforeStartContext) }
         }
         while !quitReadEntered { await Task.yield() }
         quitBeforeStart.detachForQuit()

@@ -40,3 +40,10 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Tests/AppPathsT
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/VoiceBridge.swift Tests/CodexDiscoveryTests.swift -o "$build_dir/CodexDiscoveryTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
 "$build_dir/CodexDiscoveryTests"
 python3 scripts/test-transcript-backup.py
+python3 scripts/test-release.py
+swiftc -swift-version 5 -parse-as-library Sources/GateCore.swift Sources/UpdateSafety.swift Tests/UpdateSafetyTests.swift -o "$build_dir/UpdateSafetyTests" -framework ApplicationServices
+"$build_dir/UpdateSafetyTests"
+swiftc -swift-version 5 -parse-as-library Sources/StartupOwnership.swift Tests/StartupOwnershipTests.swift -o "$build_dir/StartupOwnershipTests"
+"$build_dir/StartupOwnershipTests"
+swiftc -swift-version 5 -parse-as-library Sources/UpdateInstallation.swift Tests/UpdateInstallationTests.swift -o "$build_dir/UpdateInstallationTests"
+"$build_dir/UpdateInstallationTests"
