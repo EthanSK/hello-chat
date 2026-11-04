@@ -26,6 +26,8 @@
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://github.com/EthanSK/hello-chat/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>bgXj7u09TpTtfYMaTDFGaA09p/jACpUSlov2FiPSDgQ=</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUAllowsAutomaticUpdates</key>
