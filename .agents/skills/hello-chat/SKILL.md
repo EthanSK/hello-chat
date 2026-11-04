@@ -30,7 +30,7 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 
 - Preserve an active Codex call on normal H Chat Quit: detach local listening/control work without sending End. Explicit spoken/button End remains separate. Inspect [GateModel.swift](../../../Sources/GateModel.swift), [NativeVoice.swift](../../../Sources/NativeVoice.swift), and [NativeVoiceTests.swift](../../../Tests/NativeVoiceTests.swift).
 - A wake sound acknowledges detection, not a sent shortcut. Preserve the fresh active-call check, which reuses a live call instead of blindly toggling it.
-- [VoiceBridge.swift](../../../Sources/VoiceBridge.swift) owns required shortcut defaults, collision checks, per-send configuration reads and macOS keyboard-layout translation. Preserve custom bindings and unrelated settings. Use the built-in layout API; do not add per-layout tables or change Karabiner/global keyboard settings to fix app delivery.
+- [VoiceBridge.swift](../../../Sources/VoiceBridge.swift) owns required shortcut defaults, collision checks, per-send configuration reads and key delivery. Preserve custom bindings and unrelated settings. Do not change keyboard-layout handling or Karabiner/global keyboard settings without current authorization; first verify the actual delivered action.
 
 ## Shortcut diagnosis and explanations
 

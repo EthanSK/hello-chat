@@ -210,16 +210,6 @@ import Foundation
         do { try lease.acquire(); fatalError("Must reject shortcut collision") } catch is BridgeError { checks += 1 }
         let afterCollision = try Data(contentsOf: bindings)
         check(afterCollision == before, "Collision leaves user file unchanged")
-        try check(VoiceShortcutKeyCode.resolve("V", command: false, characters: [9: "k", 47: "v"]) == 47,
-                  "Dvorak Ctrl/Option/Shift+V uses the physical V location, not QWERTY V")
-        try check(VoiceShortcutKeyCode.resolve("V", command: true, characters: [9: "v", 47: "."]) == 9,
-                  "Dvorak QWERTY Command uses QWERTY V with Command held")
-        try check(VoiceShortcutKeyCode.resolve("F17", command: true, characters: [:]) == 64,
-                  "Function-key defaults do not depend on the letter layout")
-        do {
-            _ = try VoiceShortcutKeyCode.resolve("V", command: false, characters: [9: "k"])
-            fatalError("Never silently fall back to the wrong physical letter")
-        } catch is BridgeError { checks += 1 }
         let setupURL = root.appendingPathComponent("fresh/settings/keybindings.json")
         let setup = VoiceShortcutConfiguration(bindingsURL: setupURL)
         let added = try setup.ensureDefaults()

@@ -253,14 +253,14 @@ struct VoiceBridge {
               !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.")
         }
+        let keys: [String: CGKeyCode] = ["F16": CGKeyCode(kVK_F16), "F17": CGKeyCode(kVK_F17), "F19": CGKeyCode(kVK_F19), "F20": CGKeyCode(kVK_F20), "V": CGKeyCode(kVK_ANSI_V)]
         let parts = key.components(separatedBy: "+")
-        guard let last = parts.last else { throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.") }
+        guard let last = parts.last, let virtualKey = keys[last] else { throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.") }
         var flags: CGEventFlags = []
         if parts.contains(where: { ["Command", "Cmd", "CmdOrCtrl", "CommandOrControl"].contains($0) }) { flags.insert(.maskCommand) }
         if parts.contains(where: { ["Control", "Ctrl"].contains($0) }) { flags.insert(.maskControl) }
         if parts.contains(where: { ["Option", "Alt"].contains($0) }) { flags.insert(.maskAlternate) }
         if parts.contains("Shift") { flags.insert(.maskShift) }
-        let virtualKey = try VoiceShortcutKeyCode.resolve(last, command: flags.contains(.maskCommand))
         guard let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
@@ -302,48 +302,6 @@ struct VoiceBridge {
 enum BridgeError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
-}
-
-// Resolve letter shortcuts from the active layout at delivery. Ethan's
-// Dvorak - QWERTY Command layout puts plain V on key 47, but Command+V on key 9.
-// Function keys are layout-independent. Shift/Option/Control are shortcut
-// modifiers, not changes to the base letter being looked up.
-enum VoiceShortcutKeyCode {
-    static func resolve(_ name: String, command: Bool,
-                        characters: [CGKeyCode: String]? = nil) throws -> CGKeyCode {
-        let functions: [String: CGKeyCode] = ["F16": CGKeyCode(kVK_F16), "F17": CGKeyCode(kVK_F17),
-                                             "F19": CGKeyCode(kVK_F19), "F20": CGKeyCode(kVK_F20)]
-        if let code = functions[name] { return code }
-        guard name == "V" else {
-            throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.")
-        }
-        let mapping = try characters ?? layoutCharacters(command: command)
-        guard let code = mapping.keys.sorted().first(where: { mapping[$0]?.lowercased() == "v" }) else {
-            throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.")
-        }
-        return code
-    }
-
-    private static func layoutCharacters(command: Bool) throws -> [CGKeyCode: String] {
-        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
-            throw BridgeError.message("Voice shortcut isn't supported. Use F17 or Control+Shift+V in ChatGPT settings.")
-        }
-        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
-        guard let bytes = CFDataGetBytePtr(data) else { throw CocoaError(.fileReadCorruptFile) }
-        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
-        var mapping: [CGKeyCode: String] = [:]
-        for code in CGKeyCode(0)..<128 {
-            var dead: UInt32 = 0
-            var length = 0
-            var chars = [UniChar](repeating: 0, count: 8)
-            let result = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDown),
-                                        command ? UInt32(cmdKey >> 8) : 0, UInt32(LMGetKbdType()),
-                                        UInt32(kUCKeyTranslateNoDeadKeysMask), &dead, chars.count, &length, &chars)
-            if result == noErr && length > 0 { mapping[code] = String(utf16CodeUnits: chars, count: length) }
-        }
-        return mapping
-    }
 }
 
 // Ethan's "assign it if missing" setup is permanent, unlike ShortcutLease's
