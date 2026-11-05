@@ -7,6 +7,7 @@ import Foundation
 @MainActor final class VoiceStartContext {
     let id = UUID()
     var preserveCallOnCancellation = false
+    var startSentAt: Date? // Set only when this opening sent Start, so a wake can find the new Voice chat.
 }
 
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
@@ -201,8 +202,10 @@ import Foundation
             }
             pendingUntil = Date().addingTimeInterval(confirmationTimeout)
             pendingOpeningID = opening.id
+            let sentAt = Date()
             do { try await transport.send(VoiceBridge.startCommand, pid) }
             catch { clearPendingOpening(ownedBy: opening.id); throw error }
+            opening.startSentAt = sentAt
             diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],
                                 info: ["command": VoiceBridge.startCommand, "delivery": "global_hotkey"])
         }

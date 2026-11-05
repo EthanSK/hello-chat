@@ -392,6 +392,62 @@ struct VoiceBridge {
         }
     }
 
+    // Codex's focused message box holds `text`, and Codex owns the keyboard.
+    // Codex Model Bar's established check: Agent Flow's panel can own the
+    // keyboard while Codex is frontmost, and its app focus reads as a group.
+    static func focusedComposerHolds(_ text: String) -> Bool {
+        guard AXIsProcessTrusted(), let app = currentApplication(), app.isActive,
+              keyboardOwner() == app.processIdentifier else { return false }
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(root, 0.25)
+        func words(_ value: String) -> String { value.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        let expected = words(text)
+        // Search the focused window first; a Voice overlay can be another window.
+        var queue = [element(attribute(kAXFocusedWindowAttribute, root))].compactMap { $0 }
+            + (attribute(kAXWindowsAttribute, root) as? [AXUIElement] ?? [])
+        var i = 0
+        let deadline = Date().addingTimeInterval(1)
+        while i < queue.count, i < 12000, Date() < deadline {
+            let element = queue[i]; i += 1
+            AXUIElementSetMessagingTimeout(element, 0.04)
+            let role = attribute(kAXRoleAttribute, element) as? String
+            if role == kAXTextAreaRole {
+                if attribute(kAXFocusedAttribute, element) as? Bool == true,
+                   let value = attribute(kAXValueAttribute, element) as? String, words(value).contains(expected) { return true }
+                continue
+            }
+            if [kAXStaticTextRole, kAXImageRole, kAXButtonRole].contains(role ?? "") { continue }
+            queue += attribute(kAXChildrenAttribute, element) as? [AXUIElement] ?? []
+        }
+        return false
+    }
+
+    // Model Bar's established Return into Codex: a HID key pair with Electron's
+    // real 30 ms down/up interval, rechecking that Codex still owns the keyboard.
+    static func pressComposerReturn() throws {
+        guard let app = currentApplication(), app.isActive, keyboardOwner() == app.processIdentifier,
+              let source = CGEventSource(stateID: .hidSystemState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Return), keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_Return), keyDown: false) else {
+            throw BridgeError.message("Couldn't send your words. Check the new chat in Codex.")
+        }
+        down.flags = []; up.flags = []
+        down.post(tap: .cghidEventTap)
+        usleep(30_000)
+        up.post(tap: .cghidEventTap)
+    }
+
+    private static func keyboardOwner() -> pid_t? {
+        guard let focused = element(attribute(kAXFocusedUIElementAttribute, AXUIElementCreateSystemWide())) else { return nil }
+        var pid: pid_t = 0
+        return AXUIElementGetPid(focused, &pid) == .success ? pid : nil
+    }
+
+    private static func element(_ value: CFTypeRef?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement) // Checked by type ID above; CF values can't use a conditional cast.
+    }
+
     static func eventTimestamp() -> CGEventTimestamp {
         // CGEvent wants nanoseconds, while mach_absolute_time returns CPU ticks.
         // On Apple Silicon the ratio is commonly 125/3, not one-to-one.

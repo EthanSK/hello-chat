@@ -99,6 +99,10 @@ import SwiftUI
     private var generation = UUID()
     private var voiceTask: Task<Void, Never>?
     private var voiceStartContext: VoiceStartContext?
+    // Ethan's 5 Nov handoff: words heard after an accepted wake, sent to the new Voice chat.
+    private var wakeSpeech: WakeSpeechCapture?
+    private var handoffTask: Task<Void, Never>?
+    private let chatHandoff = VoiceChatHandoff()
     private var timeoutTask: Task<Void, Never>?
     private var listeningTask: Task<Void, Never>?
     private var quitting = false
@@ -155,6 +159,7 @@ import SwiftUI
         }
         listener.onSession = { [weak self] in
             self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.detectionRunning = true
+            self?.wakeSpeech?.boundary()
         }
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds in self?.standaloneWake.audio(level: level, seconds: seconds) }
@@ -477,6 +482,7 @@ import SwiftUI
         phraseUpdateTask?.cancel(); phraseUpdateTask = nil
         generation = UUID(); listeningTask?.cancel(); listeningTask = nil
         voiceTask?.cancel(); timeoutTask?.cancel(); timeoutTask = nil
+        handoffTask?.cancel(); handoffTask = nil; wakeSpeech = nil
         listener.stop(); enabled = false; detectionRunning = false; changingModel = false; meter.level = 0
     }
     func turnOff() {
@@ -520,6 +526,7 @@ import SwiftUI
     func manualMute() {
         guard enabled || voice.connected, !quitting else { return }
         timeoutTask?.cancel(); timeoutTask = nil
+        handoffTask?.cancel(); handoffTask = nil; wakeSpeech = nil // An ended call gets no words.
         if busy {
             let previous = voiceTask
             previous?.cancel()
@@ -571,6 +578,7 @@ import SwiftUI
         defer {
             if voiceStartContext === context { voiceStartContext = nil }
             if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
+            if handoffTask == nil { wakeSpeech = nil }
         }
         do {
             // Refresh native state on each explicit wake, including after a
@@ -584,6 +592,11 @@ import SwiftUI
             microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Chat is on"; status = "Chat on"
             detail = openedMicrophone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end chat."; lastEvent = trigger
             scheduleMute()
+            // Only a call this wake started has a new chat. A reused call already heard Ethan.
+            // Runs outside `busy`, so Bye Chat still ends the call straight away.
+            if let startedAt = context.startSentAt, wakeSpeech != nil {
+                handoffTask = Task { await handOffSpeech(startedAt: startedAt) }
+            }
         } catch {
             Diagnostics.shared.failure("voice.open.failed", error)
             await voice.recoverFromStartFailure(error, context: context)
@@ -592,8 +605,35 @@ import SwiftUI
             if !(error is CancellationError) { self.error = error.localizedDescription }
         }
     }
+    // Ethan's 5 Nov request: open the new Voice chat in Codex and send what he
+    // said after the wake phrase. Diagnostics record counts only, never words.
+    private func handOffSpeech(startedAt: Date) async {
+        do {
+            var characters = 0
+            let outcome = try await chatHandoff.run(startedAt: startedAt) {
+                let text = wakeSpeech?.text ?? ""
+                characters = text.count
+                return text
+            }
+            guard !Task.isCancelled else { return }
+            Diagnostics.shared.record("voice.handoff.finished", numbers: ["characters": Double(characters)],
+                                      info: ["outcome": outcome.rawValue])
+            switch outcome {
+            case .sent: lastEvent = "Sent what you said to the new chat"
+            case .opened: lastEvent = "Opened the new chat"
+            case .unconfirmed: lastEvent = "Didn't send what you said. Check the new chat in Codex."
+            case .noChat: lastEvent = "Couldn't find the new chat in Codex"
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            Diagnostics.shared.failure("voice.handoff.failed", error)
+            lastEvent = error.localizedDescription
+        }
+        handoffTask = nil; wakeSpeech = nil
+    }
     private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false) async {
         guard enabled || voice.connected, !busy else { return }
+        handoffTask?.cancel(); handoffTask = nil; wakeSpeech = nil // An ended call gets no words.
         let token = generation
         busy = true
         defer {
@@ -634,6 +674,7 @@ import SwiftUI
             transcript = text
             if microphone == .listening { scheduleMute() }
         }
+        wakeSpeech?.update(text)
         // Agent Flow still suppresses wakes and phrase mentions. Ethan's explicit
         // standalone stop must remain usable while dictating; it can only end
         // a native call, never start one. No extra recognition pipeline is needed.
@@ -668,7 +709,12 @@ import SwiftUI
             // scheduling another call or cancelling the work already underway.
             feedback.play(.wake)
             lastEvent = "Heard \(wakePhrase) · finishing the current Voice action"
-        } else { beginVoice(trigger: "Heard \(wakePhrase)") }
+        } else {
+            // A newer wake replaces an unfinished handoff and starts its own capture.
+            handoffTask?.cancel(); handoffTask = nil
+            wakeSpeech = WakeSpeechCapture(text: transcript, phrase: wakePhrase, similar: similarPhrases)
+            beginVoice(trigger: "Heard \(wakePhrase)")
+        }
     }
     func quit() { NSApp.terminate(nil) }
     func restoreAfterFailedUpdate() async {

@@ -84,6 +84,8 @@ The main window has two sections:
 
 Waking happens as soon as HelloChat hears the wake phrase, so you can keep talking straight after it. Words you said before the phrase still filter out clear mentions, but words after it can't cancel a wake: “Hello Chat is broken” can still open Voice. The end phrase also acts immediately.
 
+When a wake starts a new call, HelloChat waits for Codex to create that Voice chat, opens it in the Codex window and sends what it heard after the wake phrase. This covers words spoken while Voice was connecting, so some can repeat what Voice also heard. HelloChat presses Return only when the focused Codex message box holds those words; otherwise they stay unsent. A call that was already open, or Voice started with the Start chat button, sends nothing.
+
 Words within either command must be close together: no gap over 1.5 seconds, and a two-word phrase must fit within 3 seconds. Longer custom phrases have a proportionally larger total window. The app uses local model audio timestamps where available, with first-observed word times as a fallback. This does not limit the length of a Voice conversation or add a delay after a valid command.
 
 By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
@@ -132,7 +134,7 @@ The three Core ML models run with `cpuAndNeuralEngine`, so GPU is excluded. Befo
 - HelloChat keeps listening while Voice is on, so it can hear Bye Chat. Transcripts can include your side of the conversation and anything else the microphone picks up.
 - **Logs** in `~/Library/Logs/HelloChat/` (`events.jsonl` and `events.previous.jsonl`, each capped at 512 KiB) contain timings and errors, never recognised words.
 - **Network**: listening makes no network requests, and models are never downloaded at runtime. The build, Sparkle update checks/downloads and the optional backup script use the network. Update checks do not include saved transcripts or audio.
-- **Codex**: HelloChat reads Codex's Voice shortcut from `~/.codex/keybindings.json` and inspects Codex's accessibility tree during Start, End, Refresh, or while a downloaded update is waiting to relaunch. The conversation, its audio, network connection and sign-in all belong to Codex.
+- **Codex**: HelloChat reads Codex's Voice shortcut from `~/.codex/keybindings.json` and inspects Codex's accessibility tree during Start, End, Refresh, or while a downloaded update is waiting to relaunch. After a wake starts a call, it reads Codex's local chat list (`~/.codex/state_*.sqlite`, read-only) to find the new Voice chat, then gives Codex the words through its own `codex://` link. The conversation, its audio, network connection and sign-in all belong to Codex.
 
 ### Optional Google Drive Backup
 
