@@ -56,8 +56,8 @@ import Foundation
                 guard allowed else { continue }
                 prepared = await prepare()
                 guard !Task.isCancelled, prepared, let install = handler else { continue }
-                // Preparation can await cancelled Voice work. A recording or
-                // call may begin meanwhile, so the earlier read is not enough.
+                // Preparation awaits our cancelled work. Recheck for a new
+                // helper operation; an external call remains independent.
                 let stillAllowed = await mayInstall()
                 guard !Task.isCancelled, handler != nil else { return }
                 guard stillAllowed else {

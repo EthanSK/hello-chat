@@ -5,7 +5,7 @@ import Combine
 
 @MainActor final class GateModel: ObservableObject {
     @Published var busy = false
-    @Published var phrasesPausedForAgentFlow = false
+    @Published var checkingSpeech = false
 }
 
 enum VoiceBridge {

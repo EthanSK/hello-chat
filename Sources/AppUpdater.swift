@@ -1,6 +1,6 @@
 // Sparkle owns update discovery, signatures and installation. The app only
-// postpones a relaunch while chat/recording work is active and prepares a normal
-// detach before releasing Sparkle's install callback.
+// postpones a relaunch during this helper's own operations and prepares a normal
+// detach before releasing Sparkle's install callback. External calls continue.
 import AppKit
 import Combine
 import Sparkle
@@ -17,8 +17,7 @@ import Sparkle
         updaterDelegate: self, userDriverDelegate: nil)
     private lazy var installation = UpdateInstallation(mayInstall: { [weak self] in
         guard let model = self?.model else { return false }
-        let voice = await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value
-        return UpdateSafety.canRelaunch(busy: model.busy, recording: model.phrasesPausedForAgentFlow, voice: voice)
+        return UpdateSafety.canRelaunch(busy: model.busy, checkingSpeech: model.checkingSpeech)
     }, prepare: { [weak self] in
         guard let prepare = self?.prepareToQuit else { return false }
         return await prepare()
@@ -47,7 +46,7 @@ import Sparkle
         configured = true
         controller.updater.publisher(for: \.canCheckForUpdates)
             .sink { [weak self] in self?.canCheck = $0 }.store(in: &observations)
-        model.$busy.combineLatest(model.$phrasesPausedForAgentFlow)
+        model.$busy.combineLatest(model.$checkingSpeech)
             .sink { [weak self] _, _ in
                 Task { @MainActor [weak self] in
                     // Published sends before its value changes; yield to read

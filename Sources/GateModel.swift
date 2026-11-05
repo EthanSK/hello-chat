@@ -22,7 +22,6 @@ import SwiftUI
         }
     }
     @Published private(set) var detectionRunning = false
-    @Published private(set) var phrasesPausedForAgentFlow = false
     @Published private(set) var checkingSpeech = false
     @Published private(set) var speechCheckText = ""
     @Published private(set) var computeText = "Local speech · Neural Engine + CPU"
@@ -83,7 +82,6 @@ import SwiftUI
     func toggleChat() {
         if voice.connected || status == "Connecting" { manualMute() } else { manualTalk() }
     }
-    private let agentFlow = AgentFlowRecordingMonitor()
     private let desktopSession = DesktopSessionMonitor()
     private let feedback = FeedbackSounds()
     private let listener = SpeechListener()
@@ -118,7 +116,6 @@ import SwiftUI
 
     init() {
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
-        phrasesPausedForAgentFlow = agentFlow.suppressesPhrases
         desktopSession.onChange = { [weak self] state in
             guard let self else { return }
             // A lock or session switch cannot carry a queued wake into the
@@ -136,14 +133,6 @@ import SwiftUI
                 self.error = nil
             }
             Diagnostics.shared.record("voice.session.changed", info: ["state": state.rawValue])
-        }
-        agentFlow.onChange = { [weak self] value in
-            guard let self else { return }
-            self.phrasesPausedForAgentFlow = value
-            self.matcher.reset(); self.standaloneWake.reset()
-            self.listener.discardPendingRecognition()
-            if value { self.finishStartupSpeech(preserveRequested: true) }
-            Diagnostics.shared.record("phrases.agent_flow", info: ["paused": String(value)])
         }
         do { try ShortcutLease().restore() } catch { self.error = "Could not restore Voice shortcut: \(error.localizedDescription)" }
         do {
@@ -640,18 +629,14 @@ import SwiftUI
         if transcript != text {
             transcript = text
         }
-        // Agent Flow still suppresses wakes and phrase mentions. Ethan's explicit
-        // standalone stop must remain usable while dictating; it can only end
-        // a native call, never start one. No extra recognition pipeline is needed.
-        guard !phrasesPausedForAgentFlow ||
-                PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases, timings: timings) else { return }
-        if !phrasesPausedForAgentFlow { standaloneWake.update(text, at: Diagnostics.now, timings: timings) }
+        // Use the same phrase and mention rules while Agent Flow records. Its
+        // microphone ownership must not pause H Chat's existing recognizer.
+        standaloneWake.update(text, at: Diagnostics.now, timings: timings)
         let ending = !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
             && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
             && matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases, timings: timings) == .sleep
-            && (agentFlow.confirmAllowsPhrases() || PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases, timings: timings))
         if !ending {
-            if !phrasesPausedForAgentFlow, var capture = startupSpeech {
+            if var capture = startupSpeech {
                 capture.observe(text); startupSpeech = capture
                 if capture.published { startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated) }
             }
@@ -670,11 +655,10 @@ import SwiftUI
         }
     }
     private func checkStandaloneWake() {
-        guard enabled, detectionRunning, !phrasesPausedForAgentFlow,
+        guard enabled, detectionRunning,
               standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases, onDecision: { decision, quiet, stable in
                   Diagnostics.shared.record("phrase.wake.evaluated", numbers: ["quiet_s": quiet, "stable_s": stable], info: ["decision": decision])
-              }),
-              agentFlow.confirmAllowsPhrases() else { return }
+              }) else { return }
         Diagnostics.shared.record("phrase.wake.detected", info: ["contextChecked": "true", "busy": String(busy)])
         if busy {
             // A detected wake still gets its cue while Voice is busy, without

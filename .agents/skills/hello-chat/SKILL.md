@@ -29,6 +29,7 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 ## Voice and keyboard behavior
 
 - Preserve an active Codex call on normal H Chat Quit: detach local listening/control work without sending End. Explicit spoken/button End remains separate. Inspect [GateModel.swift](../../../Sources/GateModel.swift), [NativeVoice.swift](../../../Sources/NativeVoice.swift), and [NativeVoiceTests.swift](../../../Tests/NativeVoiceTests.swift).
+- User-requested — 2026-11-05: “just because I'm on a call” does not mean H Chat should be blocked from being closed and restarted. Build, install and restart H Chat when needed during a Codex Voice call; preserve the call and Agent Flow recording themselves. Do not ask Ethan to end them or treat their microphone activity as an update blocker. Finish H Chat's own in-flight operations and flush its files before replacement. Wake and end phrases also stay enabled while Agent Flow records.
 - Default missing Voice chat hotkey to Command+Control+Shift+V and dedicated End to Ctrl+Alt+Shift+V. Preserve existing custom values and report collisions without overriding another command. Leave Toggle reset/custom values untouched.
 - If Codex is closed, launch the installed app by its verified bundle identity, wait for actual window readiness, and send Start once. Use injected launch/readiness tests; never create live calls in an automated check.
 - A wake sound acknowledges detection, not a sent shortcut. Preserve the fresh active-call check, which reuses a live call instead of blindly toggling it.
@@ -47,7 +48,7 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 ## Installation and release
 
 - Establish the exact source commit, bundle version and build before handing an artifact to an installer. Coordinate one installation owner; never race copies or change an artifact another task is signing/installing.
-- Inspect current Voice and recording state before an authorized restart or replacement. Preserve preferences, startup settings and a recoverable old bundle. Never end a call to make installation possible.
+- Before an authorized restart or replacement, preserve preferences, startup settings and a recoverable old bundle. H Chat's normal detach/flush cleanup preserves external Voice and recording sessions; never end them to make installation possible.
 - Retain signing identity `com.ethansk.HeyChat`, its Developer ID team, and the legacy instance lock. [AppPaths.swift](../../../Sources/AppPaths.swift) owns data migration. The microphone entitlement belongs to [HelloChat.entitlements](../../../Resources/HelloChat.entitlements).
 - Follow [RELEASE.md](../../../RELEASE.md), [package-release.sh](../../../scripts/package-release.sh) and the [release workflow](../../../.github/workflows/release.yml). Preserve private signing keys; never commit/export them as a workaround. Distinguish a test signature, Developer ID signature, Apple notarisation and an actually published download.
 - Do not overwrite a published version tag or asset. Verify the downloadable bytes, checksum, signature and installed version when release-based installation is requested. Report the exact credential or signing blocker if publication cannot complete.

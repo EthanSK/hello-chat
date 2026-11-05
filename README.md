@@ -91,7 +91,7 @@ Words within either command must be close together: no gap over 1.5 seconds, and
 
 By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
 
-While Agent Flow is recording, HelloChat ignores wake phrases and mentions of commands, but a standalone end phrase can still stop Voice. Its listening toggle and manual Voice controls remain available.
+Wake and end phrases keep working while Agent Flow is recording, using the same phrase-matching rules as normal listening.
 
 If Core ML fails during recognition or a model reload, HelloChat tries up to three local restarts without ending Codex Voice. After repeated failures it stops reloading until a power/display change, system wake or manual restart gives it another chance. Automatic listening still waits two minutes after docking. A Core ML operation already in progress must return before its model can be safely replaced.
 
@@ -113,7 +113,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 Release-configured builds use Sparkle 2.10.1. **Check for Updates…** is in the app menu and Settings. Automatic checks/downloads use Sparkle’s saved preferences; the app does not overwrite your choices on launch. Updates are signed with Ed25519, as well as the app’s Developer ID signature.
 
-A requested update waits for chat actions and Agent Flow recording to finish before relaunching. Normal Quit and update cleanup detach from Codex without ending its call. Development builds without the production public key leave update controls disabled. See [release setup and verification](RELEASE.md).
+A requested update waits for HelloChat's own in-flight actions and speech checks before relaunching. An active Codex Voice call or Agent Flow recording does not block the update. Normal Quit and update cleanup detach from Codex without ending its call. Development builds without the production public key leave update controls disabled. See [release setup and verification](RELEASE.md).
 
 ## Speech Models
 

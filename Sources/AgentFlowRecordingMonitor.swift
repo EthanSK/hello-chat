@@ -2,17 +2,18 @@ import AppKit
 import CoreAudio
 import Foundation
 
-// Observe Agent Flow's actual microphone activity, the same boundary its Voice
-// mute integration uses. Never attach to its media-playback notifications or
-// consume its one-shot announcement grants.
+// Read-only Agent Flow microphone diagnostic. It does not gate phrase detection
+// or updates: Ethan wants H Chat to keep working while dictating.
+// Never consume Agent Flow's media-playback or announcement notifications.
 @MainActor final class AgentFlowRecordingMonitor {
-    private(set) var suppressesPhrases = false
+    // Previously suppressesPhrases; retained only as diagnostic information.
+    private(set) var recordingOrUnknown = false
     var onChange: ((Bool) -> Void)?
     private var processListeners: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
     private var systemListener: AudioObjectPropertyListenerBlock?
     private var workspaceObservers: [NSObjectProtocol] = []
 
-    static func shouldSuppress(appPresent: Bool, recording: Bool?) -> Bool {
+    static func hasActiveOrUnknownInput(appPresent: Bool, recording: Bool?) -> Bool {
         appPresent && recording != false
     }
 
@@ -30,11 +31,6 @@ import Foundation
             })
         }
         refresh()
-    }
-
-    @discardableResult func confirmAllowsPhrases() -> Bool {
-        refresh()
-        return !suppressesPhrases
     }
 
     private func refresh() {
@@ -78,12 +74,12 @@ import Foundation
                 AudioObjectRemovePropertyListenerBlock(object, &inputAddress, .main, callback)
             }
         }
-        update(Self.shouldSuppress(appPresent: true, recording: recording))
+        update(Self.hasActiveOrUnknownInput(appPresent: true, recording: recording))
     }
 
     private func update(_ value: Bool) {
-        guard value != suppressesPhrases else { return }
-        suppressesPhrases = value
+        guard value != recordingOrUnknown else { return }
+        recordingOrUnknown = value
         onChange?(value)
     }
     nonisolated private static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {

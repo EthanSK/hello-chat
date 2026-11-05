@@ -1,11 +1,9 @@
-// Keep update relaunches outside live chat actions and Agent Flow recordings.
+// Finish H Chat's own in-flight operations before updating. A Codex Voice call
+// or Agent Flow recording belongs to that app, so neither blocks our restart.
 import Foundation
 
 enum UpdateSafety {
-    static func canRelaunch(busy: Bool, recording: Bool, voice: VoiceSnapshot) -> Bool {
-        guard !busy, !recording, !voice.recorderRunning else { return false }
-        if voice.pid == nil { return voice.applicationAbsent }
-        return voice.accessibilityAllowed && voice.controlsComplete
-            && !voice.inputRunning && voice.microphone == nil && !voice.endControlAvailable
+    static func canRelaunch(busy: Bool, checkingSpeech: Bool) -> Bool {
+        !busy && !checkingSpeech
     }
 }

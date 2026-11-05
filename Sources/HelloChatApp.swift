@@ -181,7 +181,7 @@ import Darwin
         if CommandLine.arguments.contains("--check-agent-flow") {
             Task { @MainActor in
                 let monitor = AgentFlowRecordingMonitor()
-                print("{\"phrasesPaused\":\(monitor.suppressesPhrases)}")
+                print("{\"phrasesPaused\":false,\"recordingOrUnknown\":\(monitor.recordingOrUnknown)}")
                 exit(0)
             }
             RunLoop.main.run(); return
@@ -369,9 +369,9 @@ struct MainView: View {
             Form {
                 if updater.waitingToInstall {
                     Section {
-                        Text("Update ready. Restart when chat and recording are idle.")
+                        Text("Update ready.")
                         Button("Restart to update") { updater.resumeIfIdle() }
-                            .disabled(model.busy || model.phrasesPausedForAgentFlow)
+                            .disabled(model.busy || model.checkingSpeech)
                     }
                 }
                 if let notice = model.shortcutNotice {
@@ -400,7 +400,7 @@ struct MainView: View {
                         .accessibilityIdentifier("endPhraseLabel")
                     LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
                         .accessibilityIdentifier("listeningStatus")
-                    Text(model.phrasesPausedForAgentFlow ? "Phrases paused for Agent Flow." : model.detail)
+                    Text(model.detail)
                         .foregroundStyle(.secondary)
                     Picker("Speech model", selection: $model.speechModel) {
                         ForEach(SpeechModel.allCases) { choice in
