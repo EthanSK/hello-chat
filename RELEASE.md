@@ -17,6 +17,8 @@ The signing user must have:
 - A Sparkle signing key in Keychain account `com.ethansk.HelloChat`.
 - The existing EthanSK GitHub CLI login in Keychain, with `repo` and `workflow` scopes. Only publication removes the job-token overrides and verifies this account; it never prints or exports the credential. This preserves the exact verified source if workflow files on main change during the build.
 
+The signing host also needs the shared Sparkle 2.10.1 tools at `~/.local/share/sparkle-tools/2.10.1/bin`. During host setup, copy `bin` from the checksum-verified archive pinned in `.github/workflows/release.yml` to that location, preserving its executable permissions and signatures. Every release still verifies a fresh archive and compares all tool bytes before using this persistent copy. Apps keep separate Keychain accounts and public-key checks; this reuses a tool location, not private keys or permissions. Provision a new version separately when upgrading Sparkle; changed tool identities may require fresh macOS consent.
+
 Use the verified Sparkle distribution’s `generate_keys --account com.ethansk.HelloChat` once. It saves the private key in Keychain and prints the public key. Add only that public value as `SUPublicEDKey` in `Info.plist`. Never use its private-key export option. The workflow checks that the stored key matches the app before building.
 
 An offline runner, locked keychain, missing public key or rejected notarisation blocks publication. A configured workflow alone is not an operational release pipeline. The signing Mac must remain awake and connected while a release runs; locking the screen and putting the Mac to sleep are different states.

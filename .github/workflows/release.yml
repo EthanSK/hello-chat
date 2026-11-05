@@ -29,7 +29,6 @@ jobs:
           set -euo pipefail
           echo "HELLOCHAT_BUILD_DIR=$RUNNER_TEMP/HelloChat.noindex" >> "$GITHUB_ENV"
           echo "TMPDIR=$RUNNER_TEMP/" >> "$GITHUB_ENV"
-          echo "HELLOCHAT_SPARKLE_TOOLS=$RUNNER_TEMP/Sparkle.noindex/bin" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/Sparkle.noindex"
       - name: Fetch pinned Sparkle release tools
         shell: bash
@@ -38,6 +37,10 @@ jobs:
           curl --fail --location --retry 3 https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-2.10.1.tar.xz -o "$RUNNER_TEMP/Sparkle.tar.xz"
           python3 scripts/verify-sparkle-tools.py "$RUNNER_TEMP/Sparkle.tar.xz"
           tar -xf "$RUNNER_TEMP/Sparkle.tar.xz" -C "$RUNNER_TEMP/Sparkle.noindex"
+          tools="$HOME/.local/share/sparkle-tools/2.10.1/bin"
+          # Provision this versioned copy during signing-host setup; reject missing or changed tools before any Keychain access.
+          diff -r "$RUNNER_TEMP/Sparkle.noindex/bin" "$tools"
+          echo "HELLOCHAT_SPARKLE_TOOLS=$tools" >> "$GITHUB_ENV"
       - name: Check local signing access
         shell: bash
         run: |
