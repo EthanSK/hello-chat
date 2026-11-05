@@ -15,6 +15,7 @@ The signing user must have:
 - Developer ID Application identity from team `T34G959ZG8`, accessible to `codesign`.
 - An existing working `notarytool` profile. Set repository variable `HELLOCHAT_NOTARY_PROFILE` to its name; the default is `HelloChatRelease`.
 - A Sparkle signing key in Keychain account `com.ethansk.HelloChat`.
+- The existing EthanSK GitHub CLI login in Keychain, with `repo` and `workflow` scopes. Only publication removes the job-token overrides and verifies this account; it never prints or exports the credential. This preserves the exact verified source if workflow files on main change during the build.
 
 Use the verified Sparkle distribution’s `generate_keys --account com.ethansk.HelloChat` once. It saves the private key in Keychain and prints the public key. Add only that public value as `SUPublicEDKey` in `Info.plist`. Never use its private-key export option. The workflow checks that the stored key matches the app before building.
 

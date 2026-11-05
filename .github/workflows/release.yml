@@ -64,6 +64,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Keep publication bound to the verified source after concurrent
+          # workflow edits; the existing Keychain login has workflow permission.
+          unset GH_TOKEN GITHUB_TOKEN
+          test "$(gh api --hostname github.com user --jq .login)" = EthanSK
           gh release create "$HELLOCHAT_RELEASE_TAG" \
             "$HELLOCHAT_BUILD_DIR/HelloChat-macOS-arm64.zip" \
             "$HELLOCHAT_BUILD_DIR/SHA256SUMS" \
