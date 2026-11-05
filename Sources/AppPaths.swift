@@ -6,6 +6,12 @@ enum AppPaths {
     static let support = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/HelloChat", isDirectory: true)
 
+    // Ethan removed H Chat's independent silence timer. Retire only its old
+    // setting; explicit End, native Voice and unrelated preferences stay intact.
+    static func removeRetiredPreferences(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: "timeout")
+    }
+
     static func migrateLegacyData(home: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
         let fm = FileManager.default
         let old = home.appendingPathComponent("Library/Application Support/Hey Chat", isDirectory: true)

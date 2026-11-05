@@ -68,9 +68,6 @@ import SwiftUI
     @Published var similarPhrases = UserDefaults.standard.object(forKey: "similarPhrases") as? Bool ?? true {
         didSet { UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); matcher.reset() }
     }
-    @Published var timeout = [30, 60, 120].contains(UserDefaults.standard.integer(forKey: "timeout")) ? UserDefaults.standard.integer(forKey: "timeout") : 60 {
-        didSet { UserDefaults.standard.set(timeout, forKey: "timeout"); if microphone == .listening { scheduleMute() } }
-    }
     @Published private(set) var error: String?
     // Shortcut activation is independent of microphone/model preparation, which
     // clears ordinary errors. Keep the restart notice until an explicit refresh.
@@ -102,7 +99,6 @@ import SwiftUI
     private var startupSpeech: StartupSpeechBuffer?
     private var lastStartupSpeechID: UUID?
     private let startupSpeechFile = StartupSpeechFile(onError: { Diagnostics.shared.failure("voice.startup_speech.file_failed", $0) })
-    private var timeoutTask: Task<Void, Never>?
     private var listeningTask: Task<Void, Never>?
     private var quitting = false
     // Wait for the output listener to be registered and checked before starting
@@ -484,7 +480,7 @@ import SwiftUI
         speechRecovery = SpeechRecovery()
         phraseUpdateTask?.cancel(); phraseUpdateTask = nil
         generation = UUID(); listeningTask?.cancel(); listeningTask = nil
-        voiceTask?.cancel(); timeoutTask?.cancel(); timeoutTask = nil
+        voiceTask?.cancel()
         listener.stop(); enabled = false; detectionRunning = false; changingModel = false; meter.level = 0
     }
     func turnOff() {
@@ -528,7 +524,6 @@ import SwiftUI
     func manualMute() {
         guard enabled || voice.connected, !quitting else { return }
         cancelStartupSpeech()
-        timeoutTask?.cancel(); timeoutTask = nil
         if busy {
             let previous = voiceTask
             previous?.cancel()
@@ -606,7 +601,6 @@ import SwiftUI
             guard enabled, generation == token else { return }
             microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Chat is on"; status = "Chat on"
             detail = openedMicrophone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end chat."; lastEvent = trigger
-            scheduleMute()
         } catch {
             Diagnostics.shared.failure("voice.open.failed", error)
             await voice.recoverFromStartFailure(error, context: context)
@@ -640,23 +634,11 @@ import SwiftUI
             }
         }
     }
-    private func scheduleMute() {
-        timeoutTask?.cancel()
-        guard enabled, microphone == .listening else { return }
-        let token = generation
-        timeoutTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(self.timeout) * 1_000_000_000)
-            guard !Task.isCancelled, self.enabled, self.generation == token else { return }
-            await self.muteVoice(event: "Codex Voice ended after silence")
-        }
-    }
     private func heard(_ text: String, timings: [(word: String, start: Double, end: Double)]) {
         guard enabled else { return }
         if saveTranscripts { archive.update(text, model: speechModel.rawValue, microphone: inputs.selectedName) }
         if transcript != text {
             transcript = text
-            if microphone == .listening { scheduleMute() }
         }
         // Agent Flow still suppresses wakes and phrase mentions. Ethan's explicit
         // standalone stop must remain usable while dictating; it can only end
@@ -684,7 +666,7 @@ import SwiftUI
         feedback.play(.ended)
         if busy { manualMute() }
         else {
-            timeoutTask?.cancel(); voiceTask = Task { await muteVoice(event: "Heard \(sleepPhrase)", feedbackAlreadyPlayed: true) }
+            voiceTask = Task { await muteVoice(event: "Heard \(sleepPhrase)", feedbackAlreadyPlayed: true) }
         }
     }
     private func checkStandaloneWake() {

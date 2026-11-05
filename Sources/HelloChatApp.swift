@@ -214,6 +214,7 @@ import Darwin
             let instance = try AppInstanceLock(url: url)
             guard instance.acquired else { return }
             try AppPaths.migrateLegacyData()
+            AppPaths.removeRetiredPreferences()
             // App startup owns this integration, including after an update.
             // A user-managed collision must not prevent listening or change it.
             do {
@@ -507,11 +508,6 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 if PhraseMatcher.words(model.wakePhrase).isEmpty || PhraseMatcher.words(model.sleepPhrase).isEmpty {
                     Text("Enter both phrases").foregroundStyle(.red)
-                }
-                Picker("End chat after silence", selection: $model.timeout) {
-                    Text("30 seconds").tag(30)
-                    Text("1 minute").tag(60)
-                    Text("2 minutes").tag(120)
                 }
                 Button(model.checkingSpeech ? "Checking speech…" : "Check speech recognition") { model.checkSpeech() }
                     .disabled(model.busy || model.voice.connected)

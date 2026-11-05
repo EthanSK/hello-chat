@@ -17,7 +17,6 @@ HelloChat is a native macOS app that listens for both phrases with a local speec
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
-| *Nothing* | Voice ends after 1 minute without new words. Choose 30 seconds, 1 minute or 2 minutes with **End chat after silence**. |
 
 Speech recognition runs on your Mac with a bundled Parakeet model through Core ML, using CPU and Neural Engine with GPU off. HelloChat then drives Codex through its own Voice shortcut and End Voice control. There's no Agent Flow, proxy, server, account or API key involved in detection.
 
@@ -102,7 +101,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | --- | --- |
 | Microphone | **System default** or a named input, which stays selected by device. If it's disconnected, listening stops with an error instead of switching microphones. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
-| Phrases | **Wake phrase** and **End phrase**, **Allow small spelling differences** (on by default), **End chat after silence** and **Check speech recognition**. |
+| Phrases | **Wake phrase** and **End phrase**, **Allow small spelling differences** (on by default) and **Check speech recognition**. |
 | Resources | HelloChat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |
 | Transcript Archive | **Save transcripts** (on by default), the archive location, and this Mac’s optional backup configuration. |

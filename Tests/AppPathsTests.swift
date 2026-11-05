@@ -2,6 +2,17 @@ import Foundation
 
 @main struct AppPathsTests {
     static func main() throws {
+        let suite = "HelloChatRetiredPreferences-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(30, forKey: "timeout")
+        defaults.set("Keep my end phrase", forKey: "sleepPhrase")
+        defaults.set(false, forKey: "automaticListening")
+        AppPaths.removeRetiredPreferences(defaults: defaults)
+        AppPaths.removeRetiredPreferences(defaults: defaults)
+        precondition(defaults.object(forKey: "timeout") == nil)
+        precondition(defaults.string(forKey: "sleepPhrase") == "Keep my end phrase")
+        precondition(defaults.object(forKey: "automaticListening") as? Bool == false)
         let fm = FileManager.default
         let home = fm.temporaryDirectory.appendingPathComponent("HelloChatMigration-\(UUID())")
         defer { try? fm.removeItem(at: home) }
