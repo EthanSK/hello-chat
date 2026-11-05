@@ -4,6 +4,88 @@
 // Replaces the earlier VoiceChatHandoff / WakeSpeechCapture UI-delivery path.
 import Foundation
 import Darwin
+import CryptoKit
+
+// Install only our namespaced skill. The signed app's VoiceStartup.md remains
+// canonical; a receipt lets app updates distinguish our copy from user edits.
+enum StartupSpeechSkillInstaller {
+    static let name = "hello-chat-voice-startup"
+    enum Result: String { case installed, updated, unchanged, conflict }
+    private struct Receipt: Codable {
+        let owner: String
+        let formatVersion: Int
+        let sha256: String
+    }
+    private static let owner = "com.ethansk.HeyChat.voice-startup"
+
+    static func installBundled() throws -> Result {
+        guard let source = Bundle.main.url(forResource: "VoiceStartup", withExtension: "md") else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let configured = ProcessInfo.processInfo.environment["CODEX_HOME"]
+        let codexHome = configured.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0, isDirectory: true) : nil }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex", isDirectory: true)
+        return try install(contract: source, skills: codexHome.appendingPathComponent("skills", isDirectory: true))
+    }
+
+    static func install(contract: URL, skills: URL) throws -> Result {
+        let fm = FileManager.default
+        let content = try Data(contentsOf: contract)
+        guard content.count <= 65_536,
+              String(decoding: content, as: UTF8.self).hasPrefix("---\nname: \(name)\n") else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        try fm.createDirectory(at: skills, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard isOwnedDirectory(skills) else { return .conflict }
+        let destination = skills.appendingPathComponent(name, isDirectory: true)
+        let digest = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
+        let receiptData = try JSONEncoder().encode(Receipt(owner: owner, formatVersion: 1, sha256: digest))
+        var info = stat()
+        if lstat(destination.path, &info) != 0 {
+            guard errno == ENOENT else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            // Publish both files together; never claim an existing directory.
+            let staging = skills.appendingPathComponent(".\(name)-\(UUID().uuidString)", isDirectory: true)
+            try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? fm.removeItem(at: staging) }
+            try write(content, to: staging.appendingPathComponent("SKILL.md"))
+            try write(receiptData, to: staging.appendingPathComponent(".hellochat-owner.json"))
+            try fm.moveItem(at: staging, to: destination)
+            return .installed
+        }
+        guard isOwnedDirectory(destination) else { return .conflict }
+        let skill = destination.appendingPathComponent("SKILL.md")
+        let receipt = destination.appendingPathComponent(".hellochat-owner.json")
+        guard let existing = try ownedFile(skill), let metadata = try ownedFile(receipt),
+              let record = try? JSONDecoder().decode(Receipt.self, from: metadata),
+              record.owner == owner, record.formatVersion == 1 else { return .conflict }
+        let currentDigest = SHA256.hash(data: existing).map { String(format: "%02x", $0) }.joined()
+        // A failed receipt write after replacement is recoverable on the next
+        // launch. A user's different edit must remain untouched.
+        guard currentDigest == record.sha256 || existing == content else { return .conflict }
+        if existing == content {
+            if record.sha256 != digest { try write(receiptData, to: receipt) }
+            return .unchanged
+        }
+        try write(content, to: skill)
+        try write(receiptData, to: receipt)
+        return .updated
+    }
+
+    private static func isOwnedDirectory(_ url: URL) -> Bool {
+        var info = stat()
+        return lstat(url.path, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR && info.st_uid == getuid()
+    }
+    private static func ownedFile(_ url: URL) throws -> Data? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == getuid(), info.st_nlink == 1, info.st_size <= 65_536 else { return nil }
+        return try Data(contentsOf: url)
+    }
+    private static func write(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+}
 
 final class StartupSpeechFile: @unchecked Sendable {
     static let directory = AppPaths.support.appendingPathComponent("VoiceStartup", isDirectory: true)

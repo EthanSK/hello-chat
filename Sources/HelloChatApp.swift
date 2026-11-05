@@ -214,6 +214,12 @@ import Darwin
             let instance = try AppInstanceLock(url: url)
             guard instance.acquired else { return }
             try AppPaths.migrateLegacyData()
+            // App startup owns this integration, including after an update.
+            // A user-managed collision must not prevent listening or change it.
+            do {
+                let result = try StartupSpeechSkillInstaller.installBundled()
+                Diagnostics.shared.record("voice.startup_skill.install", info: ["result": result.rawValue])
+            } catch { Diagnostics.shared.failure("voice.startup_skill.install_failed", error) }
             withExtendedLifetime(instance) { HelloChatApp.main() }
         } catch {
             fputs("Could not acquire HelloChat instance lock: \(error)\n", stderr)

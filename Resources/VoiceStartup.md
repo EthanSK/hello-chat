@@ -1,4 +1,11 @@
+---
+name: hello-chat-voice-startup
+description: Read H Chat's pending startup speech only when a new actual local Voice coordinator starts, after its normal self-pinning. Do not use for text chats, dictation, maintenance, subagents, or an existing Voice call.
+---
+
 # H Chat startup speech
+
+H Chat owns this skill and installs it from its bundled `VoiceStartup.md`. Keep that file as the single source of truth. Preserve useful corrections in the H Chat project for a future app update; do not edit this installed copy or change unrelated personal skills. Follow the host's skill-use announcement rules.
 
 Use this only at the startup of an actual new local Codex Voice coordinator, after its normal self-pinning. Do not consume this mailbox from an ordinary text chat, a subagent, a maintenance task, or an already-running unrelated call.
 
