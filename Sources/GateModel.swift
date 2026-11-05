@@ -99,6 +99,9 @@ import SwiftUI
     private var generation = UUID()
     private var voiceTask: Task<Void, Never>?
     private var voiceStartContext: VoiceStartContext?
+    private var startupSpeech: StartupSpeechBuffer?
+    private var lastStartupSpeechID: UUID?
+    private let startupSpeechFile = StartupSpeechFile(onError: { Diagnostics.shared.failure("voice.startup_speech.file_failed", $0) })
     private var timeoutTask: Task<Void, Never>?
     private var listeningTask: Task<Void, Never>?
     private var quitting = false
@@ -126,6 +129,7 @@ import SwiftUI
             // next desktop. Preserve any late call and require a fresh phrase.
             self.matcher.reset(); self.standaloneWake.reset()
             self.listener.discardPendingRecognition()
+            self.finishStartupSpeech(preserveRequested: true)
             if let opening = self.voiceStartContext {
                 opening.preserveCallOnCancellation = true
                 self.voiceTask?.cancel(); self.voiceTask = nil
@@ -142,6 +146,7 @@ import SwiftUI
             self.phrasesPausedForAgentFlow = value
             self.matcher.reset(); self.standaloneWake.reset()
             self.listener.discardPendingRecognition()
+            if value { self.finishStartupSpeech(preserveRequested: true) }
             Diagnostics.shared.record("phrases.agent_flow", info: ["paused": String(value)])
         }
         do { try ShortcutLease().restore() } catch { self.error = "Could not restore Voice shortcut: \(error.localizedDescription)" }
@@ -155,6 +160,7 @@ import SwiftUI
         }
         listener.onSession = { [weak self] in
             self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.detectionRunning = true
+            self?.startupSpeech?.boundary()
         }
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds in self?.standaloneWake.audio(level: level, seconds: seconds) }
@@ -466,6 +472,8 @@ import SwiftUI
         if !voice.connected { microphone = .muted }
     }
     private func stopLocal(preservingCall: Bool = false) {
+        finishStartupSpeech(preserveRequested: preservingCall || quitting)
+        if !preservingCall, !quitting { cancelStartupSpeech() }
         // Undocking and playback pauses own local capture, not the conversation.
         // Mark this exact opening before cancellation; do not permanently detach
         // NativeVoice, since a later wake must still work after capture resumes.
@@ -519,6 +527,7 @@ import SwiftUI
     }
     func manualMute() {
         guard enabled || voice.connected, !quitting else { return }
+        cancelStartupSpeech()
         timeoutTask?.cancel(); timeoutTask = nil
         if busy {
             let previous = voiceTask
@@ -551,7 +560,7 @@ import SwiftUI
             lastEvent = voice.connected ? "Chat is on" : "Chat is off"
         }
     }
-    private func beginVoice(trigger: String) {
+    private func beginVoice(trigger: String, wakeRange: Range<Int>? = nil) {
         guard enabled, detectionRunning, !busy, !quitting else { return }
         // Reserve synchronously so an end phrase arriving before this Task's
         // first turn cancels the queued opening instead of starting a second action.
@@ -561,6 +570,15 @@ import SwiftUI
         feedback.play(.wake)
         let context = VoiceStartContext()
         voiceStartContext = context
+        startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, phrase: wakePhrase, similar: similarPhrases)
+        context.prepareNewCall = { [weak self, weak context] in
+            guard let self, let context, self.voiceStartContext === context,
+                  var capture = self.startupSpeech, capture.id == context.id else { return }
+            capture.markPublished(); self.startupSpeech = capture
+            self.lastStartupSpeechID = context.id
+            let saved = await self.startupSpeechFile.begin(id: context.id, text: capture.text, truncated: capture.truncated)
+            if !saved, self.startupSpeech?.id == context.id { self.startupSpeech = nil }
+        }
         voiceTask = Task { await openVoice(trigger: trigger, context: context) }
     }
     private func openVoice(trigger: String, context: VoiceStartContext) async {
@@ -569,6 +587,11 @@ import SwiftUI
         let token = generation
         busy = true; error = nil; status = "Connecting"; detail = "Opening chat…"; lastEvent = trigger
         defer {
+            // Ordinary confirmation errors can leave a working native call.
+            // Preserve its prefix; explicit End/cancellation clears it instead.
+            if startupSpeech?.id == context.id {
+                finishStartupSpeech(preserveRequested: context.requestedNewCall && (!Task.isCancelled || context.preserveCallOnCancellation))
+            }
             if voiceStartContext === context { voiceStartContext = nil }
             if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
         }
@@ -594,6 +617,7 @@ import SwiftUI
     }
     private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false) async {
         guard enabled || voice.connected, !busy else { return }
+        cancelStartupSpeech()
         let token = generation
         busy = true
         defer {
@@ -640,11 +664,18 @@ import SwiftUI
         guard !phrasesPausedForAgentFlow ||
                 PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases, timings: timings) else { return }
         if !phrasesPausedForAgentFlow { standaloneWake.update(text, at: Diagnostics.now, timings: timings) }
-        guard !PhraseMatcher.words(wakePhrase).isEmpty, !PhraseMatcher.words(sleepPhrase).isEmpty,
-              PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase),
-              matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases, timings: timings) == .sleep,
-              agentFlow.confirmAllowsPhrases() ||
-                PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases, timings: timings) else { return }
+        let ending = !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
+            && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
+            && matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases, timings: timings) == .sleep
+            && (agentFlow.confirmAllowsPhrases() || PhraseMatcher.isStandaloneEnd(text, phrase: sleepPhrase, similar: similarPhrases, timings: timings))
+        if !ending {
+            if !phrasesPausedForAgentFlow, var capture = startupSpeech {
+                capture.observe(text); startupSpeech = capture
+                if capture.published { startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated) }
+            }
+            return
+        }
+        cancelStartupSpeech()
         standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
         Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
         // Ethan's "buy chat" / Bye Chat gets an immediate detection cue even
@@ -668,7 +699,20 @@ import SwiftUI
             // scheduling another call or cancelling the work already underway.
             feedback.play(.wake)
             lastEvent = "Heard \(wakePhrase) · finishing the current Voice action"
-        } else { beginVoice(trigger: "Heard \(wakePhrase)") }
+        } else { beginVoice(trigger: "Heard \(wakePhrase)", wakeRange: standaloneWake.acceptedRange) }
+    }
+    private func finishStartupSpeech(preserveRequested: Bool) {
+        guard let capture = startupSpeech else { return }
+        startupSpeech = nil
+        guard capture.published else { return }
+        if preserveRequested, voiceStartContext?.id == capture.id, voiceStartContext?.requestedNewCall == true {
+            startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated, ready: true)
+        }
+        else { startupSpeechFile.cancel(id: capture.id) }
+    }
+    private func cancelStartupSpeech() {
+        startupSpeech = nil
+        if let id = lastStartupSpeechID { startupSpeechFile.cancel(id: id); lastStartupSpeechID = nil }
     }
     func quit() { NSApp.terminate(nil) }
     func restoreAfterFailedUpdate() async {
@@ -696,6 +740,7 @@ import SwiftUI
         stopLocal()
         await previous?.value
         archive.flush()
+        await startupSpeechFile.flush()
         return true
     }
 }

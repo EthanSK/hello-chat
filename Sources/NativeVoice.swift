@@ -7,6 +7,9 @@ import Foundation
 @MainActor final class VoiceStartContext {
     let id = UUID()
     var preserveCallOnCancellation = false
+    var prepareNewCall: (() async -> Void)?
+    private(set) var requestedNewCall = false
+    func didRequestNewCall() { requestedNewCall = true }
 }
 
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
@@ -186,11 +189,10 @@ import Foundation
             if !state.controlsComplete {
                 diagnostics?.record("voice.open.uncertain_fallback", info: ["scan_failure": state.scanFailure])
             }
-            try transport.activate(pid)
-            try await Task.sleep(nanoseconds: 200_000_000)
             try checkStartAllowed()
-            // The call can appear during activation or launch. Reuse it instead
-            // of sending the global start action into an already-active call.
+            // Ethan's file handoff removes the need to make Codex frontmost or
+            // navigate a composer. Start is already a global native action.
+            // Keep the fresh reuse check, without the old activation delay.
             let activated = await snapshot()
             try checkStartAllowed()
             if let microphone = activated.microphone { connected = true; clearPendingOpening(); return microphone }
@@ -201,7 +203,12 @@ import Foundation
             }
             pendingUntil = Date().addingTimeInterval(confirmationTimeout)
             pendingOpeningID = opening.id
-            do { try await transport.send(VoiceBridge.startCommand, pid) }
+            do {
+                await opening.prepareNewCall?()
+                try checkStartAllowed()
+                try await transport.send(VoiceBridge.startCommand, pid)
+                opening.didRequestNewCall()
+            }
             catch { clearPendingOpening(ownedBy: opening.id); throw error }
             diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],
                                 info: ["command": VoiceBridge.startCommand, "delivery": "global_hotkey"])

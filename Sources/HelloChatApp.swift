@@ -7,9 +7,31 @@ import CoreML
 import FluidAudio
 import AVFoundation
 import CoreAudio
+import Darwin
 
 @main enum Main {
     static func main() {
+        if CommandLine.arguments.contains("--consume-startup-speech") {
+            // The Voice skill's file handoff must exit before app startup,
+            // instance ownership, microphone capture or native Voice control.
+            let arguments = CommandLine.arguments
+            func value(_ flag: String) -> String? {
+                guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+                return arguments[index + 1]
+            }
+            guard let seconds = value("--voice-created-at").flatMap(Double.init), seconds.isFinite, seconds > 0,
+                  let threadID = value("--voice-thread-id").flatMap(UUID.init(uuidString:)) else {
+                print("{\"status\":\"invalid_arguments\"}"); exit(2)
+            }
+            do {
+                let result = try StartupSpeechFile().consume(voiceCreatedAt: Date(timeIntervalSince1970: seconds), threadID: threadID)
+                print(String(decoding: try JSONEncoder().encode(result), as: UTF8.self)); exit(0)
+            } catch {
+                let failure = error as NSError
+                let status = failure.domain == NSPOSIXErrorDomain && failure.code == Int(EWOULDBLOCK) ? "busy" : "unavailable"
+                print("{\"status\":\"\(status)\"}"); exit(1)
+            }
+        }
         ModelHub.offlineMode = true
         if CommandLine.arguments.contains("--preview-phrase-highlights") || Bundle.main.object(forInfoDictionaryKey: "HelloChatPhrasePreview") as? Bool == true {
             // Shared view only: no GateModel, capture, archive, Voice or sound.

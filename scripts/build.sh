@@ -40,6 +40,7 @@ fi
 ditto "$bin_dir/FluidAudio_FluidAudio.bundle" "$resource_bundle"
 install -m 644 "$build_dir/checkouts/FluidAudio/LICENSE" "$app/Contents/Resources/FluidAudio-LICENSE.txt"
 cp Resources/THIRD-PARTY-NOTICES.txt "$app/Contents/Resources/"
+install -m 644 Resources/VoiceStartup.md "$app/Contents/Resources/VoiceStartup.md"
 rm -f "$app/Contents/Resources/Voice.html"
 if [[ -n "${HELLOCHAT_SPEECH_FIXTURES_DIR:-}" ]]; then
   cp "$HELLOCHAT_SPEECH_FIXTURES_DIR/SpeechCheck.wav" "$HELLOCHAT_SPEECH_FIXTURES_DIR/SpeechNegative.wav" "$app/Contents/Resources/"

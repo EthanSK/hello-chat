@@ -22,12 +22,14 @@ struct StandaloneWake {
     private var revision = 0
     private var checkedRevision = -1
     private var configuration = ""
+    private(set) var acceptedRange: Range<Int>?
 
     mutating func reset() { self = StandaloneWake() }
     mutating func resetContext() {
         context = []; sentenceStarts = []; audioBoundary = 0
         wordTimings = nil
         consumed = 0; revision += 1; quiet = 0
+        acceptedRange = nil
     }
     mutating func audio(level: Double, seconds: Double) {
         if level < 0.02 { quiet += seconds }
@@ -59,13 +61,15 @@ struct StandaloneWake {
         if configuration != key { configuration = key; checkedRevision = -1 }
         guard heardSpeech, checkedRevision != revision else { return false }
         let candidates = matches(phrase: phrase, similar: similar)
-        let directAddress = candidates.enumerated().contains { index, match in
+        let accepted = candidates.enumerated().first { index, match in
             index + 1 > consumed
                 && !isMention(start: match.start, end: match.end)
                 && !(similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
                      && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                      && sentenceStarts.contains { $0 > match.start && $0 < match.end })
         }
+        acceptedRange = accepted.map { $0.element.start..<$0.element.end }
+        let directAddress = accepted != nil
         checkedRevision = revision
         // Monotonic occurrence counts prevent corrections to an old sentence
         // from replaying either a rejected mention or an accepted address.

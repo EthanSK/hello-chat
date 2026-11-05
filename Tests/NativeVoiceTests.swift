@@ -6,6 +6,18 @@ import Foundation
             VoiceSnapshot(pid: 123, inputRunning: input || mic != nil, recorderRunning: false,
                           microphone: mic, accessibilityAllowed: allowed)
         }
+        var mailboxState = state(), mailboxEvents: [String] = []
+        let mailboxContext = VoiceStartContext()
+        mailboxContext.prepareNewCall = { mailboxEvents.append("mailbox") }
+        let mailboxVoice = NativeVoice(transport: .init(snapshot: { mailboxState }, send: { command, _ in
+            mailboxEvents.append(command); mailboxState = state(.listening)
+        }, activate: { _ in fatalError("Global Start must not make Codex frontmost") }))
+        _ = try await mailboxVoice.start(context: mailboxContext)
+        precondition(mailboxEvents == ["mailbox", VoiceBridge.startCommand] && mailboxContext.requestedNewCall)
+        let reusedMailboxContext = VoiceStartContext()
+        reusedMailboxContext.prepareNewCall = { fatalError("Reusing a live call must not replace startup speech") }
+        _ = try await mailboxVoice.start(context: reusedMailboxContext)
+        precondition(!reusedMailboxContext.requestedNewCall)
         var desktop = DesktopSessionState.locked
         var sessionCommands: [String] = [], sessionState = state()
         let sessionVoice = NativeVoice(transport: .init(snapshot: { sessionState }, send: { command, _ in
@@ -240,10 +252,11 @@ import Foundation
         precondition(raceLaunches == 2 && raceCommands == ["realtimeVoice"],
                      "If the old process exits during reopen, relaunch once and send Voice only once after readiness")
 
-        var readyAfterActivation = false
-        let activationAdoption = NativeVoice(transport: .init(snapshot: { readyAfterActivation ? state(.listening) : state() },
-            send: { _, _ in fatalError("Never send Start when a call appears during activation") },
-            activate: { _ in readyAfterActivation = true }, launch: { fatalError("An open app is not launched again") }))
+        var adoptionReads = 0
+        let activationAdoption = NativeVoice(transport: .init(snapshot: {
+            adoptionReads += 1; return adoptionReads >= 2 ? state(.listening) : state()
+        }, send: { _, _ in fatalError("Never send Start when a call appears during the fresh recheck") },
+            activate: { _ in fatalError("Global Start must not activate Codex") }, launch: { fatalError("An open app is not launched again") }))
         _ = try await activationAdoption.start()
         precondition(activationAdoption.connected, "The final fresh check prevents a duplicate call")
 
