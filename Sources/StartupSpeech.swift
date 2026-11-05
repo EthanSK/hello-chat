@@ -41,9 +41,16 @@ final class StartupSpeechFile: @unchecked Sendable {
             queue.async { [self] in
                 do {
                     try locked(create: true) {
-                        try write(Document(id: id, requestedAt: date.timeIntervalSince1970,
-                            updatedAt: date.timeIntervalSince1970, phase: .capturing,
-                            text: String(text.prefix(Self.textLimit)), truncated: truncated))
+                        do {
+                            try write(Document(id: id, requestedAt: date.timeIntervalSince1970,
+                                updatedAt: date.timeIntervalSince1970, phase: .capturing,
+                                text: String(text.prefix(Self.textLimit)), truncated: truncated))
+                        } catch {
+                            // A failed new publication must not leave the old
+                            // call's words looking like the newest request.
+                            _ = unlink(root.appendingPathComponent("pending.json").path)
+                            throw error
+                        }
                     }
                     continuation.resume(returning: true)
                 } catch { onError(error); continuation.resume(returning: false) }

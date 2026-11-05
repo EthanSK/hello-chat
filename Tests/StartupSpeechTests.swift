@@ -82,6 +82,13 @@ import Darwin
         flock(lock, LOCK_UN); close(lock)
         expect(try store.consume(voiceCreatedAt: now, threadID: consumer).status == "speech")
 
+        expect(await store.begin(id: UUID(), text: "Older unpublished request", truncated: false, at: now))
+        // A grapheme can contain many bytes. Force the bounded file write to
+        // fail and prove a new call cannot inherit the previous call's words.
+        let tooManyBytes = String(repeating: "a" + String(repeating: "\u{0301}", count: 10), count: StartupSpeechFile.textLimit)
+        expect(!(await store.begin(id: UUID(), text: tooManyBytes, truncated: false, at: now)))
+        expect(try store.consume(voiceCreatedAt: now, threadID: consumer).status == "empty")
+
         func reject(_ data: Data) throws {
             try data.write(to: pending)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pending.path)

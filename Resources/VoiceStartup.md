@@ -2,6 +2,8 @@
 
 Use this only at the startup of an actual new local Codex Voice coordinator, after its normal self-pinning. Do not consume this mailbox from an ordinary text chat, a subagent, a maintenance task, or an already-running unrelated call.
 
+This runs on the Voice agent's first tool-capable handoff. It does not force the frontend to delegate a turn merely because the audio connection opened; if Codex supplies no handoff, the file remains unread until it does.
+
 H Chat writes locally recognized words spoken after the accepted wake while the native call opens to:
 
 `~/Library/Application Support/HelloChat/VoiceStartup/pending.json`
