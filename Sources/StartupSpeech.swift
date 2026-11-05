@@ -26,6 +26,9 @@ final class StartupSpeechFile: @unchecked Sendable {
     private let root: URL
     private let queue = DispatchQueue(label: "com.ethansk.HeyChat.startup-speech", qos: .utility)
     private let onError: @Sendable (Error) -> Void
+    private struct PendingUpdate { let text: String; let truncated: Bool; let ready: Bool }
+    private let pendingLock = NSLock()
+    private var pendingUpdates: [UUID: PendingUpdate] = [:]
 
     init(directory: URL = StartupSpeechFile.directory, onError: @escaping @Sendable (Error) -> Void = { _ in }) {
         root = directory; self.onError = onError
@@ -49,14 +52,26 @@ final class StartupSpeechFile: @unchecked Sendable {
     }
 
     func update(id: UUID, text: String, truncated: Bool, ready: Bool = false) {
+        // Coalesce revisions already waiting for disk. Even a slow filesystem
+        // retains only the latest bounded text, rather than one closure per frame.
+        pendingLock.lock()
+        let enqueue = pendingUpdates[id] == nil
+        let wasReady = pendingUpdates[id]?.ready ?? false
+        pendingUpdates[id] = PendingUpdate(text: String(text.prefix(Self.textLimit)), truncated: truncated, ready: ready || wasReady)
+        pendingLock.unlock()
+        guard enqueue else { return }
         queue.async { [self] in
+            pendingLock.lock()
+            let update = pendingUpdates.removeValue(forKey: id)
+            pendingLock.unlock()
+            guard let update else { return }
             do {
                 try locked(create: false) {
                     guard var value = try read(), value.id == id,
                           value.phase == .capturing else { return }
-                    value.text = String(text.prefix(Self.textLimit)); value.truncated = truncated
+                    value.text = update.text; value.truncated = update.truncated
                     value.updatedAt = Date().timeIntervalSince1970
-                    if ready { value.phase = .ready }
+                    if update.ready { value.phase = .ready }
                     try write(value)
                 }
             } catch { onError(error) }

@@ -384,7 +384,7 @@ import Foundation
             throw BridgeError.message("Couldn't confirm Codex Voice. End the call in Codex.")
         }
         try checkAttached()
-        // Match start/unmute: activate Codex before requesting its native action.
+        // End/unmute retain their app-scoped activation; global Start does not.
         // An AXPress acknowledgement is not confirmation that the call ended.
         try transport.activate(pid)
         diagnostics?.record("voice.end.activation_requested")
