@@ -192,9 +192,10 @@ final class StartupSpeechFile: @unchecked Sendable {
                   value.requestedAt <= voiceCreatedAt.timeIntervalSince1970 + 2,
                   value.updatedAt <= now.timeIntervalSince1970 + 5 else { return Delivery(status: "unrelated") }
             guard value.phase == .capturing || value.phase == .ready else { return Delivery(status: "empty") }
-            // An initial tool handoff can arrive before the next ASR result.
-            // Leave an empty in-progress request for the first substantive one.
-            if value.phase == .capturing, value.text.isEmpty { return Delivery(status: "capturing") }
+            // A nonempty hypothesis can still be just "this is a". Never
+            // consume it while recognition is extending/correcting the same
+            // opening utterance; the next read must still see the whole request.
+            if value.phase == .capturing { return Delivery(status: "capturing") }
             let delivered = value
             value.phase = .consumed; value.text = ""; value.claimedBy = threadID
             value.updatedAt = now.timeIntervalSince1970
@@ -275,6 +276,8 @@ struct StartupSpeechBuffer {
     private var current = ""
     private(set) var published = false
     private(set) var truncated = false
+    private(set) var voiceOpened = false
+    private var utteranceEnded = false
     var text: String { String([completed, current].filter { !$0.isEmpty }.joined(separator: " ").prefix(StartupSpeechFile.textLimit)) }
 
     init(id: UUID, text: String, wakeRange: Range<Int>?, phrase: String, similar: Bool) {
@@ -284,6 +287,11 @@ struct StartupSpeechBuffer {
         observe(text)
     }
     mutating func markPublished() { published = true }
+    // Native connection is not an ASR completion signal. Either event may
+    // arrive first; publish ready only once both have happened.
+    mutating func markVoiceOpened() -> Bool { voiceOpened = true; return utteranceEnded }
+    mutating func markUtteranceEnded() -> Bool { utteranceEnded = true; return voiceOpened }
+    mutating func speechResumed() { utteranceEnded = false }
     mutating func boundary() { completed = text; current = ""; anchorStart = nil; baseline = nil }
     mutating func observe(_ text: String) {
         var ranges: [Range<String.Index>] = [], words: [String] = []
@@ -306,6 +314,7 @@ struct StartupSpeechBuffer {
         }
         let start = offset == 0 ? text.startIndex : (offset <= ranges.count ? ranges[offset - 1].upperBound : text.endIndex)
         let tail = text[start...].drop(while: { $0.isWhitespace || ",.!?;:".contains($0) })
+        if current != String(tail.prefix(StartupSpeechFile.textLimit)) { utteranceEnded = false }
         current = String(tail.prefix(StartupSpeechFile.textLimit))
         truncated = truncated || completed.count + current.count + (completed.isEmpty ? 0 : 1) > StartupSpeechFile.textLimit || tail.count > StartupSpeechFile.textLimit
     }

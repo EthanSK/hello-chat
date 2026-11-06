@@ -54,8 +54,21 @@ import Darwin
         expect(capture.text == "turn the kitchen lights blue.", "Joined wake corrections must not drop the first request word")
         capture.observe("The video said hello chat. Hello chat, turn the kitchen lights red.")
         expect(capture.text == "turn the kitchen lights red.", "Partial hypotheses replace instead of duplicating speech")
+        expect(!capture.markVoiceOpened(), "Opening Voice must not freeze an unfinished hypothesis")
+        capture.observe("The video said hello chat. Hello chat, turn the kitchen lights red and dim them.")
+        expect(capture.text == "turn the kitchen lights red and dim them.")
+        expect(capture.markUtteranceEnded(), "Opened Voice plus finished speech completes the request")
         capture.boundary(); capture.observe("And dim them to fifty percent.")
-        expect(capture.text == "turn the kitchen lights red. And dim them to fifty percent.")
+        expect(capture.text == "turn the kitchen lights red and dim them. And dim them to fifty percent.")
+
+        var beforeOpen = StartupSpeechBuffer(id: UUID(), text: "Hello chat this is a", wakeRange: 0..<2, phrase: "Hello Chat", similar: true)
+        expect(!beforeOpen.markUtteranceEnded())
+        beforeOpen.speechResumed()
+        expect(!beforeOpen.markVoiceOpened(), "Resumed audio must invalidate the old boundary before text catches up")
+        beforeOpen.observe("Hello chat this is a complete opening request.")
+        expect(!beforeOpen.markVoiceOpened(), "A newer hypothesis invalidates an earlier utterance-end signal")
+        expect(beforeOpen.markUtteranceEnded())
+        expect(beforeOpen.text == "this is a complete opening request.")
 
         var custom = StartupSpeechBuffer(id: UUID(), text: "Good morning computer, open the calendar.",
             wakeRange: 0..<3, phrase: "Good morning computer", similar: true)
@@ -71,6 +84,9 @@ import Darwin
         let first = UUID()
         expect(await store.begin(id: first, text: "", truncated: false, at: now))
         expect(try store.consume(voiceCreatedAt: now, threadID: consumer).status == "capturing")
+        store.update(id: first, text: "this is a", truncated: false)
+        await store.flush()
+        expect(try store.consume(voiceCreatedAt: now, threadID: consumer).status == "capturing", "Reading a partial opening must not consume it")
         store.update(id: first, text: "RequestPrefix: switch on the lamp.", truncated: false, ready: true)
         await store.flush()
         let delivery = try store.consume(voiceCreatedAt: now, threadID: consumer)
@@ -86,6 +102,7 @@ import Darwin
 
         let second = UUID()
         expect(await store.begin(id: second, text: "The next request", truncated: false, at: now))
+        store.update(id: second, text: "The next request", truncated: false, ready: true)
         store.update(id: first, text: "Old writer", truncated: false, ready: true); store.cancel(id: first)
         await store.flush()
         expect(try store.consume(voiceCreatedAt: now.addingTimeInterval(60), threadID: UUID()).status == "unrelated")
@@ -101,12 +118,17 @@ import Darwin
 
         let racing = UUID()
         expect(await store.begin(id: racing, text: "Read once", truncated: false, at: now))
+        store.update(id: racing, text: "Read once", truncated: false, ready: true)
+        await store.flush()
         let contenders = (0..<2).map { _ in Task.detached { try? store.consume(voiceCreatedAt: now, threadID: UUID()).status } }
         var winners = 0
         for contender in contenders { if await contender.value == "speech" { winners += 1 } }
         expect(winners == 1, "Concurrent consumers must deliver once")
 
-        expect(await store.begin(id: UUID(), text: "Locked request", truncated: false, at: now))
+        let locked = UUID()
+        expect(await store.begin(id: locked, text: "Locked request", truncated: false, at: now))
+        store.update(id: locked, text: "Locked request", truncated: false, ready: true)
+        await store.flush()
         let lock = open(fixture.appendingPathComponent(".lock").path, O_RDWR)
         expect(lock >= 0 && flock(lock, LOCK_EX | LOCK_NB) == 0)
         do { _ = try store.consume(voiceCreatedAt: now, threadID: consumer); fatalError("Busy lock was ignored") }

@@ -145,10 +145,23 @@ import SwiftUI
         }
         listener.onSession = { [weak self] in
             self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.detectionRunning = true
-            self?.startupSpeech?.boundary()
+            guard let self else { return }
+            if self.startupSpeech?.voiceOpened == true {
+                self.finishStartupSpeech(preserveRequested: true)
+            } else { self.startupSpeech?.boundary() }
+        }
+        listener.onUtteranceEnd = { [weak self] in
+            guard let self, var capture = self.startupSpeech else { return }
+            let complete = capture.markUtteranceEnded()
+            self.startupSpeech = capture
+            if complete { self.finishStartupSpeech(preserveRequested: true) }
         }
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.detectionRunning = false }
-        listener.onAudioActivity = { [weak self] level, seconds in self?.standaloneWake.audio(level: level, seconds: seconds) }
+        listener.onAudioActivity = { [weak self] level, seconds in
+            self?.standaloneWake.audio(level: level, seconds: seconds)
+            // Raw speech can resume before its first text hypothesis arrives.
+            if level >= 0.02 { self?.startupSpeech?.speechResumed() }
+        }
         listener.onFrame = { [weak self] in
             self?.speechRecovery.processed(at: Diagnostics.now)
             self?.checkStandaloneWake()
@@ -552,6 +565,9 @@ import SwiftUI
         // Acknowledge the request before scheduling Voice work. The sound does
         // not mean Codex connected, and the busy reservation prevents reentry.
         feedback.play(.wake)
+        // A repeated wake may reuse the current call. Finish its previous
+        // opening first; an unpublished reuse buffer must not strand that file.
+        finishStartupSpeech(preserveRequested: true)
         let context = VoiceStartContext()
         voiceStartContext = context
         startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, phrase: wakePhrase, similar: similarPhrases)
@@ -562,6 +578,7 @@ import SwiftUI
             self.lastStartupSpeechID = context.id
             let saved = await self.startupSpeechFile.begin(id: context.id, text: capture.text, truncated: capture.truncated)
             if !saved, self.startupSpeech?.id == context.id { self.startupSpeech = nil }
+            if saved { Diagnostics.shared.record("voice.startup_speech.started", info: ["request": context.id.uuidString]) }
         }
         voiceTask = Task { await openVoice(trigger: trigger, context: context) }
     }
@@ -571,10 +588,15 @@ import SwiftUI
         let token = generation
         busy = true; error = nil; status = "Connecting"; detail = "Opening chat…"; lastEvent = trigger
         defer {
-            // Ordinary confirmation errors can leave a working native call.
-            // Preserve its prefix; explicit End/cancellation clears it instead.
-            if startupSpeech?.id == context.id {
-                finishStartupSpeech(preserveRequested: context.requestedNewCall && (!Task.isCancelled || context.preserveCallOnCancellation))
+            // The native window appeared, but ASR may only have produced the
+            // beginning of the request. Keep capturing through its utterance
+            // boundary. Ordinary confirmation errors can also leave a call alive.
+            if var capture = startupSpeech, capture.id == context.id {
+                if context.requestedNewCall && (!Task.isCancelled || context.preserveCallOnCancellation) {
+                    let complete = capture.markVoiceOpened()
+                    startupSpeech = capture
+                    if complete { finishStartupSpeech(preserveRequested: true) }
+                } else { finishStartupSpeech(preserveRequested: false) }
             }
             if voiceStartContext === context { voiceStartContext = nil }
             if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
@@ -671,8 +693,9 @@ import SwiftUI
         guard let capture = startupSpeech else { return }
         startupSpeech = nil
         guard capture.published else { return }
-        if preserveRequested, voiceStartContext?.id == capture.id, voiceStartContext?.requestedNewCall == true {
+        if preserveRequested {
             startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated, ready: true)
+            Diagnostics.shared.record("voice.startup_speech.ready", numbers: ["characters": Double(capture.text.count)], info: ["request": capture.id.uuidString, "truncated": String(capture.truncated)])
         }
         else { startupSpeechFile.cancel(id: capture.id) }
     }

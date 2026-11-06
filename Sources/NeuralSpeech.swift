@@ -99,6 +99,13 @@ actor NeuralSpeech: SpeechBackend {
         if let manager, !completedUtterance, !text.isEmpty, await manager.eouDetected {
             completedUtterance = true; ended = true
         }
+        // Nemotron already treats this pause as the boundary before its next
+        // utterance. Report it now too, so startup speech can become ready
+        // without waiting for another spoken command. This does not gate Start
+        // or alter the existing onset/reset threshold.
+        if nemotron != nil, !completedUtterance, !text.isEmpty, onset.reachedPause {
+            completedUtterance = true; ended = true
+        }
         let changed = !text.isEmpty && text != previousText
         if changed { previousText = text }
         return SpeechUpdate(text: changed ? text : nil, reset: reset, utteranceEnded: ended,

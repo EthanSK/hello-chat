@@ -13,9 +13,12 @@ struct SpeechCheckResult {
     var gaps = 0
     var resets = 0
     var utteranceEnds = 0
+    var startupSpeech = ""
+    var startupReady = false
+    var startupAtVoiceOpen = ""
 }
 @MainActor final class SpeechCheck {
-    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false) async -> SpeechCheckResult {
+    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false, captureStartup: Bool = false) async -> SpeechCheckResult {
         let listener = SpeechListener(diagnostics: nil)
         listener.model = model
         var matcher = PhraseMatcher()
@@ -28,8 +31,12 @@ struct SpeechCheckResult {
         var segments: [String] = []
         var gaps = 0, sessions = 0
         var utteranceEnds = 0
+        var startup: StartupSpeechBuffer?
+        var startupReady = false
+        var startupAtVoiceOpen = ""
         listener.onDelay = { gaps += 1 }
         listener.onSession = {
+            if startup != nil { startupReady = true }
             sessions += 1
             if !text.isEmpty { segments.append(text); if segments.count > 8 { segments.removeFirst() }; text = "" }
             matcher.reset()
@@ -37,16 +44,28 @@ struct SpeechCheckResult {
         }
         listener.onComputePlan = { share = $0 }
         listener.onAudioActivity = { level, seconds in standaloneWake.audio(level: level, seconds: seconds) }
-        listener.onUtteranceEnd = { utteranceEnds += 1 }
+        listener.onUtteranceEnd = {
+            utteranceEnds += 1
+            if var capture = startup { startupReady = capture.markUtteranceEnded(); startup = capture }
+        }
         listener.onFrame = { [weak listener] in
-            if standalone, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar) {
+            if standalone || captureStartup, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar) {
                 commands.append(.wake)
+                if captureStartup, startup == nil {
+                    // Simulate the fastest possible native connection. Later
+                    // real ASR hypotheses must still complete this same buffer.
+                    var capture = StartupSpeechBuffer(id: UUID(), text: text, wakeRange: standaloneWake.acceptedRange, phrase: "Hello Chat", similar: similar)
+                    startupAtVoiceOpen = capture.text
+                    _ = capture.markVoiceOpened()
+                    startup = capture
+                }
                 detections.append(["command": "wake", "elapsed_ms": (Diagnostics.now - started) * 1000,
                                    "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false])
             }
         }
         listener.onText = { [weak listener] value, timings in
             text = value
+            if !startupReady { startup?.observe(value) }
             standaloneWake.update(value, at: Diagnostics.now, timings: timings)
             if let command = matcher.consume(value, wake: standalone ? "" : "Hello Chat", sleep: "Bye Chat", similar: similar, timings: timings) {
                 if standalone, command == .sleep {
@@ -68,7 +87,8 @@ struct SpeechCheckResult {
             listener.stop(); listener.onText = nil; listener.onSession = nil
             await listener.waitUntilStopped()
             return .init(text: failure ?? text, commands: failure == nil ? commands : [], neuralShare: share,
-                         cpuSeconds: Self.cpuTime() - cpuStart, audioSeconds: audioSeconds, detections: detections, segments: segments + [text], gaps: gaps, resets: max(0, sessions - 1), utteranceEnds: utteranceEnds)
+                         cpuSeconds: Self.cpuTime() - cpuStart, audioSeconds: audioSeconds, detections: detections, segments: segments + [text], gaps: gaps, resets: max(0, sessions - 1), utteranceEnds: utteranceEnds,
+                         startupSpeech: startup?.text ?? "", startupReady: startupReady, startupAtVoiceOpen: startupAtVoiceOpen)
         } catch {
             listener.stop(); listener.onText = nil; listener.onSession = nil
             await listener.waitUntilStopped()

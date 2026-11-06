@@ -29,9 +29,11 @@ struct SpeechRollover {
 }
 
 struct SpeechOnset {
+    static let pauseSeconds = 2.0
     private var quietSeconds = 0.0
+    var reachedPause: Bool { quietSeconds >= Self.pauseSeconds }
     mutating func consumed(seconds: Double, quiet: Bool) -> Bool {
-        let beginsAfterPause = !quiet && quietSeconds >= 2
+        let beginsAfterPause = !quiet && reachedPause
         quietSeconds = quiet ? quietSeconds + seconds : 0
         return beginsAfterPause
     }

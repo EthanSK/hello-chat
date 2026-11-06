@@ -67,17 +67,19 @@ import Darwin
             }
             selectedModel = model
         } else { selectedModel = .defaultModel }
-        if let index = CommandLine.arguments.firstIndex(of: "--check-recording") ?? CommandLine.arguments.firstIndex(of: "--check-standalone-recording") {
+        if let index = CommandLine.arguments.firstIndex(of: "--check-recording") ?? CommandLine.arguments.firstIndex(of: "--check-standalone-recording") ?? CommandLine.arguments.firstIndex(of: "--check-startup-recording") {
             guard index + 1 < CommandLine.arguments.count else { exit(2) }
             let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
             Task { @MainActor in
-                let result = await SpeechCheck().run(url: url, model: selectedModel, standalone: CommandLine.arguments.contains("--check-standalone-recording"))
+                let startup = CommandLine.arguments.contains("--check-startup-recording")
+                let result = await SpeechCheck().run(url: url, model: selectedModel, standalone: CommandLine.arguments.contains("--check-standalone-recording"), captureStartup: startup)
                 let report: [String: Any] = ["model": selectedModel.rawValue, "text": result.text, "segments": result.segments, "detections": result.detections,
                     "gaps": result.gaps, "resets": result.resets, "utteranceEnds": result.utteranceEnds,
+                    "startupSpeech": result.startupSpeech, "startupReady": result.startupReady, "startupAtVoiceOpen": result.startupAtVoiceOpen,
                     "cpuSeconds": result.cpuSeconds, "audioSeconds": result.audioSeconds,
                     "memoryMB": ResourceUsage.footprintMB(), "anePlanShare": selectedModel.neuralPlacementKnown ? result.neuralShare as Any : NSNull()]
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) { print(String(decoding: data, as: UTF8.self)) }
-                exit(result.commands.isEmpty ? 1 : 0)
+                exit(startup ? (result.startupReady && !result.startupSpeech.isEmpty ? 0 : 1) : (result.commands.isEmpty ? 1 : 0))
             }
             RunLoop.main.run(); return
         }
