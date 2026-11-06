@@ -136,6 +136,21 @@ import Darwin
         flock(lock, LOCK_UN); close(lock)
         expect(try store.consume(voiceCreatedAt: now, threadID: consumer).status == "speech")
 
+        let contended = UUID()
+        expect(await store.begin(id: contended, text: "", truncated: false, at: now))
+        let readerLock = open(fixture.appendingPathComponent(".lock").path, O_RDWR)
+        expect(readerLock >= 0 && flock(readerLock, LOCK_EX | LOCK_NB) == 0)
+        // Model a reader holding the real cross-process file lock while the
+        // final recognition result is queued. The production writer must keep it.
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            store.update(id: contended, text: "Complete despite a concurrent reader", truncated: false, ready: true)
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(100)) {
+                flock(readerLock, LOCK_UN); close(readerLock); done.resume()
+            }
+        }
+        await store.flush()
+        expect(try store.consume(voiceCreatedAt: now, threadID: consumer).request?.text == "Complete despite a concurrent reader", "A busy reader must not drop the final write")
+
         expect(await store.begin(id: UUID(), text: "Older unpublished request", truncated: false, at: now))
         // A grapheme can contain many bytes. Force the bounded file write to
         // fail and prove a new call cannot inherit the previous call's words.

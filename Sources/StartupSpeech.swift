@@ -155,7 +155,7 @@ final class StartupSpeechFile: @unchecked Sendable {
             pendingLock.unlock()
             guard let update else { return }
             do {
-                try locked(create: false) {
+                try locked(create: false, waitForReader: true) {
                     guard var value = try read(), value.id == id,
                           value.phase == .capturing else { return }
                     value.text = update.text; value.truncated = update.truncated
@@ -170,7 +170,7 @@ final class StartupSpeechFile: @unchecked Sendable {
     func cancel(id: UUID) {
         queue.async { [self] in
             do {
-                try locked(create: false) {
+                try locked(create: false, waitForReader: true) {
                     guard var value = try read(), value.id == id,
                           value.phase != .consumed, value.phase != .cancelled else { return }
                     value.phase = .cancelled; value.text = ""; value.updatedAt = Date().timeIntervalSince1970
@@ -208,7 +208,7 @@ final class StartupSpeechFile: @unchecked Sendable {
         await withCheckedContinuation { continuation in queue.async { continuation.resume() } }
     }
 
-    private func locked<T>(create: Bool, _ body: () throws -> T) throws -> T {
+    private func locked<T>(create: Bool, waitForReader: Bool = false, _ body: () throws -> T) throws -> T {
         let fm = FileManager.default
         if create { try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
         if !fm.fileExists(atPath: root.path), !create { return try body() }
@@ -218,9 +218,11 @@ final class StartupSpeechFile: @unchecked Sendable {
         let descriptor = open(root.appendingPathComponent(".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         defer { close(descriptor) }
-        // No lock-wait padding on the wake path. A busy mailbox is a soft
-        // failure; the next recognition revision/reader can try its real work.
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        // Start and reads remain nonblocking. Queued background writes must
+        // finish after a brief reader, especially the last ready/cancel update
+        // which has no later recognition revision to retry it. This waits on
+        // actual file work, not a timer, and never holds the main actor.
+        guard flock(descriptor, LOCK_EX | (waitForReader ? 0 : LOCK_NB)) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         defer { flock(descriptor, LOCK_UN) }
         return try body()
     }
