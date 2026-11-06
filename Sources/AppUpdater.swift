@@ -17,7 +17,8 @@ import Sparkle
         updaterDelegate: self, userDriverDelegate: nil)
     private lazy var installation = UpdateInstallation(mayInstall: { [weak self] in
         guard let model = self?.model else { return false }
-        return UpdateSafety.canRelaunch(busy: model.busy, checkingSpeech: model.checkingSpeech)
+        return UpdateSafety.canRelaunch(busy: model.busy, checkingSpeech: model.checkingSpeech,
+                                       capturingStartupSpeech: model.capturingStartupSpeech)
     }, prepare: { [weak self] in
         guard let prepare = self?.prepareToQuit else { return false }
         return await prepare()

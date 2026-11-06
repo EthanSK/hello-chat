@@ -95,6 +95,7 @@ import SwiftUI
     private var voiceTask: Task<Void, Never>?
     private var voiceStartContext: VoiceStartContext?
     private var startupSpeech: StartupSpeechBuffer?
+    var capturingStartupSpeech: Bool { startupSpeech != nil }
     private var lastStartupSpeechID: UUID?
     private let startupSpeechFile = StartupSpeechFile(onError: { Diagnostics.shared.failure("voice.startup_speech.file_failed", $0) })
     private var listeningTask: Task<Void, Never>?
