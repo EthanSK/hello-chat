@@ -102,3 +102,7 @@
 ## 2026-11-05 — Reuse checksum-verified release signing tools
 
 Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/share/sparkle-tools/2.10.1/bin`, after comparing it with the freshly downloaded, checksum-verified SDK. Provision this directory during signing-host setup; a missing or mismatched copy blocks signing instead of invoking an unverified or disposable helper. Keep per-app Keychain accounts and public-key checks. Reusing identical tool bytes does not promise approval survives a tool upgrade or a changed key.
+
+## 2026-11-06 — Voice model selection
+
+- Model selection (6 Nov 2026): the installed desktop's `global_hotkey_new_thread` request carries no model override and its renderer uses the current new-chat model selection. Adding `activeCollaborationMode` to that request does not override it; only `composer_button_new_thread` consumes that explicit selection. An isolated probe executing the installed controller, selection expression and thread-creation helper with injected transports verified Sol/Terra propagation and the ignored global override. This is source/injected-test evidence, not a live-call acceptance test. H Chat's existing `Speech model` selects local recognition, not the Codex assistant or realtime audio model. Do not present an independent H Chat model picker as working through the existing shortcut, or change shared Codex defaults as though they were H Chat-only settings. Recheck the actual installed desktop before designing a new launch connection.
