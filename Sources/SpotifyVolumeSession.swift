@@ -8,14 +8,46 @@ enum SpotifyControlError: Error {
 
 enum VoiceCallPresence: String { case active, inactive, unknown }
 
+struct VoiceCallObservation: Equatable {
+    let presence: VoiceCallPresence
+    let callIdentifier: String?
+}
+
+// Saved final End events outrank stale AX buttons. Session identity also
+// catches End/Start pairs whose short inactive interval was never observed.
+struct SavedCallBoundaries {
+    private(set) var activeSessions: Set<String>?
+    private var suppressUntilControlsClear = false
+    var hasActiveCall: Bool { activeSessions.map { !$0.isEmpty } ?? false }
+    var callIdentifier: String? { activeSessions?.count == 1 ? activeSessions?.first : nil }
+
+    mutating func observe(_ current: Set<String>?, controlsPresent: Bool,
+                          controlsComplete: Bool) -> (endPrevious: Bool, suppressControls: Bool) {
+        var ended = false
+        if let current {
+            if let previous = activeSessions, !previous.isEmpty, previous.isDisjoint(with: current) {
+                ended = true
+                suppressUntilControlsClear = current.isEmpty
+            }
+            if !current.isEmpty { suppressUntilControlsClear = false }
+            activeSessions = current
+        }
+        let suppress = suppressUntilControlsClear
+        if controlsComplete && !controlsPresent { suppressUntilControlsClear = false }
+        return (ended, suppress)
+    }
+}
+
 struct SpotifyVolumeLease: Codable, Equatable {
     let version: Int
     let original: Int
     let applied: Int
     var confirmed: Bool
+    let callIdentifier: String?
 
-    init(original: Int, applied: Int, confirmed: Bool = false) {
+    init(original: Int, applied: Int, confirmed: Bool = false, callIdentifier: String? = nil) {
         version = 1; self.original = original; self.applied = applied; self.confirmed = confirmed
+        self.callIdentifier = callIdentifier
     }
     var valid: Bool {
         version == 1 && (0...100).contains(original) &&
@@ -65,13 +97,20 @@ final class SpotifyVolumeSession: @unchecked Sendable {
 
     // Save BEFORE sending the volume change. A crash between the event and its
     // reply must not lose the original value or save 30 as the next original.
-    func reconcile(_ call: VoiceCallPresence, preservingManualOverride: Bool = false) throws -> Result {
+    func reconcile(_ call: VoiceCallPresence, preservingManualOverride: Bool = false,
+                   callIdentifier: String? = nil) throws -> Result {
         if !loaded {
             let saved = try access.load()
             if let saved, !saved.valid { throw CocoaError(.fileReadCorruptFile) }
             lease = saved; loaded = true
         }
         guard call != .unknown else { return .uncertain }
+        if call == .active, let currentID = callIdentifier, let previousID = lease?.callIdentifier,
+           previousID != currentID {
+            // Recovery after the helper was absent for End/Start must not carry
+            // an old call's manual override into this new call.
+            _ = try reconcile(.inactive)
+        }
         if call == .inactive, lease == nil { return .idle }
         guard let current = try access.read() else { return .spotifyClosed }
         guard (0...100).contains(current) else { throw CocoaError(.coderInvalidValue) }
@@ -85,7 +124,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
                 // 30. At End, restore only if our applied value is still there.
                 return saved.owns(current) ? .unchanged : .manualChange
             }
-            let saved = SpotifyVolumeLease(original: current, applied: min(current, 30))
+            let saved = SpotifyVolumeLease(original: current, applied: min(current, 30), callIdentifier: callIdentifier)
             try access.save(saved); lease = saved
             return try apply(saved)
         }
@@ -105,13 +144,14 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     private func apply(_ saved: SpotifyVolumeLease) throws -> Result {
         let actual = saved.original != saved.applied
             ? try access.write(saved.applied, saved.original, false) : saved.applied
-        let confirmed = SpotifyVolumeLease(original: saved.original, applied: actual, confirmed: true)
+        let confirmed = SpotifyVolumeLease(original: saved.original, applied: actual, confirmed: true,
+                                          callIdentifier: saved.callIdentifier)
         try access.save(confirmed); lease = confirmed
         return saved.original == saved.applied ? .unchanged : .lowered
     }
 }
 
-// Persist just the original/applied slider values, never tracks or transcripts.
+// Persist slider values and an opaque call identifier, never tracks or transcripts.
 struct SpotifyVolumeReceipt {
     let url: URL
     func load() throws -> SpotifyVolumeLease? {
@@ -138,7 +178,11 @@ struct VoiceCallDecision {
     private var negativeReads = 0
 
     mutating func observe(controlsPresent: Bool, controlsComplete: Bool,
-                          persistedCallActive: Bool, applicationAbsent: Bool) -> Bool {
+                          persistedCallActive: Bool, applicationAbsent: Bool,
+                          savedCallEnded: Bool = false) -> Bool {
+        if savedCallEnded {
+            negativeReads = 0; presence = .inactive; return false
+        }
         if controlsPresent {
             negativeReads = 0; presence = .active; return false
         }

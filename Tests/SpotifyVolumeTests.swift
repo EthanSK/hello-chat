@@ -141,6 +141,35 @@ import Foundation
         _ = try afterRestart.reconcile(.inactive)
         precondition(manualRestart.receipt == nil && manualRestart.volume == 50)
 
+        let replaced = Fixture(), replacedSession = replaced.session()
+        _ = try replacedSession.reconcile(.active, callIdentifier: "call-A")
+        replaced.volume = 50
+        // There need not be an inactive callback between saved call identities.
+        _ = try replaced.session().reconcile(.active, callIdentifier: "call-B")
+        precondition(replaced.volume == 30 && replaced.receipt?.original == 50 &&
+                     replaced.receipt?.callIdentifier == "call-B")
+        _ = try replaced.session().reconcile(.inactive)
+        precondition(replaced.volume == 50 && replaced.receipt == nil)
+
+        var boundaries = SavedCallBoundaries()
+        _ = boundaries.observe(["A"], controlsPresent: true, controlsComplete: true)
+        let replacementBoundary = boundaries.observe(["B"], controlsPresent: true, controlsComplete: true)
+        precondition(replacementBoundary.endPrevious && !replacementBoundary.suppressControls,
+                     "Active-to-active replacement still closes the old call")
+        let knownEnd = boundaries.observe([], controlsPresent: true, controlsComplete: true)
+        precondition(knownEnd.endPrevious && knownEnd.suppressControls,
+                     "Final saved End outranks stale buttons")
+        precondition(boundaries.observe([], controlsPresent: true, controlsComplete: true).suppressControls)
+        _ = boundaries.observe([], controlsPresent: false, controlsComplete: true)
+        precondition(!boundaries.observe([], controlsPresent: true, controlsComplete: true).suppressControls,
+                     "A later temporary call can use fresh controls")
+        _ = boundaries.observe(["C"], controlsPresent: true, controlsComplete: true)
+        precondition(!boundaries.observe(nil, controlsPresent: false, controlsComplete: false).endPrevious &&
+                     boundaries.hasActiveCall, "Unavailable metadata retains the known call")
+        precondition(!boundaries.observe(["C", "D"], controlsPresent: true, controlsComplete: true).endPrevious)
+        precondition(!boundaries.observe(["D"], controlsPresent: true, controlsComplete: true).endPrevious,
+                     "An overlapping remaining call keeps the shared volume lease")
+
         var call = VoiceCallDecision()
         precondition(!call.observe(controlsPresent: true, controlsComplete: true, persistedCallActive: false, applicationAbsent: false))
         precondition(call.presence == .active, "Temporary call uses actual controls, with no disk record")
@@ -155,6 +184,9 @@ import Foundation
         _ = call.observe(controlsPresent: false, controlsComplete: true, persistedCallActive: true, applicationAbsent: true)
         _ = call.observe(controlsPresent: false, controlsComplete: true, persistedCallActive: true, applicationAbsent: true)
         precondition(call.presence == .inactive, "Actual process exit ends even stale persisted sessions")
+        _ = call.observe(controlsPresent: true, controlsComplete: true, persistedCallActive: false,
+                         applicationAbsent: false, savedCallEnded: true)
+        precondition(call.presence == .inactive, "Final saved End defeats stale positive controls")
 
         let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         let receipt = SpotifyVolumeReceipt(url: directory.appendingPathComponent("lease/restore.json"))

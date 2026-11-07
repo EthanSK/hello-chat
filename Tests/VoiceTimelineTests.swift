@@ -20,12 +20,16 @@ import SQLite3
         sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',2,'{\"type\":\"session-started\",\"sessionId\":\"new\",\"occurredAtMs\":3000}')")
         sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',3,'{\"type\":\"transcript-segment\",\"text\":\"not selected\",\"occurredAtMs\":4000}')")
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == true)
+        precondition(VoiceTimeline.activeSessions(database: url, since: Date(timeIntervalSince1970: 2)) == ["chat:new"])
         // An older close must not end a replacement call in the same thread.
         sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',4,'{\"type\":\"session-ended\",\"sessionId\":\"old\",\"occurredAtMs\":5000}')")
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == true)
         sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',5,'{\"type\":\"session-ended\",\"sessionId\":\"new\",\"occurredAtMs\":6000}')")
         sql("INSERT INTO thread_timeline_ledger VALUES('remote','chat',6,'{\"type\":\"session-started\",\"sessionId\":\"remote\",\"occurredAtMs\":7000}')")
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == false)
+        sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',7,'{\"type\":\"session-started\",\"sessionId\":\"replacement\",\"occurredAtMs\":8000}')")
+        precondition(VoiceTimeline.activeSessions(database: url, since: Date(timeIntervalSince1970: 2)) == ["chat:replacement"],
+                     "Reader preserves changed identity when boolean active stays true")
         sql("DROP TABLE thread_timeline_ledger")
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == nil,
                      "A private schema mismatch is unknown, not a confirmed End")

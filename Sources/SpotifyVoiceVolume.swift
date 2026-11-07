@@ -83,6 +83,7 @@ enum SpotifyVolumeControl {
     private let session: SpotifyVolumeSession
     private var enabled = false
     private var presence: VoiceCallPresence = .unknown
+    private var callIdentifier: String?
     private var generation = 0
     private var spotifyLaunchObserver: NSObjectProtocol?
 
@@ -91,8 +92,8 @@ enum SpotifyVolumeControl {
         session = SpotifyVolumeSession(access: .init(read: SpotifyVolumeControl.read, write: SpotifyVolumeControl.write,
             load: receipt.load, save: receipt.save))
         monitor.onChange = { [weak self] state in
-            guard let self, state != self.presence else { return }
-            self.presence = state; self.reconcile()
+            guard let self, state.presence != self.presence || state.callIdentifier != self.callIdentifier else { return }
+            self.presence = state.presence; self.callIdentifier = state.callIdentifier; self.reconcile()
         }
     }
 
@@ -129,11 +130,12 @@ enum SpotifyVolumeControl {
 
     private func reconcile() {
         let state = enabled ? presence : .inactive
+        let callIdentifier = self.callIdentifier
         let generation = self.generation
         let session = self.session
         queue.async { [weak self] in
             do {
-                let result = try session.reconcile(state)
+                let result = try session.reconcile(state, callIdentifier: callIdentifier)
                 Diagnostics.shared.record("spotify.volume.reconciled", info: ["result": result.rawValue, "call": state.rawValue])
                 Task { @MainActor [weak self] in
                     guard let self, self.generation == generation else { return }

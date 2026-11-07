@@ -9,6 +9,10 @@ struct VoiceTimeline {
     // This private schema is supplementary evidence, not a public Codex API.
     // Temporary calls can be memory-only, so their actual controls still win.
     static func hasActiveCall(database: URL, since: Date) -> Bool? {
+        activeSessions(database: database, since: since).map { !$0.isEmpty }
+    }
+
+    static func activeSessions(database: URL, since: Date) -> Set<String>? {
         var db: OpaquePointer?
         guard sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK,
               let db else { if let db { sqlite3_close(db) }; return nil }
@@ -29,7 +33,7 @@ struct VoiceTimeline {
         var active = Set<String>(), count = 0
         while true {
             let result = sqlite3_step(statement)
-            if result == SQLITE_DONE { return count < 2000 ? !active.isEmpty : nil }
+            if result == SQLITE_DONE { return count < 2000 ? active : nil }
             guard result == SQLITE_ROW,
                   let thread = sqlite3_column_text(statement, 0),
                   let session = sqlite3_column_text(statement, 1),
@@ -46,7 +50,7 @@ struct VoiceTimeline {
 }
 
 @MainActor final class VoiceCallMonitor {
-    var onChange: ((VoiceCallPresence) -> Void)?
+    var onChange: ((VoiceCallObservation) -> Void)?
     private var decision = VoiceCallDecision()
     private var started = false
     private var generation = UUID()
@@ -54,7 +58,7 @@ struct VoiceTimeline {
     private var refreshAgain = false
     private var metadataTask: Task<Void, Never>?
     private var metadataAgain = false
-    private var persistedCallActive = false
+    private var boundaries = SavedCallBoundaries()
     private var workspace: [NSObjectProtocol] = []
     private var observer: AXObserver?
     private var observedPID: pid_t?
@@ -71,7 +75,7 @@ struct VoiceTimeline {
 
     func start() {
         guard !started else { refresh(); return }
-        started = true; generation = UUID(); decision = VoiceCallDecision(); persistedCallActive = false
+        started = true; generation = UUID(); decision = VoiceCallDecision(); boundaries = SavedCallBoundaries()
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
                      NSWorkspace.didActivateApplicationNotification, NSWorkspace.didWakeNotification] {
             workspace.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
@@ -110,16 +114,22 @@ struct VoiceTimeline {
                     var callElements: [AXUIElement] = []
                     let state = VoiceBridge.snapshot(requireEnd: true, observeCallElements: { callElements = $0 })
                     let since = apps.count == 1 ? apps[0].launchDate ?? Date() : Date()
-                    return (state, apps.isEmpty, VoiceTimeline.hasActiveCall(database: database, since: since), callElements)
+                    return (state, apps.isEmpty, VoiceTimeline.activeSessions(database: database, since: since), callElements)
                 }.value
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
                 let state = evidence.0
-                if let active = evidence.2 { self.persistedCallActive = active }
-                let repeatRead = self.decision.observe(controlsPresent: state.endControlAvailable || state.microphone != nil,
-                    controlsComplete: state.controlsComplete, persistedCallActive: self.persistedCallActive, applicationAbsent: evidence.1)
+                let controlsPresent = state.endControlAvailable || state.microphone != nil
+                let boundary = self.boundaries.observe(evidence.2, controlsPresent: controlsPresent,
+                                                       controlsComplete: state.controlsComplete)
+                // An End followed by Start can happen between two reads. The
+                // active boolean stays true, but the previous call still ends.
+                if boundary.endPrevious { self.onChange?(.init(presence: .inactive, callIdentifier: nil)) }
+                let repeatRead = self.decision.observe(controlsPresent: controlsPresent,
+                    controlsComplete: state.controlsComplete, persistedCallActive: self.boundaries.hasActiveCall,
+                    applicationAbsent: evidence.1, savedCallEnded: boundary.suppressControls)
                 self.installAccessibilityObserver(pid: state.pid, callElements: evidence.3)
                 self.installFileObservers()
-                self.onChange?(self.decision.presence)
+                self.onChange?(.init(presence: self.decision.presence, callIdentifier: self.boundaries.callIdentifier))
                 self.refreshAgain = self.refreshAgain || repeatRead
             } while self.refreshAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.refreshTask = nil }
@@ -136,13 +146,13 @@ struct VoiceTimeline {
                 self.metadataAgain = false
                 let database = self.database
                 let value = await Task.detached(priority: .utility) {
-                    guard let app = VoiceBridge.currentApplication(), let launched = app.launchDate else { return Optional<Bool>.none }
-                    return VoiceTimeline.hasActiveCall(database: database, since: launched)
+                    guard let app = VoiceBridge.currentApplication(), let launched = app.launchDate else { return Optional<Set<String>>.none }
+                    return VoiceTimeline.activeSessions(database: database, since: launched)
                 }.value
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
                 // Most SQLite writes are unrelated to call boundaries. They
                 // must not cause repeated AX scans of a busy conversation.
-                if let value, value != self.persistedCallActive { self.refresh() }
+                if let value, value != self.boundaries.activeSessions { self.refresh() }
             } while self.metadataAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.metadataTask = nil }
         }
