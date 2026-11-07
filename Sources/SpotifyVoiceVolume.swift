@@ -97,7 +97,6 @@ enum SpotifyVolumeControl {
             guard let self, state != self.presence else { return }
             self.presence = state; self.reconcile()
         }
-        observeSpotifyLaunch()
     }
 
     func setEnabled(_ value: Bool) {

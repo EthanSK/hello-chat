@@ -122,7 +122,9 @@ import SwiftUI
     private var captureRestartThrottle = CaptureRestartThrottle()
     private var speechRecovery = SpeechRecovery()
 
-    init() {
+    // The meter diagnostic constructs this model before normal app ownership;
+    // it must not start the optional Spotify side effect.
+    init(enableSpotifyControl: Bool = true) {
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
         desktopSession.onChange = { [weak self] state in
             guard let self else { return }
@@ -218,7 +220,7 @@ import SwiftUI
         listener.model = speechModel
         updateComputeLabel()
         updatePhrases()
-        spotifyVolume.setEnabled(lowerSpotifyDuringChat)
+        if enableSpotifyControl { spotifyVolume.setEnabled(lowerSpotifyDuringChat) }
     }
     // Ethan's "always be" means keep the app running. Bose still pauses local
     // capture, but must not terminate the app or require manually reopening it.

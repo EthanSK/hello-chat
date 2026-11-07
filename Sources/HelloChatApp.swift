@@ -169,7 +169,7 @@ import Darwin
         }
         if CommandLine.arguments.contains("--check-meter-isolation") {
             Task { @MainActor in
-                let model = GateModel()
+                let model = GateModel(enableSpotifyControl: false)
                 var wholeWindowUpdates = 0
                 let observation = model.objectWillChange.sink { wholeWindowUpdates += 1 }
                 for index in 0..<100 { model.meter.level = Double(index) / 100 }
