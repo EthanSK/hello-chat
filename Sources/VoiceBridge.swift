@@ -98,7 +98,7 @@ struct VoiceBridge {
     }
 
     static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96, requireEnd: Bool = false,
-                         observeButtons: (([AXUIElement]) -> Void)? = nil) -> VoiceSnapshot {
+                         observeCallElements: (([AXUIElement]) -> Void)? = nil) -> VoiceSnapshot {
         let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
         let applications = candidates
             .filter { !$0.isTerminated && codexProcess($0.processIdentifier) }
@@ -107,7 +107,7 @@ struct VoiceBridge {
         let voice = app?.bundleURL.map { bundle in pids.contains { executable($0)?.hasPrefix(bundle.path + "/Contents/") == true } } ?? false
         let recorder = pids.contains { executable($0)?.hasPrefix("/Applications/AgentFlow.app/Contents/") == true }
         var controls = readMicrophone ? voiceControls(app?.processIdentifier, requireEnd: requireEnd, maximumDepth: maximumDepth) : Controls()
-        observeButtons?([controls.end, controls.microphoneButton].compactMap { $0 })
+        observeCallElements?(controls.watchElements + [controls.end, controls.microphoneButton].compactMap { $0 })
         if app == nil { controls.failure = "application_lookup:\(candidates.count)/\(applications.count)" }
         return VoiceSnapshot(pid: app?.processIdentifier, inputRunning: voice, recorderRunning: recorder,
                              microphone: controls.microphone, accessibilityAllowed: AXIsProcessTrusted(), endControlAvailable: controls.end != nil,
@@ -226,6 +226,7 @@ struct VoiceBridge {
         }
     }
     private struct Controls {
+        var watchElements: [AXUIElement] = []
         var microphone: MicrophoneState?
         var microphoneButton: AXUIElement?
         var end: AXUIElement?
@@ -301,6 +302,9 @@ struct VoiceBridge {
                 if result.end != nil || (!requireEnd && result.microphone != nil) { result.complete = true; return result }
             }
             if role == "AXWebArea" {
+                // Chromium may announce newly inserted call controls on this
+                // web area rather than its outer window (temporary calls too).
+                result.watchElements.append(element)
                 // A launched process alone is too early. The native window must
                 // expose its web content before the launch path sends Start.
                 result.webContentReady = !windows.isEmpty

@@ -107,17 +107,17 @@ struct VoiceTimeline {
                 let evidence = await Task.detached(priority: .utility) {
                     let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
                         .filter { !$0.isTerminated }
-                    var buttons: [AXUIElement] = []
-                    let state = VoiceBridge.snapshot(requireEnd: true, observeButtons: { buttons = $0 })
+                    var callElements: [AXUIElement] = []
+                    let state = VoiceBridge.snapshot(requireEnd: true, observeCallElements: { callElements = $0 })
                     let since = apps.count == 1 ? apps[0].launchDate ?? Date() : Date()
-                    return (state, apps.isEmpty, VoiceTimeline.hasActiveCall(database: database, since: since), buttons)
+                    return (state, apps.isEmpty, VoiceTimeline.hasActiveCall(database: database, since: since), callElements)
                 }.value
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
                 let state = evidence.0
                 if let active = evidence.2 { self.persistedCallActive = active }
                 let repeatRead = self.decision.observe(controlsPresent: state.endControlAvailable || state.microphone != nil,
                     controlsComplete: state.controlsComplete, persistedCallActive: self.persistedCallActive, applicationAbsent: evidence.1)
-                self.installAccessibilityObserver(pid: state.pid, buttons: evidence.3)
+                self.installAccessibilityObserver(pid: state.pid, callElements: evidence.3)
                 self.installFileObservers()
                 self.onChange?(self.decision.presence)
                 self.refreshAgain = self.refreshAgain || repeatRead
@@ -148,7 +148,7 @@ struct VoiceTimeline {
         }
     }
 
-    private func installAccessibilityObserver(pid: pid_t?, buttons: [AXUIElement]) {
+    private func installAccessibilityObserver(pid: pid_t?, callElements: [AXUIElement]) {
         guard let pid, AXIsProcessTrusted() else { removeAccessibilityObserver(); return }
         if observedPID != pid {
             removeAccessibilityObserver()
@@ -166,9 +166,10 @@ struct VoiceTimeline {
         // temporary chats too. Rebind replaced controls after each real read.
         let root = AXUIElementCreateApplication(pid)
         let windows = VoiceBridge.attribute(kAXWindowsAttribute, root) as? [AXUIElement] ?? []
-        let elements = [root] + windows + buttons
+        let elements = [root] + windows + callElements
         let notifications = [kAXWindowCreatedNotification, kAXUIElementDestroyedNotification,
-                             kAXFocusedWindowChangedNotification, kAXLayoutChangedNotification, "AXChildrenChanged"]
+                             kAXFocusedWindowChangedNotification, kAXLayoutChangedNotification, "AXChildrenChanged",
+                             "AXLoadComplete", "AXLayoutComplete"]
         for (element, name) in registrations { AXObserverRemoveNotification(observer, element, name) }
         registrations.removeAll()
         for element in elements {
