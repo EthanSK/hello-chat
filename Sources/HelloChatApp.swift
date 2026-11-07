@@ -76,6 +76,7 @@ import Darwin
                 let report: [String: Any] = ["model": selectedModel.rawValue, "text": result.text, "segments": result.segments, "detections": result.detections,
                     "gaps": result.gaps, "resets": result.resets, "utteranceEnds": result.utteranceEnds,
                     "startupSpeech": result.startupSpeech, "startupReady": result.startupReady, "startupAtVoiceOpen": result.startupAtVoiceOpen,
+                    "startupBoundary": result.startupBoundary,
                     "cpuSeconds": result.cpuSeconds, "audioSeconds": result.audioSeconds,
                     "memoryMB": ResourceUsage.footprintMB(), "anePlanShare": selectedModel.neuralPlacementKnown ? result.neuralShare as Any : NSNull()]
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) { print(String(decoding: data, as: UTF8.self)) }

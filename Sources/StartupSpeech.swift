@@ -90,7 +90,18 @@ enum StartupSpeechSkillInstaller {
 final class StartupSpeechFile: @unchecked Sendable {
     static let directory = AppPaths.support.appendingPathComponent("VoiceStartup", isDirectory: true)
     static let textLimit = 8_000
+    // A live capture finishes long before this: Start confirmation (15 s)
+    // plus the post-open limit below. A request still `capturing` this long
+    // after it was published may have lost its producer to a stop or crash;
+    // the reader finalises that stale prefix once instead of leaving it open.
+    static let abandonedAfter = 120.0
     enum Phase: String, Codable { case capturing, ready, consumed, cancelled }
+    // A recognizer utterance boundary is stronger than text merely staying
+    // unchanged. A pause, limit or interruption may leave an unfinished prefix.
+    enum Boundary: String, Codable, CaseIterable {
+        case utterance, pause, limit, interrupted
+        var mayBeIncomplete: Bool { self != .utterance }
+    }
     struct Document: Codable {
         var formatVersion = 1
         let id: UUID
@@ -100,6 +111,10 @@ final class StartupSpeechFile: @unchecked Sendable {
         var text: String
         var truncated: Bool
         var claimedBy: UUID?
+        // Optional additions keep format 1: 1.0.6 documents still decode, and
+        // 1.0.6 readers ignore these keys. `revision` changes with the text.
+        var revision: Int? = nil
+        var boundary: Boundary? = nil
     }
     struct Delivery: Codable {
         let status: String
@@ -108,7 +123,8 @@ final class StartupSpeechFile: @unchecked Sendable {
     private let root: URL
     private let queue = DispatchQueue(label: "com.ethansk.HeyChat.startup-speech", qos: .utility)
     private let onError: @Sendable (Error) -> Void
-    private struct PendingUpdate { let text: String; let truncated: Bool; let ready: Bool }
+    // A boundary marks the final, ready revision.
+    private struct PendingUpdate { let text: String; let truncated: Bool; let boundary: Boundary? }
     private let pendingLock = NSLock()
     private var pendingUpdates: [UUID: PendingUpdate] = [:]
 
@@ -126,7 +142,7 @@ final class StartupSpeechFile: @unchecked Sendable {
                         do {
                             try write(Document(id: id, requestedAt: date.timeIntervalSince1970,
                                 updatedAt: date.timeIntervalSince1970, phase: .capturing,
-                                text: String(text.prefix(Self.textLimit)), truncated: truncated))
+                                text: String(text.prefix(Self.textLimit)), truncated: truncated, revision: 0))
                         } catch {
                             // A failed new publication must not leave the old
                             // call's words looking like the newest request.
@@ -140,15 +156,16 @@ final class StartupSpeechFile: @unchecked Sendable {
         }
     }
 
-    func update(id: UUID, text: String, truncated: Bool, ready: Bool = false) {
+    // A non-nil boundary publishes the final revision as ready.
+    func update(id: UUID, text: String, truncated: Bool, boundary: Boundary? = nil) {
         // Coalesce revisions already waiting for disk. Even a slow filesystem
         // retains only the latest bounded text, rather than one closure per frame.
         pendingLock.lock()
-        let enqueue = pendingUpdates[id] == nil
-        let wasReady = pendingUpdates[id]?.ready ?? false
-        pendingUpdates[id] = PendingUpdate(text: String(text.prefix(Self.textLimit)), truncated: truncated, ready: ready || wasReady)
+        let previous = pendingUpdates[id]
+        pendingUpdates[id] = PendingUpdate(text: String(text.prefix(Self.textLimit)), truncated: truncated,
+                                           boundary: boundary ?? previous?.boundary)
         pendingLock.unlock()
-        guard enqueue else { return }
+        guard previous == nil else { return }
         queue.async { [self] in
             pendingLock.lock()
             let update = pendingUpdates.removeValue(forKey: id)
@@ -158,9 +175,19 @@ final class StartupSpeechFile: @unchecked Sendable {
                 try locked(create: false, waitForReader: true) {
                     guard var value = try read(), value.id == id,
                           value.phase == .capturing else { return }
-                    value.text = update.text; value.truncated = update.truncated
-                    value.updatedAt = Date().timeIntervalSince1970
-                    if update.ready { value.phase = .ready }
+                    // Even stable text can be a mid-sentence pause or delayed
+                    // recognition. Never report that cutoff as a full utterance.
+                    let truncated = update.truncated || update.boundary?.mayBeIncomplete == true
+                    let textChanged = value.text != update.text
+                    let changed = textChanged || value.truncated != truncated
+                    // Provisional readers compare revisions; skip no-op writes.
+                    guard changed || update.boundary != nil else { return }
+                    if changed {
+                        value.text = update.text; value.truncated = truncated
+                        if textChanged { value.revision = (value.revision ?? 0) &+ 1 }
+                    }
+                    value.updatedAt = max(Date().timeIntervalSince1970, value.requestedAt)
+                    if let boundary = update.boundary { value.phase = .ready; value.boundary = boundary }
                     try write(value)
                 }
             } catch { onError(error) }
@@ -192,13 +219,22 @@ final class StartupSpeechFile: @unchecked Sendable {
                   value.requestedAt <= voiceCreatedAt.timeIntervalSince1970 + 2,
                   value.updatedAt <= now.timeIntervalSince1970 + 5 else { return Delivery(status: "unrelated") }
             guard value.phase == .capturing || value.phase == .ready else { return Delivery(status: "empty") }
-            // A nonempty hypothesis can still be just "this is a". Never
-            // consume it while recognition is extending/correcting the same
-            // opening utterance; the next read must still see the whole request.
-            if value.phase == .capturing { return Delivery(status: "capturing") }
-            let delivered = value
+            // The first matching coordinator to read owns this request, so a
+            // second coordinator can't act on the same provisional words.
+            if let owner = value.claimedBy, owner != threadID { return Delivery(status: "claimed") }
+            let abandoned = value.phase == .capturing && now.timeIntervalSince1970 - value.requestedAt > Self.abandonedAfter
+            if value.phase == .capturing && !abandoned {
+                // Ethan (7 Nov): make the opening words available while they're
+                // still being recognised. A nonempty hypothesis can still be
+                // just "this is a", so this snapshot is labelled `capturing` and
+                // never consumed; the final read must still see the whole request.
+                if value.claimedBy == nil { value.claimedBy = threadID; try write(value) }
+                return Delivery(status: "capturing", request: value.text.isEmpty ? nil : value)
+            }
+            var delivered = value
+            if abandoned { delivered.phase = .ready; delivered.boundary = .interrupted; delivered.truncated = true }
             value.phase = .consumed; value.text = ""; value.claimedBy = threadID
-            value.updatedAt = now.timeIntervalSince1970
+            value.updatedAt = max(now.timeIntervalSince1970, value.updatedAt)
             try write(value)
             return Delivery(status: delivered.text.isEmpty ? "empty" : "speech", request: delivered.text.isEmpty ? nil : delivered)
         }
@@ -269,6 +305,19 @@ final class StartupSpeechFile: @unchecked Sendable {
 // Preserve partial-transcript corrections, including joined/fuzzy wake spellings.
 // Only the accepted occurrence is stripped; earlier background speech stays out.
 struct StartupSpeechBuffer {
+    // On 7 Nov no recognizer pause was reported; the exact sound level wasn't
+    // retained. The opening stayed `capturing` for 96 s until the
+    // 120 s context rollover and absorbed the assistant's replies. These
+    // startup-only bounds count processed audio after Voice opened, so connection
+    // alone never ends capture (that earlier cutoff lost words).
+    // A pause is 2 s without a change in recognised opening text: the same
+    // length as Nemotron's existing quiet-room utterance end
+    // (`SpeechOnset.pauseSeconds`), but sound without words can't extend it.
+    static let pauseSeconds = 2.0
+    // Continuous recognised sound (a long request, TV, assistant playback
+    // without a 2 s gap) stops here and is marked truncated. By then Voice's
+    // own microphone is normally live, so later words reach it natively.
+    static let openLimitSeconds = 30.0
     let id: UUID
     private let phrase: String
     private let similar: Bool
@@ -280,6 +329,8 @@ struct StartupSpeechBuffer {
     private(set) var truncated = false
     private(set) var voiceOpened = false
     private var utteranceEnded = false
+    private var unchangedSeconds = 0.0
+    private(set) var openSeconds = 0.0
     var text: String { String([completed, current].filter { !$0.isEmpty }.joined(separator: " ").prefix(StartupSpeechFile.textLimit)) }
 
     init(id: UUID, text: String, wakeRange: Range<Int>?, phrase: String, similar: Bool) {
@@ -295,6 +346,22 @@ struct StartupSpeechBuffer {
     mutating func markUtteranceEnded() -> Bool { utteranceEnded = true; return voiceOpened }
     mutating func speechResumed() { utteranceEnded = false }
     mutating func boundary() { completed = text; current = ""; anchorStart = nil; baseline = nil }
+    // Called once per processed audio frame, before that frame's text.
+    mutating func audioProcessed(seconds: Double) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        unchangedSeconds += seconds
+        if voiceOpened { openSeconds += seconds }
+    }
+    // Startup-only end of capture, checked after each frame's text. The pause
+    // must be after Voice opened and after some opening words arrived. Silence
+    // before the first result must not discard delayed speech. The hard limit
+    // still bounds an empty capture.
+    var boundaryReached: StartupSpeechFile.Boundary? {
+        guard voiceOpened else { return nil }
+        if (!completed.isEmpty || !current.isEmpty), min(unchangedSeconds, openSeconds) >= Self.pauseSeconds { return .pause }
+        if openSeconds >= Self.openLimitSeconds { return .limit }
+        return nil
+    }
     mutating func observe(_ text: String) {
         var ranges: [Range<String.Index>] = [], words: [String] = []
         var cursor = text.startIndex
@@ -304,19 +371,21 @@ struct StartupSpeechBuffer {
             cursor = end
         }
         var offset = 0
+        // A revision that can't be aligned is still recognizer activity: never
+        // call it a pause while the HUD keeps changing. The limit still applies.
         if let anchorStart {
             let lower = max(0, anchorStart - 8), upper = min(words.count, anchorStart + 12)
             guard lower < upper,
                   let match = PhraseMatcher.matches(in: Array(words[lower..<upper]), phrase: phrase, similar: similar)
-                    .min(by: { abs($0.start + lower - anchorStart) < abs($1.start + lower - anchorStart) }) else { return }
+                    .min(by: { abs($0.start + lower - anchorStart) < abs($1.start + lower - anchorStart) }) else { unchangedSeconds = 0; return }
             offset = match.end + lower
         } else if let baseline {
-            guard words.starts(with: baseline) else { return }
+            guard words.starts(with: baseline) else { unchangedSeconds = 0; return }
             offset = baseline.count
         }
         let start = offset == 0 ? text.startIndex : (offset <= ranges.count ? ranges[offset - 1].upperBound : text.endIndex)
         let tail = text[start...].drop(while: { $0.isWhitespace || ",.!?;:".contains($0) })
-        if current != String(tail.prefix(StartupSpeechFile.textLimit)) { utteranceEnded = false }
+        if current != String(tail.prefix(StartupSpeechFile.textLimit)) { utteranceEnded = false; unchangedSeconds = 0 }
         current = String(tail.prefix(StartupSpeechFile.textLimit))
         truncated = truncated || completed.count + current.count + (completed.isEmpty ? 0 : 1) > StartupSpeechFile.textLimit || tail.count > StartupSpeechFile.textLimit
     }
