@@ -141,7 +141,7 @@ enum SpotifyVolumeControl {
                     guard let self, self.generation == generation else { return }
                     self.permissionRequired = false
                     switch result {
-                    case .lowered: self.message = "Spotify lowered to 30%."
+                    case .lowered: self.message = "Spotify lowered to \(SpotifyVolumePolicy.maximumVolume)%."
                     case .restored: self.message = "Spotify volume restored."
                     case .manualChange: self.message = "Spotify volume changed manually."
                     case .spotifyClosed: self.message = "Spotify is closed."

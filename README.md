@@ -112,7 +112,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 ## Spotify volume during chat
 
-Enable **Settings → Spotify → Lower volume during chat** to cap Spotify's own slider at 30% while a native call is on. A quieter setting stays quieter. **Allow Spotify control** requests macOS Automation permission; Spotify must already be open. This never starts playback or changes the Mac's output volume.
+Enable **Settings → Spotify → Lower volume during chat** to cap Spotify's own slider at 50% while a native call is on. A quieter setting stays quieter. **Allow Spotify control** requests macOS Automation permission; Spotify must already be open. This never starts playback or changes the Mac's output volume.
 
 The original slider value is saved privately before it changes and restored after confirmed call end. If you change the slider yourself, that value wins for that call. Saved call identifiers keep a previous call's override from following you into a fresh call, including when End and Start happen between checks. Normal HelloChat Quit restores immediately without ending the Codex call; an updater carries the saved value into the replacement app. After a crash, the next launch uses that receipt to recover. A helper that is no longer running cannot restore at a later call end.
 

@@ -8,6 +8,11 @@ enum SpotifyControlError: Error {
 
 enum VoiceCallPresence: String { case active, inactive, unknown }
 
+enum SpotifyVolumePolicy {
+    // Ethan's persistent voice-call preference is 50%, replacing 30%.
+    static let maximumVolume = 50
+}
+
 struct VoiceCallObservation: Equatable {
     let presence: VoiceCallPresence
     let callIdentifier: String?
@@ -44,26 +49,33 @@ struct SpotifyVolumeLease: Codable, Equatable {
     let applied: Int
     var confirmed: Bool
     let callIdentifier: String?
+    let cap: Int?
 
-    init(original: Int, applied: Int, confirmed: Bool = false, callIdentifier: String? = nil) {
-        version = 1; self.original = original; self.applied = applied; self.confirmed = confirmed
+    init(original: Int, applied: Int, confirmed: Bool = false, callIdentifier: String? = nil,
+         cap: Int = SpotifyVolumePolicy.maximumVolume) {
+        version = 2; self.original = original; self.applied = applied; self.confirmed = confirmed
         self.callIdentifier = callIdentifier
+        self.cap = cap
     }
+    // Version-one receipts used the old 30% cap. Retain their exact ownership
+    // during an active-call upgrade instead of treating recovery as corrupt.
+    var appliedCap: Int { version == 1 ? 30 : cap ?? -1 }
     var valid: Bool {
-        version == 1 && (0...100).contains(original) &&
-            (applied == min(original, 30) || (original > 30 && applied == 29))
+        (version == 1 || version == 2) && (0...100).contains(original) &&
+            (0...100).contains(appliedCap) &&
+            (applied == min(original, appliedCap) || (original > appliedCap && applied == appliedCap - 1))
     }
     // Spotify can truncate its internal floating-point slider one point below
     // the requested integer. A crash before saving the readback still owns
     // that value, but only while the receipt is unconfirmed.
     func owns(_ value: Int) -> Bool {
-        value == applied || (!confirmed && original > 30 && applied == 30 && value == 29)
+        value == applied || (!confirmed && original > appliedCap && applied == appliedCap && value == appliedCap - 1)
     }
 }
 
 enum SpotifyVolumeWrite {
-    // Native Spotify can report 29 after setting 30. Keep that real readback
-    // for the cap; only restoration compensates to the original readback.
+    // Native Spotify can report one point below the requested integer. Exact
+    // writes compensate once; legacy caps can retain their lower readback.
     static func perform(_ target: Int, expected: Int, read: () throws -> Int?,
                         exact: Bool, set: (Int) throws -> Void) throws -> Int {
         guard try read() == expected else { throw SpotifyControlError.volumeChanged }
@@ -96,7 +108,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     init(access: Access) { self.access = access }
 
     // Save BEFORE sending the volume change. A crash between the event and its
-    // reply must not lose the original value or save 30 as the next original.
+    // reply must not lose the original value or save the cap as the next original.
     func reconcile(_ call: VoiceCallPresence, preservingManualOverride: Bool = false,
                    callIdentifier: String? = nil) throws -> Result {
         if !loaded {
@@ -121,10 +133,11 @@ final class SpotifyVolumeSession: @unchecked Sendable {
                     return try apply(saved)
                 }
                 // A manual change wins. Do not keep forcing the slider back to
-                // 30. At End, restore only if our applied value is still there.
+                // the cap. At End, restore only if our applied value is still there.
                 return saved.owns(current) ? .unchanged : .manualChange
             }
-            let saved = SpotifyVolumeLease(original: current, applied: min(current, 30), callIdentifier: callIdentifier)
+            let saved = SpotifyVolumeLease(original: current, applied: min(current, SpotifyVolumePolicy.maximumVolume),
+                                           callIdentifier: callIdentifier)
             try access.save(saved); lease = saved
             return try apply(saved)
         }
@@ -143,9 +156,10 @@ final class SpotifyVolumeSession: @unchecked Sendable {
 
     private func apply(_ saved: SpotifyVolumeLease) throws -> Result {
         let actual = saved.original != saved.applied
-            ? try access.write(saved.applied, saved.original, false) : saved.applied
+            ? try access.write(saved.applied, saved.original, saved.appliedCap == SpotifyVolumePolicy.maximumVolume)
+            : saved.applied
         let confirmed = SpotifyVolumeLease(original: saved.original, applied: actual, confirmed: true,
-                                          callIdentifier: saved.callIdentifier)
+                                          callIdentifier: saved.callIdentifier, cap: saved.appliedCap)
         try access.save(confirmed); lease = confirmed
         return saved.original == saved.applied ? .unchanged : .lowered
     }

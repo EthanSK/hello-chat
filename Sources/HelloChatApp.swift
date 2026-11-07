@@ -547,7 +547,7 @@ struct SettingsView: View {
             Section("Spotify") {
                 Toggle("Lower volume during chat", isOn: $model.lowerSpotifyDuringChat)
                     .accessibilityIdentifier("lowerSpotifyDuringChat")
-                Text("Lowers Spotify to 30% or below, then restores its volume unless changed manually.")
+                Text("Lowers Spotify to \(SpotifyVolumePolicy.maximumVolume)% or below, then restores its volume unless changed manually.")
                     .foregroundStyle(.secondary)
                 SpotifyVolumeStatus(volume: model.spotifyVolume)
             }

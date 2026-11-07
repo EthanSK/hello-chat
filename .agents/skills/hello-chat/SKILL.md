@@ -28,6 +28,8 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 
 ## Voice and keyboard behavior
 
+- Ethan prefers the automatic Spotify voice-call volume at 50%, replacing 30%; this is a persistent preference, not a temporary manual override. Preserve prior-volume restoration, already-quieter volume and manual adjustments. The implementation and UI share the policy in [SpotifyVolumeSession.swift](../../../Sources/SpotifyVolumeSession.swift). User-requested — 2026-11-07.
+
 - Preserve an active Codex call on normal H Chat Quit: detach local listening/control work without sending End. Explicit spoken/button End remains separate. Inspect [GateModel.swift](../../../Sources/GateModel.swift), [NativeVoice.swift](../../../Sources/NativeVoice.swift), and [NativeVoiceTests.swift](../../../Tests/NativeVoiceTests.swift).
 - User-requested — 2026-11-05: “just because I'm on a call” does not mean H Chat should be blocked from being closed and restarted. Build, install and restart H Chat when needed during a Codex Voice call; preserve the call and Agent Flow recording themselves. Do not ask Ethan to end them or treat their microphone activity as an update blocker. Finish H Chat's own in-flight operations and flush its files before replacement. Wake and end phrases also stay enabled while Agent Flow records.
 - Default missing Voice chat hotkey to Command+Control+Shift+V and dedicated End to Ctrl+Alt+Shift+V. Preserve existing custom values and report collisions without overriding another command. Leave Toggle reset/custom values untouched.
