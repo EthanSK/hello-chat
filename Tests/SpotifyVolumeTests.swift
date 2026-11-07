@@ -13,13 +13,16 @@ import Foundation
         var failConfirmedSave = false
         var failWrite = false
         var changeBeforeWrite: Int?
+        var truncateCap = false
         func session() -> SpotifyVolumeSession {
-            SpotifyVolumeSession(access: .init(read: { self.volume }, write: { value, expected in
+            SpotifyVolumeSession(access: .init(read: { self.volume }, write: { value, expected, exact in
                 self.events.append("write:\(value)")
                 if let changed = self.changeBeforeWrite { self.volume = changed; self.changeBeforeWrite = nil }
                 guard self.volume == expected else { throw CocoaError(.fileWriteUnknown) }
                 if self.failWrite { throw CocoaError(.fileWriteUnknown) }
-                self.volume = value; self.writes.append(value)
+                let actual = self.truncateCap && !exact ? value - 1 : value
+                self.volume = actual; self.writes.append(value)
+                return actual
             }, load: { self.receipt }, save: { value in
                 self.events.append("save:\(value?.original.description ?? "nil")")
                 if self.failSave || (self.failConfirmedSave && value?.confirmed == true) { throw CocoaError(.fileWriteUnknown) }
@@ -97,21 +100,21 @@ import Foundation
         // Real Spotify returned 29 for a 30 request. Exercise the native write
         // algorithm independently, including a user adjustment between writes.
         var roundedVolume = 57, roundedWrites: [Int] = []
-        try SpotifyVolumeWrite.perform(30, expected: 57, read: { roundedVolume }, set: { value in
+        let applied = try SpotifyVolumeWrite.perform(30, expected: 57, read: { roundedVolume }, exact: false, set: { value in
             roundedWrites.append(value); roundedVolume = value - 1
         })
-        precondition(roundedVolume == 30 && roundedWrites == [30, 31])
-        try SpotifyVolumeWrite.perform(57, expected: 30, read: { roundedVolume }, set: { value in
+        precondition(roundedVolume == 29 && applied == 29 && roundedWrites == [30])
+        _ = try SpotifyVolumeWrite.perform(57, expected: 29, read: { roundedVolume }, exact: true, set: { value in
             roundedWrites.append(value); roundedVolume = value - 1
         })
         precondition(roundedVolume == 57 && roundedWrites.suffix(2) == [57, 58])
         var reads = 0
         do {
-            try SpotifyVolumeWrite.perform(30, expected: 57, read: {
+            _ = try SpotifyVolumeWrite.perform(30, expected: 57, read: {
                 reads += 1
                 if reads == 3 { roundedVolume = 50 }
                 return roundedVolume
-            }, set: { roundedVolume = $0 - 1 })
+            }, exact: true, set: { roundedVolume = $0 - 1 })
             fatalError("Manual change between compensation writes overwritten")
         } catch { }
         precondition(roundedVolume == 50)
@@ -120,6 +123,14 @@ import Foundation
         _ = try roundedCrash.session().reconcile(.inactive)
         precondition(roundedCrash.volume == 57 && roundedCrash.receipt == nil,
                      "Interrupted rounding correction preserves restoration")
+        let roundedSessionFixture = Fixture(); roundedSessionFixture.truncateCap = true
+        let roundedSession = roundedSessionFixture.session()
+        _ = try roundedSession.reconcile(.active)
+        precondition(roundedSessionFixture.volume == 29 && roundedSessionFixture.receipt?.applied == 29 &&
+                     roundedSessionFixture.receipt?.confirmed == true)
+        _ = try roundedSessionFixture.session().reconcile(.inactive)
+        precondition(roundedSessionFixture.volume == 80 && roundedSessionFixture.receipt == nil,
+                     "Confirmed native readback survives restart and restores")
         let manualRestart = Fixture(), beforeQuit = manualRestart.session()
         _ = try beforeQuit.reconcile(.active); manualRestart.volume = 50
         _ = try beforeQuit.reconcile(.inactive, preservingManualOverride: true)

@@ -17,28 +17,33 @@ struct SpotifyVolumeLease: Codable, Equatable {
     init(original: Int, applied: Int, confirmed: Bool = false) {
         version = 1; self.original = original; self.applied = applied; self.confirmed = confirmed
     }
-    var valid: Bool { version == 1 && (0...100).contains(original) && applied == min(original, 30) }
+    var valid: Bool {
+        version == 1 && (0...100).contains(original) &&
+            (applied == min(original, 30) || (original > 30 && applied == 29))
+    }
     // Spotify can truncate its internal floating-point slider one point below
-    // the requested integer. A crash before the compensating write still owns
-    // that intermediate value, but only while the receipt is unconfirmed.
+    // the requested integer. A crash before saving the readback still owns
+    // that value, but only while the receipt is unconfirmed.
     func owns(_ value: Int) -> Bool {
-        value == applied || (!confirmed && original > applied && value == applied - 1)
+        value == applied || (!confirmed && original > 30 && applied == 30 && value == 29)
     }
 }
 
 enum SpotifyVolumeWrite {
-    // Native Spotify can report 29 after setting 30. Correct that bounded
-    // rounding error, checking ownership again before the second mutation.
+    // Native Spotify can report 29 after setting 30. Keep that real readback
+    // for the cap; only restoration compensates to the original readback.
     static func perform(_ target: Int, expected: Int, read: () throws -> Int?,
-                        set: (Int) throws -> Void) throws {
+                        exact: Bool, set: (Int) throws -> Void) throws -> Int {
         guard try read() == expected else { throw SpotifyControlError.volumeChanged }
         try set(target)
         let actual = try read()
-        if actual == target { return }
+        if actual == target { return target }
         guard target < 100, actual == target - 1 else { throw SpotifyControlError.invalidReply }
+        if !exact { return target - 1 }
         guard try read() == actual else { throw SpotifyControlError.volumeChanged }
         try set(target + 1)
         guard try read() == target else { throw SpotifyControlError.invalidReply }
+        return target
     }
 }
 
@@ -47,7 +52,7 @@ enum SpotifyVolumeWrite {
 final class SpotifyVolumeSession: @unchecked Sendable {
     struct Access {
         var read: () throws -> Int?
-        var write: (_ volume: Int, _ expected: Int) throws -> Void
+        var write: (_ volume: Int, _ expected: Int, _ exact: Bool) throws -> Int
         var load: () throws -> SpotifyVolumeLease?
         var save: (SpotifyVolumeLease?) throws -> Void
     }
@@ -90,7 +95,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
         // restart so the same ongoing call cannot lower the user's slider.
         if preservingManualOverride && !saved.owns(current) { return .manualChange }
         let restore = saved.owns(current) && saved.original != saved.applied
-        if restore { try access.write(saved.original, current) }
+        if restore { _ = try access.write(saved.original, current, true) }
         // Keep the receipt if restoration failed, or Spotify is closed. A later
         // launch can retry without launching Spotify or losing crash recovery.
         try access.save(nil); lease = nil
@@ -98,8 +103,9 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     }
 
     private func apply(_ saved: SpotifyVolumeLease) throws -> Result {
-        if saved.original != saved.applied { try access.write(saved.applied, saved.original) }
-        var confirmed = saved; confirmed.confirmed = true
+        let actual = saved.original != saved.applied
+            ? try access.write(saved.applied, saved.original, false) : saved.applied
+        let confirmed = SpotifyVolumeLease(original: saved.original, applied: actual, confirmed: true)
         try access.save(confirmed); lease = confirmed
         return saved.original == saved.applied ? .unchanged : .lowered
     }

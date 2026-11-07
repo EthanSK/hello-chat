@@ -37,15 +37,15 @@ enum SpotifyVolumeControl {
         return volume
     }
 
-    static func write(_ volume: Int, expected: Int) throws {
+    static func write(_ volume: Int, expected: Int, exact: Bool) throws -> Int {
         guard (0...100).contains(volume) else { throw SpotifyControlError.invalidReply }
         guard let app = application() else { throw SpotifyControlError.unavailable }
         // The user can move the slider, or Spotify can restart, after the
         // original snapshot. Do not overwrite that intervening change.
-        try SpotifyVolumeWrite.perform(volume, expected: expected, read: {
+        return try SpotifyVolumeWrite.perform(volume, expected: expected, read: {
             guard application()?.processIdentifier == app.processIdentifier else { throw SpotifyControlError.volumeChanged }
             return try read()
-        }, set: { requested in
+        }, exact: exact, set: { requested in
             _ = try send(eventID: AEEventID(kAESetData), volume: requested, processIdentifier: app.processIdentifier)
         })
     }
