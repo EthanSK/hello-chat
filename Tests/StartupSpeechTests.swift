@@ -3,6 +3,13 @@
 import Foundation
 import Darwin
 
+private final class StartupEventLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [StartupSpeechFile.Event] = []
+    func append(_ event: StartupSpeechFile.Event) { lock.lock(); defer { lock.unlock() }; events.append(event) }
+    var snapshot: [StartupSpeechFile.Event] { lock.lock(); defer { lock.unlock() }; return events }
+}
+
 @main enum StartupSpeechTests {
     static func main() async throws {
         func expect(_ value: Bool, _ message: String = "Startup speech check failed") { precondition(value, message) }
@@ -146,6 +153,55 @@ import Darwin
         expect(launching.boundaryReached == nil && launching.text == "this is a delayed opening")
         launching.audioProcessed(seconds: 2)
         expect(launching.boundaryReached == .pause)
+
+        // A repeated wake is a command retry, not the start of the request.
+        // The reported 19:49 failure sealed only "Hello chat" after two seconds.
+        var repeatedWake = StartupSpeechBuffer(id: UUID(), text: "Hello chat. Hello chat.", wakeRange: 0..<2, phrase: "Hello Chat", similar: true)
+        _ = repeatedWake.markVoiceOpened()
+        repeatedWake.audioProcessed(seconds: 2.1)
+        expect(repeatedWake.boundaryReached == nil, "A repeated wake alone must not seal the opening before the question")
+        expect(!repeatedWake.markUtteranceEnded(), "A wake retry isn't a finished request even at an utterance boundary")
+        repeatedWake.observe("Hello chat. Hello chat. What's for dinner?")
+        expect(repeatedWake.text == "Hello chat. What's for dinner?")
+        repeatedWake.audioProcessed(seconds: 2.1)
+        expect(repeatedWake.boundaryReached == .pause)
+        let background = String(repeating: "background ", count: 130)
+        var afterVideo = StartupSpeechBuffer(id: UUID(), text: background + "Hello chat", wakeRange: 130..<132, phrase: "Hello Chat", similar: true)
+        _ = afterVideo.markVoiceOpened()
+        afterVideo.observe(background + "Hello chat. Hello chat.")
+        afterVideo.audioProcessed(seconds: 2.1)
+        expect(!afterVideo.hasOpeningWords && afterVideo.boundaryReached == nil,
+               "Earlier video speech must not count as opening words after a repeated wake")
+        afterVideo.observe(background + "Hello chat. Hello chat. What's for dinner?")
+        expect(afterVideo.hasOpeningWords && afterVideo.text == "Hello chat. What's for dinner?")
+        var customRetry = StartupSpeechBuffer(id: UUID(), text: "Good morning computer. Good morning computer.", wakeRange: 0..<3, phrase: "Good morning computer", similar: false)
+        _ = customRetry.markVoiceOpened()
+        customRetry.audioProcessed(seconds: 2.1)
+        expect(customRetry.boundaryReached == nil, "Custom wake retries use the same opening rule")
+        customRetry.audioProcessed(seconds: 28)
+        expect(customRetry.boundaryReached == .limit, "Wake-only capture retains the existing hard bound")
+        var aliasRetry = StartupSpeechBuffer(id: UUID(), text: "HelloChat. Hullo chad.", wakeRange: 0..<1, phrase: "Hello Chat", similar: true)
+        _ = aliasRetry.markVoiceOpened(); aliasRetry.audioProcessed(seconds: 2.1)
+        expect(!aliasRetry.hasOpeningWords && aliasRetry.boundaryReached == nil, "Known wake spellings must not impersonate opening words")
+
+        let eventLog = StartupEventLog()
+        let traceDirectory = root.appendingPathComponent("trace-\(UUID().uuidString)")
+        let traced = StartupSpeechFile(directory: traceDirectory, onEvent: { eventLog.append($0) })
+        let traceID = UUID(), readerID = UUID(), traceTime = Date()
+        expect(await traced.begin(id: traceID, text: "private opening words", truncated: false, at: traceTime))
+        traced.update(id: traceID, text: "private opening words extended", truncated: true, boundary: .pause)
+        await traced.flush()
+        expect(try traced.consume(voiceCreatedAt: traceTime, threadID: readerID).status == "speech")
+        let events = eventLog.snapshot
+        expect(events.map(\.operation) == [.begin, .write, .read])
+        expect(events.last?.reader == readerID && events.last?.request == traceID && events.last?.revision == 1)
+        expect(events.allSatisfy { $0.elapsedMS >= 0 && $0.elapsedMS.isFinite })
+        for event in events {
+            let metadata = try JSONSerialization.data(withJSONObject: ["event": event.name, "numbers": event.numbers, "info": event.info])
+            expect(!String(decoding: metadata, as: UTF8.self).contains("private opening"), "Diagnostic events must never contain captured words")
+        }
+        try FileManager.default.removeItem(at: traceDirectory)
+        print("Startup retry: repeated/custom/alias wake greetings wait for content; metadata-only producer/read traces passed")
 
         var noWords = StartupSpeechBuffer(id: UUID(), text: "Hello chat", wakeRange: 0..<2, phrase: "Hello Chat", similar: true)
         _ = noWords.markVoiceOpened()

@@ -120,29 +120,69 @@ final class StartupSpeechFile: @unchecked Sendable {
         let status: String
         var request: Document? = nil
     }
+    // Correlate producer, disk and reader timing without logging spoken words.
+    struct Event: Sendable {
+        enum Operation: String, Sendable, Equatable { case begin, write, cancel, read }
+        let operation: Operation
+        let request: UUID?
+        let reader: UUID?
+        let status: String
+        let phase: String?
+        let revision: Int?
+        let characters: Int?
+        let age: Double?
+        let elapsedMS: Double
+        var name: String { "voice.startup_speech.\(operation.rawValue)" }
+        var numbers: [String: Double] {
+            var values = ["elapsed_ms": elapsedMS]
+            if let revision { values["revision"] = Double(revision) }
+            if let characters { values["characters"] = Double(characters) }
+            if let age { values["request_age_s"] = age }
+            return values
+        }
+        var info: [String: String] {
+            var values = ["status": status]
+            if let request { values["request"] = request.uuidString }
+            if let reader { values["reader"] = reader.uuidString }
+            if let phase { values["phase"] = phase }
+            return values
+        }
+    }
     private let root: URL
     private let queue = DispatchQueue(label: "com.ethansk.HeyChat.startup-speech", qos: .utility)
     private let onError: @Sendable (Error) -> Void
+    private let onEvent: @Sendable (Event) -> Void
     // A boundary marks the final, ready revision.
     private struct PendingUpdate { let text: String; let truncated: Bool; let boundary: Boundary? }
     private let pendingLock = NSLock()
     private var pendingUpdates: [UUID: PendingUpdate] = [:]
 
-    init(directory: URL = StartupSpeechFile.directory, onError: @escaping @Sendable (Error) -> Void = { _ in }) {
-        root = directory; self.onError = onError
+    init(directory: URL = StartupSpeechFile.directory, onError: @escaping @Sendable (Error) -> Void = { _ in },
+         onEvent: @escaping @Sendable (Event) -> Void = { _ in }) {
+        root = directory; self.onError = onError; self.onEvent = onEvent
+    }
+
+    private func report(_ operation: Event.Operation, document: Document?, status: String,
+                        started: Double, reader: UUID? = nil) {
+        onEvent(Event(operation: operation, request: document?.id, reader: reader, status: status,
+            phase: document?.phase.rawValue, revision: document?.revision, characters: document?.text.count,
+            age: document.map { Date().timeIntervalSince1970 - $0.requestedAt },
+            elapsedMS: (ProcessInfo.processInfo.systemUptime - started) * 1_000))
     }
 
     // Publish before the global Start command, so even a fast first Voice
     // handoff sees the new request. Disk failure must never prevent Voice.
     func begin(id: UUID, text: String, truncated: Bool, at date: Date = Date()) async -> Bool {
-        await withCheckedContinuation { continuation in
+        let started = ProcessInfo.processInfo.systemUptime
+        return await withCheckedContinuation { continuation in
             queue.async { [self] in
                 do {
+                    let document = Document(id: id, requestedAt: date.timeIntervalSince1970,
+                        updatedAt: date.timeIntervalSince1970, phase: .capturing,
+                        text: String(text.prefix(Self.textLimit)), truncated: truncated, revision: 0)
                     try locked(create: true) {
                         do {
-                            try write(Document(id: id, requestedAt: date.timeIntervalSince1970,
-                                updatedAt: date.timeIntervalSince1970, phase: .capturing,
-                                text: String(text.prefix(Self.textLimit)), truncated: truncated, revision: 0))
+                            try write(document)
                         } catch {
                             // A failed new publication must not leave the old
                             // call's words looking like the newest request.
@@ -150,6 +190,7 @@ final class StartupSpeechFile: @unchecked Sendable {
                             throw error
                         }
                     }
+                    report(.begin, document: document, status: "saved", started: started)
                     continuation.resume(returning: true)
                 } catch { onError(error); continuation.resume(returning: false) }
             }
@@ -158,6 +199,7 @@ final class StartupSpeechFile: @unchecked Sendable {
 
     // A non-nil boundary publishes the final revision as ready.
     func update(id: UUID, text: String, truncated: Bool, boundary: Boundary? = nil) {
+        let started = ProcessInfo.processInfo.systemUptime
         // Coalesce revisions already waiting for disk. Even a slow filesystem
         // retains only the latest bounded text, rather than one closure per frame.
         pendingLock.lock()
@@ -172,6 +214,7 @@ final class StartupSpeechFile: @unchecked Sendable {
             pendingLock.unlock()
             guard let update else { return }
             do {
+                var committed: Document?
                 try locked(create: false, waitForReader: true) {
                     guard var value = try read(), value.id == id,
                           value.phase == .capturing else { return }
@@ -189,20 +232,26 @@ final class StartupSpeechFile: @unchecked Sendable {
                     value.updatedAt = max(Date().timeIntervalSince1970, value.requestedAt)
                     if let boundary = update.boundary { value.phase = .ready; value.boundary = boundary }
                     try write(value)
+                    committed = value
                 }
+                if let committed { report(.write, document: committed, status: "saved", started: started) }
             } catch { onError(error) }
         }
     }
 
     func cancel(id: UUID) {
+        let started = ProcessInfo.processInfo.systemUptime
         queue.async { [self] in
             do {
+                var committed: Document?
                 try locked(create: false, waitForReader: true) {
                     guard var value = try read(), value.id == id,
                           value.phase != .consumed, value.phase != .cancelled else { return }
                     value.phase = .cancelled; value.text = ""; value.updatedAt = Date().timeIntervalSince1970
                     try write(value)
+                    committed = value
                 }
+                if let committed { report(.cancel, document: committed, status: "saved", started: started) }
             } catch { onError(error) }
         }
     }
@@ -213,8 +262,11 @@ final class StartupSpeechFile: @unchecked Sendable {
     // it adds no sleep or delay. This is a local latest-start mailbox, not a
     // desktop message API or a guarantee about simultaneous manually made calls.
     func consume(voiceCreatedAt: Date, threadID: UUID, now: Date = Date()) throws -> Delivery {
-        try locked(create: false) {
+        let started = ProcessInfo.processInfo.systemUptime
+        var inspected: Document?
+        let delivery = try locked(create: false) {
             guard var value = try read() else { return Delivery(status: "empty") }
+            inspected = value
             guard value.requestedAt >= voiceCreatedAt.timeIntervalSince1970 - 30,
                   value.requestedAt <= voiceCreatedAt.timeIntervalSince1970 + 2,
                   value.updatedAt <= now.timeIntervalSince1970 + 5 else { return Delivery(status: "unrelated") }
@@ -238,6 +290,8 @@ final class StartupSpeechFile: @unchecked Sendable {
             try write(value)
             return Delivery(status: delivered.text.isEmpty ? "empty" : "speech", request: delivered.text.isEmpty ? nil : delivered)
         }
+        report(.read, document: inspected, status: delivery.status, started: started, reader: threadID)
+        return delivery
     }
 
     func flush() async {
@@ -305,6 +359,7 @@ final class StartupSpeechFile: @unchecked Sendable {
 // Preserve partial-transcript corrections, including joined/fuzzy wake spellings.
 // Only the accepted occurrence is stripped; earlier background speech stays out.
 struct StartupSpeechBuffer {
+    enum Alignment: String { case wake, baseline, context, unmatchedWake, unmatchedBaseline }
     // On 7 Nov no recognizer pause was reported; the exact sound level wasn't
     // retained. The opening stayed `capturing` for 96 s until the
     // 120 s context rollover and absorbed the assistant's replies. These
@@ -328,6 +383,8 @@ struct StartupSpeechBuffer {
     private(set) var published = false
     private(set) var truncated = false
     private(set) var voiceOpened = false
+    private(set) var hasOpeningWords = false
+    private(set) var alignment = Alignment.context
     private var utteranceEnded = false
     private var unchangedSeconds = 0.0
     private(set) var openSeconds = 0.0
@@ -342,8 +399,8 @@ struct StartupSpeechBuffer {
     mutating func markPublished() { published = true }
     // Native connection is not an ASR completion signal. Either event may
     // arrive first; publish ready only once both have happened.
-    mutating func markVoiceOpened() -> Bool { voiceOpened = true; return utteranceEnded }
-    mutating func markUtteranceEnded() -> Bool { utteranceEnded = true; return voiceOpened }
+    mutating func markVoiceOpened() -> Bool { voiceOpened = true; return utteranceEnded && hasOpeningWords }
+    mutating func markUtteranceEnded() -> Bool { utteranceEnded = true; return voiceOpened && hasOpeningWords }
     mutating func speechResumed() { utteranceEnded = false }
     mutating func boundary() { completed = text; current = ""; anchorStart = nil; baseline = nil }
     // Called once per processed audio frame, before that frame's text.
@@ -358,7 +415,7 @@ struct StartupSpeechBuffer {
     // still bounds an empty capture.
     var boundaryReached: StartupSpeechFile.Boundary? {
         guard voiceOpened else { return nil }
-        if (!completed.isEmpty || !current.isEmpty), min(unchangedSeconds, openSeconds) >= Self.pauseSeconds { return .pause }
+        if hasOpeningWords, min(unchangedSeconds, openSeconds) >= Self.pauseSeconds { return .pause }
         if openSeconds >= Self.openLimitSeconds { return .limit }
         return nil
     }
@@ -377,16 +434,34 @@ struct StartupSpeechBuffer {
             let lower = max(0, anchorStart - 8), upper = min(words.count, anchorStart + 12)
             guard lower < upper,
                   let match = PhraseMatcher.matches(in: Array(words[lower..<upper]), phrase: phrase, similar: similar)
-                    .min(by: { abs($0.start + lower - anchorStart) < abs($1.start + lower - anchorStart) }) else { unchangedSeconds = 0; return }
+                    .min(by: { abs($0.start + lower - anchorStart) < abs($1.start + lower - anchorStart) }) else { alignment = .unmatchedWake; unchangedSeconds = 0; return }
             offset = match.end + lower
+            alignment = .wake
         } else if let baseline {
-            guard words.starts(with: baseline) else { unchangedSeconds = 0; return }
+            guard words.starts(with: baseline) else { alignment = .unmatchedBaseline; unchangedSeconds = 0; return }
             offset = baseline.count
-        }
+            alignment = .baseline
+        } else { alignment = .context }
         let start = offset == 0 ? text.startIndex : (offset <= ranges.count ? ranges[offset - 1].upperBound : text.endIndex)
         let tail = text[start...].drop(while: { $0.isWhitespace || ",.!?;:".contains($0) })
-        if current != String(tail.prefix(StartupSpeechFile.textLimit)) { utteranceEnded = false; unchangedSeconds = 0 }
+        let changed = current != String(tail.prefix(StartupSpeechFile.textLimit))
+        if changed { utteranceEnded = false; unchangedSeconds = 0 }
         current = String(tail.prefix(StartupSpeechFile.textLimit))
+        if changed { hasOpeningWords = Self.containsOpeningWords(self.text, phrase: phrase, similar: similar) }
         truncated = truncated || completed.count + current.count + (completed.isEmpty ? 0 : 1) > StartupSpeechFile.textLimit || tail.count > StartupSpeechFile.textLimit
+    }
+
+    // A retry such as "Hello chat. Hello chat." must not make a wake-only
+    // buffer eligible for the two-second finish before the question arrives.
+    // Retain those words, but classify only on text updates, never per frame.
+    private static func containsOpeningWords(_ text: String, phrase: String, similar: Bool) -> Bool {
+        let words = PhraseMatcher.words(text)
+        guard !words.isEmpty else { return false }
+        var end = 0
+        for match in PhraseMatcher.matches(in: words, phrase: phrase, similar: similar) {
+            guard match.start == end else { break }
+            end = match.end
+        }
+        return end < words.count
     }
 }

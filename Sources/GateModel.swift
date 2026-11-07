@@ -104,7 +104,10 @@ import SwiftUI
     private var startupSpeech: StartupSpeechBuffer?
     var capturingStartupSpeech: Bool { startupSpeech != nil }
     private var lastStartupSpeechID: UUID?
-    private let startupSpeechFile = StartupSpeechFile(onError: { Diagnostics.shared.failure("voice.startup_speech.file_failed", $0) })
+    private let startupSpeechFile = StartupSpeechFile(onError: { Diagnostics.shared.failure("voice.startup_speech.file_failed", $0) },
+        onEvent: { Diagnostics.shared.record($0.name, numbers: $0.numbers, info: $0.info) })
+    // At most one later revision is logged per capture, never its words.
+    private var finishedStartupObservation: (id: UUID, at: Double)?
     private var listeningTask: Task<Void, Never>?
     private var quitting = false
     // Wait for the output listener to be registered and checked before starting
@@ -588,6 +591,7 @@ import SwiftUI
         // A repeated wake may reuse the current call. Finish its previous
         // opening first; an unpublished reuse buffer must not strand that file.
         finishStartupSpeech(preserveRequested: true)
+        finishedStartupObservation = nil
         let context = VoiceStartContext()
         voiceStartContext = context
         startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, phrase: wakePhrase, similar: similarPhrases)
@@ -615,6 +619,7 @@ import SwiftUI
                 if context.requestedNewCall && (!Task.isCancelled || context.preserveCallOnCancellation) {
                     let complete = capture.markVoiceOpened()
                     startupSpeech = capture
+                    recordStartupSnapshot(capture, event: "opened", inputCharacters: transcript.count)
                     if complete { finishStartupSpeech(preserveRequested: true, boundary: .utterance) }
                 } else { finishStartupSpeech(preserveRequested: false) }
             }
@@ -668,7 +673,8 @@ import SwiftUI
     private func heard(_ text: String, timings: [(word: String, start: Double, end: Double)]) {
         guard enabled else { return }
         if saveTranscripts { archive.update(text, model: speechModel.rawValue, microphone: inputs.selectedName) }
-        if transcript != text {
+        let changed = transcript != text
+        if changed {
             transcript = text
         }
         // Use the same phrase and mention rules while Agent Flow records. Its
@@ -681,9 +687,18 @@ import SwiftUI
             if var capture = startupSpeech {
                 let previous = capture.text
                 capture.observe(text); startupSpeech = capture
+                if changed { recordStartupSnapshot(capture, event: "recognition", inputCharacters: text.count) }
                 // Only the opening's own revisions; other transcript edits don't touch the file.
                 if capture.published, capture.text != previous {
                     startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated)
+                }
+            } else if changed, let finished = finishedStartupObservation {
+                finishedStartupObservation = nil
+                let elapsed = Diagnostics.now - finished.at
+                if elapsed <= StartupSpeechBuffer.openLimitSeconds {
+                    Diagnostics.shared.record("voice.startup_speech.recognition_after_finish",
+                        numbers: ["seconds_after_finish": elapsed, "input_characters": Double(text.count)],
+                        info: ["request": finished.id.uuidString])
                 }
             }
             return
@@ -720,18 +735,28 @@ import SwiftUI
         startupSpeech = nil
         guard capture.published else { return }
         if preserveRequested {
+            finishedStartupObservation = (capture.id, Diagnostics.now)
             startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated, boundary: boundary)
             // Metadata only: never the recognised words.
             Diagnostics.shared.record("voice.startup_speech.ready",
                 numbers: ["characters": Double(capture.text.count), "seconds_after_open": capture.openSeconds],
                 info: ["request": capture.id.uuidString, "boundary": boundary.rawValue,
-                       "truncated": String(capture.truncated || boundary.mayBeIncomplete)])
+                       "truncated": String(capture.truncated || boundary.mayBeIncomplete),
+                       "opening_words": String(capture.hasOpeningWords), "alignment": capture.alignment.rawValue])
         }
         else { startupSpeechFile.cancel(id: capture.id) }
     }
     private func cancelStartupSpeech() {
         startupSpeech = nil
+        finishedStartupObservation = nil
         if let id = lastStartupSpeechID { startupSpeechFile.cancel(id: id); lastStartupSpeechID = nil }
+    }
+    private func recordStartupSnapshot(_ capture: StartupSpeechBuffer, event: String, inputCharacters: Int) {
+        Diagnostics.shared.record("voice.startup_speech.\(event)",
+            numbers: ["input_characters": Double(inputCharacters), "captured_characters": Double(capture.text.count),
+                      "seconds_after_open": capture.openSeconds],
+            info: ["request": capture.id.uuidString, "alignment": capture.alignment.rawValue,
+                   "opening_words": String(capture.hasOpeningWords)])
     }
     func quit() { NSApp.terminate(nil) }
     func restoreAfterFailedUpdate() async {

@@ -24,9 +24,14 @@ import Darwin
                 print("{\"status\":\"invalid_arguments\"}"); exit(2)
             }
             do {
-                let result = try StartupSpeechFile().consume(voiceCreatedAt: Date(timeIntervalSince1970: seconds), threadID: threadID)
+                let result = try StartupSpeechFile(onEvent: {
+                    Diagnostics.shared.record($0.name, numbers: $0.numbers, info: $0.info)
+                }).consume(voiceCreatedAt: Date(timeIntervalSince1970: seconds), threadID: threadID)
+                Diagnostics.shared.flush()
                 print(String(decoding: try JSONEncoder().encode(result), as: UTF8.self)); exit(0)
             } catch {
+                Diagnostics.shared.failure("voice.startup_speech.consume_failed", error)
+                Diagnostics.shared.flush()
                 let failure = error as NSError
                 let status = failure.domain == NSPOSIXErrorDomain && failure.code == Int(EWOULDBLOCK) ? "busy" : "unavailable"
                 print("{\"status\":\"\(status)\"}"); exit(1)
