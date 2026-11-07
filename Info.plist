@@ -22,6 +22,8 @@
 	<string>15.0</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Listen locally for your wake and end phrases while turned on.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Lower Spotify volume during chat and restore it when chat ends.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>SUFeedURL</key>

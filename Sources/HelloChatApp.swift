@@ -209,6 +209,17 @@ import Darwin
             if let json = try? JSONSerialization.data(withJSONObject: info, options: .sortedKeys) { print(String(decoding: json, as: UTF8.self)) }
             return
         }
+        if CommandLine.arguments.contains("--check-spotify-volume") {
+            // Metadata-only diagnostic, before ordinary startup. No volume,
+            // playback, microphone, shortcut or permission-prompt side effects.
+            do {
+                let volume = try SpotifyVolumeControl.read()
+                let report: [String: Any] = ["running": volume != nil, "volume": volume as Any? ?? NSNull()]
+                print(String(decoding: try JSONSerialization.data(withJSONObject: report, options: .sortedKeys), as: UTF8.self))
+            } catch SpotifyControlError.permissionRequired { print("{\"permissionRequired\":true}") }
+            catch { print("{\"unavailable\":true}") }
+            return
+        }
         if StartupOwnership.handoffIfNeeded() { return }
         do {
             let url = FileManager.default.homeDirectoryForCurrentUser
@@ -309,7 +320,7 @@ struct HelloChatApp: App {
         if readyToTerminate { return true }
         guard !terminating else { return false }
         terminating = true
-        let ready = await model?.prepareToQuit() ?? true
+        let ready = await model?.prepareToQuit(preservingSpotify: true) ?? true
         readyToTerminate = ready
         if !ready { terminating = false }
         return ready
@@ -533,6 +544,13 @@ struct SettingsView: View {
                     Button("End sound") { model.previewSound(.ended) }
                 }.disabled(!model.soundEffects)
             }
+            Section("Spotify") {
+                Toggle("Lower volume during chat", isOn: $model.lowerSpotifyDuringChat)
+                    .accessibilityIdentifier("lowerSpotifyDuringChat")
+                Text("Lowers Spotify to 30% or below, then restores its volume unless changed manually.")
+                    .foregroundStyle(.secondary)
+                SpotifyVolumeStatus(volume: model.spotifyVolume)
+            }
             Section("Transcript Archive") {
                 Toggle("Save transcripts", isOn: $model.saveTranscripts).accessibilityIdentifier("saveTranscripts")
                 Text("Saves local recognition as JSON with rough phrase timestamps. May include background speech. Audio isn't saved.").foregroundStyle(.secondary)
@@ -571,6 +589,17 @@ struct SettingsView: View {
         .controlSize(zoom.scale >= 1.3 ? .large : .regular)
         .frame(minWidth: 440, idealWidth: 560, maxWidth: .infinity,
                minHeight: 420, idealHeight: 660, maxHeight: .infinity)
+    }
+}
+
+private struct SpotifyVolumeStatus: View {
+    @ObservedObject var volume: SpotifyVoiceVolume
+    var body: some View {
+        if !volume.message.isEmpty { Text(volume.message).foregroundStyle(.secondary) }
+        if volume.permissionRequired {
+            Button("Allow Spotify control") { volume.requestPermission() }
+                .accessibilityIdentifier("allowSpotifyControl")
+        }
     }
 }
 

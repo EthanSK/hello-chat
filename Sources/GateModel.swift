@@ -10,6 +10,13 @@ import SwiftUI
     @Published var soundEffects = UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true {
         didSet { UserDefaults.standard.set(soundEffects, forKey: "soundEffects") }
     }
+    let spotifyVolume = SpotifyVoiceVolume()
+    @Published var lowerSpotifyDuringChat = UserDefaults.standard.bool(forKey: "lowerSpotifyDuringChat") {
+        didSet {
+            UserDefaults.standard.set(lowerSpotifyDuringChat, forKey: "lowerSpotifyDuringChat")
+            spotifyVolume.setEnabled(lowerSpotifyDuringChat)
+        }
+    }
     @Published private(set) var voiceText = "Chat is off"
     @Published private(set) var microphone: MicrophoneState? = .muted
     let meter = AudioMeter()
@@ -211,6 +218,7 @@ import SwiftUI
         listener.model = speechModel
         updateComputeLabel()
         updatePhrases()
+        spotifyVolume.setEnabled(lowerSpotifyDuringChat)
     }
     // Ethan's "always be" means keep the app running. Bose still pauses local
     // capture, but must not terminate the app or require manually reopening it.
@@ -713,13 +721,14 @@ import SwiftUI
         if let saved = updateListeningDelay { dockDelay = saved }
         updateListeningDelay = nil
         quitting = false; busy = false; voiceTask = nil
+        spotifyVolume.setEnabled(lowerSpotifyDuringChat)
         microphone = await voice.reattachAfterFailedUpdate()
         showListening()
         // Re-evaluate the existing saved choice and live power/output state.
         // Never turn a user's manual Off into On or persist a temporary pause.
         applyAutomaticListening()
     }
-    func prepareToQuit() async -> Bool {
+    func prepareToQuit(preservingSpotify: Bool = false) async -> Bool {
         guard !quitting else { return false }
         Diagnostics.shared.record("app.quit.requested")
         updateListeningDelay = dockDelay
@@ -731,6 +740,7 @@ import SwiftUI
         await previous?.value
         archive.flush()
         await startupSpeechFile.flush()
+        await spotifyVolume.shutdown(preservingVolume: preservingSpotify)
         return true
     }
 }

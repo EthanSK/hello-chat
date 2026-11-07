@@ -97,7 +97,8 @@ struct VoiceBridge {
         }
     }
 
-    static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96, requireEnd: Bool = false) -> VoiceSnapshot {
+    static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96, requireEnd: Bool = false,
+                         observeButtons: (([AXUIElement]) -> Void)? = nil) -> VoiceSnapshot {
         let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
         let applications = candidates
             .filter { !$0.isTerminated && codexProcess($0.processIdentifier) }
@@ -106,6 +107,7 @@ struct VoiceBridge {
         let voice = app?.bundleURL.map { bundle in pids.contains { executable($0)?.hasPrefix(bundle.path + "/Contents/") == true } } ?? false
         let recorder = pids.contains { executable($0)?.hasPrefix("/Applications/AgentFlow.app/Contents/") == true }
         var controls = readMicrophone ? voiceControls(app?.processIdentifier, requireEnd: requireEnd, maximumDepth: maximumDepth) : Controls()
+        observeButtons?([controls.end, controls.microphoneButton].compactMap { $0 })
         if app == nil { controls.failure = "application_lookup:\(candidates.count)/\(applications.count)" }
         return VoiceSnapshot(pid: app?.processIdentifier, inputRunning: voice, recorderRunning: recorder,
                              microphone: controls.microphone, accessibilityAllowed: AXIsProcessTrusted(), endControlAvailable: controls.end != nil,

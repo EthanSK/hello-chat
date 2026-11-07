@@ -104,10 +104,19 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Phrases | **Wake phrase** and **End phrase**, **Allow small spelling differences** (on by default) and **Check speech recognition**. |
 | Resources | HelloChat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |
+| Spotify | **Lower volume during chat**, off by default. Requires permission to control Spotify. |
 | Transcript Archive | **Save transcripts** (on by default), the archive location, and this Mac’s optional backup configuration. |
 | Updates | **Check for Updates…**, automatic checking and automatic downloads on release-configured builds. |
 | Diagnostics | Timing and error logs, which exclude recognised words. |
 | Appearance | **Open windows on** remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. **View → Zoom In / Zoom Out / Actual Size** works too. |
+
+## Spotify volume during chat
+
+Enable **Settings → Spotify → Lower volume during chat** to cap Spotify's own slider at 30% while a native call is on. A quieter setting stays quieter. **Allow Spotify control** requests macOS Automation permission; Spotify must already be open. This never starts playback or changes the Mac's output volume.
+
+The original slider value is saved privately before it changes and restored after confirmed call end. If you change the slider yourself, that value wins. Normal HelloChat Quit restores immediately without ending the Codex call; an updater carries the saved value into the replacement app. After a crash, the next launch uses that receipt to recover. A helper that is no longer running cannot restore at a later call end.
+
+Detection uses native Accessibility notifications and fresh call controls, including calls started or stopped directly in Codex and temporary chats. Saved call-boundary metadata is supplementary evidence during reconnects; HelloChat does not subscribe to Codex's private server, read transcripts, or write its database. Incomplete control reads remain unknown. The private metadata format and UI can change across Codex versions; live manual-end and temporary-chat acceptance must be checked against the installed version.
 
 ## Updates
 
@@ -136,6 +145,7 @@ The three Core ML models run with `cpuAndNeuralEngine`, so GPU is excluded. Befo
 - **Logs** in `~/Library/Logs/HelloChat/` (`events.jsonl` and `events.previous.jsonl`, each capped at 512 KiB) contain timings and errors, never recognised words.
 - **Network**: listening makes no network requests, and models are never downloaded at runtime. The build, Sparkle update checks/downloads and the optional backup script use the network. Update checks do not include saved transcripts or audio.
 - **Codex**: HelloChat reads Codex's Voice shortcut from `~/.codex/keybindings.json` and inspects Codex's accessibility tree during Start, End, Refresh, or while a downloaded update is waiting to relaunch. Startup speech is handed to the local Voice skill through the private file above; HelloChat does not navigate to a chat or submit a message. Start uses the global native shortcut without first activating Codex. The conversation, its audio, network connection and sign-in all belong to Codex.
+- **Optional Spotify control**: when enabled, native window/control notifications trigger read-only call checks in the background. HelloChat also reads only saved call-start/end metadata from Codex's local timeline. Its private `SpotifyVolume/restore.json` receipt stores only the original/applied volume values. macOS Automation permission permits Spotify volume access; tracks and library contents are not read.
 
 ### Optional Google Drive Backup
 

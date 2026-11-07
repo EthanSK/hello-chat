@@ -8,7 +8,7 @@ let package = Package(
     targets: [.executableTarget(name: "HelloChat", dependencies: [.product(name: "FluidAudio", package: "FluidAudio"),
                                                                   .product(name: "Sparkle", package: "Sparkle")],
         path: "Sources",
-        linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("ApplicationServices"),
+        linkerSettings: [.linkedLibrary("sqlite3"), .linkedFramework("AppKit"), .linkedFramework("ApplicationServices"),
                          .linkedFramework("CoreAudio"), .linkedFramework("AVFoundation"), .linkedFramework("SwiftUI"),
                          .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])])],
     swiftLanguageModes: [.v5]
