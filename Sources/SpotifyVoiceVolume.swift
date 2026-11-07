@@ -6,10 +6,6 @@ import Carbon
 import Combine
 import Foundation
 
-enum SpotifyControlError: Error {
-    case permissionRequired, unavailable, invalidReply, volumeChanged, appleEvent(OSStatus)
-}
-
 enum SpotifyVolumeControl {
     private static let volumeProperty: OSType = 0x70566f6c // Spotify's own pVol, never system output.
 
@@ -46,11 +42,12 @@ enum SpotifyVolumeControl {
         guard let app = application() else { throw SpotifyControlError.unavailable }
         // The user can move the slider, or Spotify can restart, after the
         // original snapshot. Do not overwrite that intervening change.
-        guard try read() == expected, application()?.processIdentifier == app.processIdentifier else {
-            throw SpotifyControlError.volumeChanged
-        }
-        _ = try send(eventID: AEEventID(kAESetData), volume: volume, processIdentifier: app.processIdentifier)
-        guard try read() == volume else { throw SpotifyControlError.invalidReply }
+        try SpotifyVolumeWrite.perform(volume, expected: expected, read: {
+            guard application()?.processIdentifier == app.processIdentifier else { throw SpotifyControlError.volumeChanged }
+            return try read()
+        }, set: { requested in
+            _ = try send(eventID: AEEventID(kAESetData), volume: requested, processIdentifier: app.processIdentifier)
+        })
     }
 
     private static func send(eventID: AEEventID, volume: Int? = nil, processIdentifier: pid_t? = nil) throws -> NSAppleEventDescriptor {
@@ -173,7 +170,7 @@ enum SpotifyVolumeControl {
                 // A normal Quit restores promptly and leaves Codex Voice alone.
                 // An updater transfers the saved lease to the replacement app.
                 if !preservingVolume {
-                    do { _ = try session.reconcile(.inactive) }
+                    do { _ = try session.reconcile(.inactive, preservingManualOverride: true) }
                     catch { Diagnostics.shared.failure("spotify.restore_on_quit.failed", error) }
                 }
                 continuation.resume()

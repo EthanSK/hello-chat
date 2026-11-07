@@ -94,6 +94,42 @@ import Foundation
         restoreFailure.failWrite = false; _ = try restoreSession.reconcile(.inactive)
         precondition(restoreFailure.volume == 80 && restoreFailure.receipt == nil)
 
+        // Real Spotify returned 29 for a 30 request. Exercise the native write
+        // algorithm independently, including a user adjustment between writes.
+        var roundedVolume = 57, roundedWrites: [Int] = []
+        try SpotifyVolumeWrite.perform(30, expected: 57, read: { roundedVolume }, set: { value in
+            roundedWrites.append(value); roundedVolume = value - 1
+        })
+        precondition(roundedVolume == 30 && roundedWrites == [30, 31])
+        try SpotifyVolumeWrite.perform(57, expected: 30, read: { roundedVolume }, set: { value in
+            roundedWrites.append(value); roundedVolume = value - 1
+        })
+        precondition(roundedVolume == 57 && roundedWrites.suffix(2) == [57, 58])
+        var reads = 0
+        do {
+            try SpotifyVolumeWrite.perform(30, expected: 57, read: {
+                reads += 1
+                if reads == 3 { roundedVolume = 50 }
+                return roundedVolume
+            }, set: { roundedVolume = $0 - 1 })
+            fatalError("Manual change between compensation writes overwritten")
+        } catch { }
+        precondition(roundedVolume == 50)
+        let roundedCrash = Fixture(); roundedCrash.volume = 29
+        roundedCrash.receipt = SpotifyVolumeLease(original: 57, applied: 30)
+        _ = try roundedCrash.session().reconcile(.inactive)
+        precondition(roundedCrash.volume == 57 && roundedCrash.receipt == nil,
+                     "Interrupted rounding correction preserves restoration")
+        let manualRestart = Fixture(), beforeQuit = manualRestart.session()
+        _ = try beforeQuit.reconcile(.active); manualRestart.volume = 50
+        _ = try beforeQuit.reconcile(.inactive, preservingManualOverride: true)
+        precondition(manualRestart.receipt?.original == 80 && manualRestart.volume == 50)
+        let afterRestart = manualRestart.session()
+        _ = try afterRestart.reconcile(.active)
+        precondition(manualRestart.volume == 50 && manualRestart.writes == [30])
+        _ = try afterRestart.reconcile(.inactive)
+        precondition(manualRestart.receipt == nil && manualRestart.volume == 50)
+
         var call = VoiceCallDecision()
         precondition(!call.observe(controlsPresent: true, controlsComplete: true, persistedCallActive: false, applicationAbsent: false))
         precondition(call.presence == .active, "Temporary call uses actual controls, with no disk record")

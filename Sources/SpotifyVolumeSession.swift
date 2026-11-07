@@ -2,6 +2,10 @@
 // access; this state machine never starts playback or changes system volume.
 import Foundation
 
+enum SpotifyControlError: Error {
+    case permissionRequired, unavailable, invalidReply, volumeChanged, appleEvent(Int32)
+}
+
 enum VoiceCallPresence: String { case active, inactive, unknown }
 
 struct SpotifyVolumeLease: Codable, Equatable {
@@ -14,6 +18,28 @@ struct SpotifyVolumeLease: Codable, Equatable {
         version = 1; self.original = original; self.applied = applied; self.confirmed = confirmed
     }
     var valid: Bool { version == 1 && (0...100).contains(original) && applied == min(original, 30) }
+    // Spotify can truncate its internal floating-point slider one point below
+    // the requested integer. A crash before the compensating write still owns
+    // that intermediate value, but only while the receipt is unconfirmed.
+    func owns(_ value: Int) -> Bool {
+        value == applied || (!confirmed && original > applied && value == applied - 1)
+    }
+}
+
+enum SpotifyVolumeWrite {
+    // Native Spotify can report 29 after setting 30. Correct that bounded
+    // rounding error, checking ownership again before the second mutation.
+    static func perform(_ target: Int, expected: Int, read: () throws -> Int?,
+                        set: (Int) throws -> Void) throws {
+        guard try read() == expected else { throw SpotifyControlError.volumeChanged }
+        try set(target)
+        let actual = try read()
+        if actual == target { return }
+        guard target < 100, actual == target - 1 else { throw SpotifyControlError.invalidReply }
+        guard try read() == actual else { throw SpotifyControlError.volumeChanged }
+        try set(target + 1)
+        guard try read() == target else { throw SpotifyControlError.invalidReply }
+    }
 }
 
 // Runtime access is confined to SpotifyVoiceVolume's one serial worker queue;
@@ -34,7 +60,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
 
     // Save BEFORE sending the volume change. A crash between the event and its
     // reply must not lose the original value or save 30 as the next original.
-    func reconcile(_ call: VoiceCallPresence) throws -> Result {
+    func reconcile(_ call: VoiceCallPresence, preservingManualOverride: Bool = false) throws -> Result {
         if !loaded {
             let saved = try access.load()
             if let saved, !saved.valid { throw CocoaError(.fileReadCorruptFile) }
@@ -52,7 +78,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
                 }
                 // A manual change wins. Do not keep forcing the slider back to
                 // 30. At End, restore only if our applied value is still there.
-                return current == saved.applied ? .unchanged : .manualChange
+                return saved.owns(current) ? .unchanged : .manualChange
             }
             let saved = SpotifyVolumeLease(original: current, applied: min(current, 30))
             try access.save(saved); lease = saved
@@ -60,7 +86,10 @@ final class SpotifyVolumeSession: @unchecked Sendable {
         }
 
         guard let saved = lease else { return .idle }
-        let restore = current == saved.applied && saved.original != saved.applied
+        // Quit is not the call's End. Retain an override across a helper
+        // restart so the same ongoing call cannot lower the user's slider.
+        if preservingManualOverride && !saved.owns(current) { return .manualChange }
+        let restore = saved.owns(current) && saved.original != saved.applied
         if restore { try access.write(saved.original, current) }
         // Keep the receipt if restoration failed, or Spotify is closed. A later
         // launch can retry without launching Spotify or losing crash recovery.
