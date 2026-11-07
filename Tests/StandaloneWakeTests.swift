@@ -46,8 +46,17 @@ import Foundation
         check("Hello Chad", expected: false, similar: false)
         check("Hello chance", expected: false, similar: false)
         check("Hello chance", expected: false, phrase: "Hey Chat")
-        for text in ["Helo Chatt", "Hallo Chad", "Yellow Chat", "Hi Chat", "H E L L O C H A T",
+        for text in ["Helo Chatt", "Hallo Chad", "Yellow Chat", "H E L L O C H A T",
                      "The video stopped. Hullo Chart, can you help?"] { check(text, expected: true) }
+        for text in ["Hi Chat", "High Chat", "Hi Chad", "H I chat", "H I G H chat",
+                     "Oh hi chat", "highchat", "it registered as high chat", "it registered as Hello Chat"] {
+            check(text, expected: false)
+        }
+        for phrase in ["Hi Chat", "High Chat"] {
+            check(phrase, expected: true, phrase: phrase)
+            check(phrase, expected: true, phrase: phrase, similar: false)
+        }
+        check("High Chat. Hello Chat", expected: true)
         for text in ["as well chat", "Hello charts"] { check(text, expected: true) }
         for text in ["Hello cat", "Hello that", "Hello shat", "Hey Chat", "hey chat can you help"] { check(text, expected: false) }
         for text in ["the hallo chad detection", "I said yellow chat", "the hello cat app",

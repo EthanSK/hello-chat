@@ -48,7 +48,7 @@ struct PhraseMatcher {
     private static let helloAddresses: Set<String> = [
         "hello", "helo", "hellow", "helloh", "hellou", "hallo", "halloo", "hullo", "hulo",
         "halo", "hollow", "yellow", "yello", "ello", "alo", "allo", "alow", "heylow",
-        "hi", "high", "hiya", "ohhello", "ohhi",
+        "hiya", "ohhello",
         "helow", "helloo", "hellooo", "helllo", "heello", "heelo", "helloe", "hella",
         "halloh", "hallou", "hallooo", "halow", "halou", "haloo", "hollo", "hillo",
         "hulloh", "hullooo", "hulow", "hullow", "herlo", "herlow", "hurlo", "hallow",
@@ -56,7 +56,7 @@ struct PhraseMatcher {
         "eloh", "elo", "elloh", "elloo", "elow", "alloh", "alloo", "aloo", "allow",
         "ahlo", "ahllo", "ohlo", "hola", "ola", "ohla", "holla", "holler",
         "hai", "heh", "hiyah", "haya", "hiyaa",
-        "ohello", "wellhello", "whyhello", "hellohello", "hihi",
+        "ohello", "wellhello", "whyhello", "hellohello",
         "hilo", "hilow", "hiloh", "hiloe", "uhlo", "uhlow", "ahlow", "helllow", "harlow",
         "ullo", "ulow", "ulo", "ullow", "erlo", "arlo", "orlo", "arlow", "aloe", "ellough"
     ]
@@ -111,11 +111,16 @@ struct PhraseMatcher {
         // here so wake detection and phrase highlighting use the same rule.
         "highat",
         "hellchat", "hellchats", "hellchad", "hellchatt", "hellchart", "hellcharts"]
+    // Ethan reported saying Bye Chat; recognition saved High Chat and opened Voice.
+    // Hi/High must not be implicit Hello aliases. Keep the guard in the shared
+    // matcher so highlighting agrees, while an explicit custom Hi/High phrase
+    // still follows the normal exact/custom rules below.
+    private static let excludedShortGreetings = combinations(["hi", "high", "ohhi", "hihi"], expandedNames)
     private static let ordinaryEndPhrases: Set<String> = [
         "piechart", "piecharts", "barchart", "barcharts", "bythat", "byethat", "buythat",
         "mychat", "whychat", "viachat", "wechat", "buyhats", "bethat"]
     static var defaultVariantCounts: (wake: Int, end: Int, weakWake: Int) {
-        (wakeVariants.union(weakWakeVariants).subtracting(ordinaryWakePhrases).count,
+        (wakeVariants.union(weakWakeVariants).subtracting(ordinaryWakePhrases).subtracting(excludedShortGreetings).count,
          endVariants.union(observedEndVariants).subtracting(ordinaryEndPhrases).count, weakWakeVariants.count)
     }
     static var defaultVariantsOverlap: Bool {
@@ -163,7 +168,7 @@ struct PhraseMatcher {
         if similar, expected == ["hello", "chat"], !allowEndAddressEdit {
             // Ethan wants "hello" followed by any word beginning C H to wake.
             // The existing compact form also preserves joined/spelled variants.
-            return !ordinaryWakePhrases.contains(actual) &&
+            return !ordinaryWakePhrases.contains(actual) && !excludedShortGreetings.contains(actual) &&
                 (wakeVariants.contains(actual) || weakWakeVariants.contains(actual) || actual.hasPrefix("helloch"))
         }
         if similar, expected == ["bye", "chat"], allowEndAddressEdit {

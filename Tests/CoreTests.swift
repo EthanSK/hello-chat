@@ -52,9 +52,16 @@ import CoreGraphics
         }
         for phrase in ["Helo Chat", "Hallo Chad", "Hullo Chart", "Hello chats", "Helloo Chatt",
                        "Hlelo Chta", "Halo Chat", "Yellow Chat", "Yello Chad", "Ello Chat", "A low Chat",
-                       "Hey low Chat", "HelloChat", "Hi Chat", "Hiya Chat", "H E L L O C H A T"] {
+                       "Hey low Chat", "HelloChat", "Hiya Chat", "H E L L O C H A T"] {
             var wake = PhraseMatcher()
             check(wake.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "Broad wake spelling: \(phrase)")
+        }
+        for text in ["Hi Chat", "High Chat", "Hi Chad", "High charts", "H I Chat", "H I G H C H A T", "Oh hi chat"] {
+            check(!PhraseMatcher.equivalent(text, to: "Hello Chat", similar: true), "Hi/High must not substitute for Hello: \(text)")
+        }
+        for phrase in ["Hi Chat", "High Chat"] {
+            check(PhraseMatcher.equivalent(phrase, to: phrase, similar: true), "Explicit custom greeting still works")
+            check(PhraseMatcher.equivalent(phrase, to: phrase, similar: false), "Exact custom greeting still works")
         }
         for phrase in ["Hello chads", "Holla Chat", "Hola Chat", "Yelloo Chet", "Oh hello Chat",
                        "Hello charts", "Hello chance", "hello charity", "hello chatter", "Hello chocolate",

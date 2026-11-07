@@ -100,7 +100,7 @@ struct StandaloneWake {
         let referenceWords: Set<String> = ["say", "says", "said", "saying", "mention", "mentions", "mentioned",
             "mentioning", "called", "named", "phrase", "word", "words", "spell", "spelling", "spelled",
             "detect", "detects", "detected", "detecting", "recognize", "recognise", "recognizing", "recognising",
-            "match", "matches", "matched", "matching"]
+            "match", "matches", "matched", "matching", "register", "registers", "registered", "registering"]
         if left.contains(where: referenceWords.contains) { return true }
         if left.contains(where: { ["does", "doesn", "doesnt"].contains($0) }) { return true }
         if let last = left.last, ["about", "the", "your", "my", "configured", "literal"].contains(last) { return true }
