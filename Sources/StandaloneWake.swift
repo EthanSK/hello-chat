@@ -10,7 +10,7 @@ import Foundation
 struct StandaloneWake {
     // Parakeet's end-of-utterance debounce. It no longer gates waking.
     static let endSilenceSeconds = 0.6
-    static let microphonePhrases = ["mute chat", "silent chat", "silence chat"]
+    static let microphonePhrases = PhraseMatcher.microphonePhrases
 
     mutating func pollMicrophone(at time: Double) -> Bool {
         poll(at: time, phrase: Self.microphonePhrases[0], similar: false,

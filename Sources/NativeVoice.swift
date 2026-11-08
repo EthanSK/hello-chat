@@ -266,22 +266,25 @@ import Foundation
 
     // Ethan's "mute chat", "silent chat" and "silence chat" toggle only the
     // active microphone. setMicrophone(.muted) is the legacy End path, so it
-    // must not be used here. Fresh native controls also adopt externally opened calls.
+    // must not be used here. The dedicated native action cannot start a call;
+    // missing AX microphone labels must not prevent sending an explicit toggle.
     func toggleMicrophone() async throws -> MicrophoneState {
         try checkStartAllowed()
         let fresh = await snapshot()
         try checkStartAllowed()
-        guard fresh.accessibilityAllowed, let pid = fresh.pid, let current = fresh.microphone else {
+        guard fresh.accessibilityAllowed, let pid = fresh.pid,
+              fresh.microphone != nil || fresh.endControlAvailable || fresh.inputRunning else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
-        let target: MicrophoneState = current == .listening ? .muted : .listening
         try transport.activate(pid)
         try checkStartAllowed()
         // Recheck after activation, then use the same configured-key transport
         // as Start/End. AXPress did not change the microphone in Ethan's live test.
         let ready = await snapshot()
         try checkStartAllowed()
-        guard ready.pid == pid, ready.microphone == current else {
+        guard ready.accessibilityAllowed, ready.pid == pid,
+              ready.microphone != nil || ready.endControlAvailable || ready.inputRunning,
+              fresh.microphone == nil || ready.microphone == nil || ready.microphone == fresh.microphone else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
         try await transport.send(VoiceBridge.muteCommand, pid)
@@ -289,11 +292,15 @@ import Foundation
         try checkAttached()
         let confirmed = await snapshot()
         try checkAttached()
-        guard confirmed.pid == pid, confirmed.microphone == target else {
+        // A sent key is not proof of a state change. If the native labels stay
+        // unavailable, retain the unconfirmed result and never play a success cue.
+        let current = ready.microphone ?? fresh.microphone
+        guard confirmed.pid == pid, let state = confirmed.microphone,
+              current == nil || state != current else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
         connected = true; lastError = nil
-        return target
+        return state
     }
 
     // Normal H Chat Quit stops our control work, not the Codex conversation.

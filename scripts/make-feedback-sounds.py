@@ -8,7 +8,10 @@ import wave
 root = Path(__file__).resolve().parent.parent / "Resources" / "Sounds"
 root.mkdir(parents=True, exist_ok=True)
 rate = 44100
-for name, notes in [("Wake", (659.25, 987.77)), ("Ended", (659.25, 439.99))]:
+for name, notes in [("Wake", (659.25, 987.77)), ("Ended", (659.25, 439.99)),
+                    ("MicrophoneDetected", (784.0,)),
+                    ("MicrophoneMuted", (523.25, 349.23)),
+                    ("MicrophoneUnmuted", (349.23, 523.25))]:
     values = []
     for index in range(int(rate * 0.36)):
         t = index / rate

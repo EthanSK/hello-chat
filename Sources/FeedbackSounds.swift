@@ -1,10 +1,13 @@
 import AppKit
 
 @MainActor final class FeedbackSounds {
-    enum Cue: String { case wake = "Wake", ended = "Ended" }
+    enum Cue: String, CaseIterable {
+        case wake = "Wake", ended = "Ended"
+        case microphoneDetected = "MicrophoneDetected", microphoneMuted = "MicrophoneMuted", microphoneUnmuted = "MicrophoneUnmuted"
+    }
     private var sounds: [Cue: NSSound] = [:]
     init() {
-        for cue in [Cue.wake, .ended] {
+        for cue in Cue.allCases {
             if let url = Bundle.main.url(forResource: cue.rawValue, withExtension: "wav", subdirectory: "Sounds"),
                let sound = NSSound(contentsOf: url, byReference: false) {
                 sound.volume = cue == .wake ? 0.7 : 0.35; sounds[cue] = sound

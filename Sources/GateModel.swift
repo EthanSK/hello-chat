@@ -409,6 +409,7 @@ import SwiftUI
         }
     }
     func refreshPermissions() {
+        shortcutNotice = VoiceBridge.shortcutSetupMessage() // A Codex restart can apply the saved keys while H Chat stays running.
         micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
     func requestAudioPermissions() {
@@ -730,13 +731,15 @@ import SwiftUI
                 standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: phrase, similar: similarPhrases) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
             }
             busy = true
+            feedback.play(.microphoneDetected) // Acknowledges recognition only; mute/unmute cues require a confirmed native state below.
             let token = generation
             voiceTask = Task {
-                defer { if generation == token { busy = false; voiceTask = nil } }
+                defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
                 do {
                     let state = try await voice.toggleMicrophone()
                     guard generation == token else { return }
                     microphone = state; error = nil
+                    feedback.play(state == .muted ? .microphoneMuted : .microphoneUnmuted)
                     showListening()
                     lastEvent = "Chat is \(state.rawValue)"
                     Diagnostics.shared.record("voice.microphone.toggled", info: ["microphone": state.rawValue])

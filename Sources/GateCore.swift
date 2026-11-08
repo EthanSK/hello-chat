@@ -27,6 +27,7 @@ struct MicrophoneOwnership {
 
 struct PhraseMatcher {
     enum MatchKind: String { case exact, dictionary, fuzzy }
+    static let microphonePhrases = ["mute chat", "silent chat", "silence chat"] // Shared by detection and transcript highlighting; no fuzzy microphone aliases.
 
     // Presentation uses the same acceptance rules as command detection. A
     // highlighted phrase is a textual match, not proof a Voice action ran.

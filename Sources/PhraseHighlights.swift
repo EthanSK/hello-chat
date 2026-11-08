@@ -32,13 +32,15 @@ enum PhraseHighlights {
             cursor = end
         }
         var candidates: [Span] = []
-        for (savedPhrase, ending) in [(phrase, false), (endPhrase, true)] {
+        let phrases = [(phrase, false, similar), (endPhrase, true, similar)]
+            + PhraseMatcher.microphonePhrases.map { ($0, false, false) }
+        for (savedPhrase, ending, allowSimilar) in phrases {
             // End phrases use the detector's closing-command dictionary too:
             // Ethan's "by chat" must colour like the accepted Bye Chat variant.
-            for match in PhraseMatcher.matches(in: tokens, phrase: savedPhrase, similar: similar, ending: ending) {
+            for match in PhraseMatcher.matches(in: tokens, phrase: savedPhrase, similar: allowSimilar, ending: ending) {
                 guard ranges[match.start].lowerBound >= visibleStart,
                       let kind = PhraseMatcher.matchKind(tokens[match.start..<match.end].joined(),
-                          to: savedPhrase, similar: similar, ending: ending) else { continue }
+                          to: savedPhrase, similar: allowSimilar, ending: ending) else { continue }
                 candidates.append(Span(start: match.start, end: match.end, kind: kind))
             }
         }

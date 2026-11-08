@@ -18,12 +18,37 @@ import Foundation
         precondition(muted == .muted && toggledVoice.connected, "Adopt an externally started call and mute without ending it")
         let unmuted = try await toggledVoice.toggleMicrophone()
         precondition(unmuted == .listening && toggles == [.listening, .muted], "Second command unmutes exactly once")
-        for unavailable in [state(), state(input: true), state(.muted, allowed: false)] {
+        for unavailable in [state(), state(.muted, allowed: false)] {
             toggledState = unavailable
             do { _ = try await toggledVoice.toggleMicrophone(); fatalError("Unknown/off/denied Voice accepted toggle") }
             catch is BridgeError { }
         }
         precondition(toggles.count == 2, "Unavailable controls never send a toggle or start a call")
+        var unknownSends = 0
+        let unknownMicrophoneToggle = NativeVoice(transport: .init(snapshot: { state(input: true) },
+            send: { command, pid in
+                precondition(command == VoiceBridge.muteCommand && pid == 123)
+                unknownSends += 1
+            }, activate: { _ in }))
+        do { _ = try await unknownMicrophoneToggle.toggleMicrophone(); fatalError("Missing labels cannot prove a muted state") }
+        catch is BridgeError { }
+        precondition(unknownSends == 1, "Current call/input with missing AX labels still sends exactly one microphone shortcut")
+
+        var discoveredState = state(input: true)
+        let discoveredMicrophone = NativeVoice(transport: .init(snapshot: { discoveredState },
+            send: { command, _ in
+                precondition(command == VoiceBridge.muteCommand)
+                discoveredState = state(.muted)
+            }, activate: { _ in }))
+        let discovered = try await discoveredMicrophone.toggleMicrophone()
+        precondition(discovered == .muted, "A newly exposed native state confirms the explicit action")
+
+        var closedDuringActivation = state(input: true)
+        let closedMicrophone = NativeVoice(transport: .init(snapshot: { closedDuringActivation },
+            send: { _, _ in fatalError("A closed call must not receive a shortcut") },
+            activate: { _ in closedDuringActivation = state() }))
+        do { _ = try await closedMicrophone.toggleMicrophone(); fatalError("Call closure must invalidate delivery") }
+        catch is BridgeError { }
         toggledState = state(.listening)
         toggledVoice.detachForQuit()
         do { _ = try await toggledVoice.toggleMicrophone(); fatalError("Detached helper accepted toggle") }

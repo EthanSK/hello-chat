@@ -488,7 +488,7 @@ struct PhraseHighlightPreviewApp: App {
         Window("HelloChat · \(AppVersion.display)", id: "phrase-preview") {
             Form {
                 Section("Heard (local model)") {
-                    HeardTranscript(text: "Hello, this is a test. What's going on? Hello chat. Bye chat by chat why does the end voice end phrase not highlight",
+                    HeardTranscript(text: "Hello chat. Mute chat. Silent chat. Silence chat. Bye chat. By chat. Hello chance.",
                                     phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true, enabled: true)
                     HeardTranscript(text: "Start Lantern. End Lantern. Hello Chat and Bye Chat stay unchanged with custom phrases.",
                                     phrase: "Start Lantern", endPhrase: "End Lantern", similar: true, enabled: true)

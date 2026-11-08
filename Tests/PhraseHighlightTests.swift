@@ -8,6 +8,12 @@ import Foundation
             PhraseHighlights.runs(in: text, phrase: phrase, endPhrase: end, similar: similar, limit: limit)
         }
         let original = "🎙️ Café: Hello, CHAT! As well chat. HelloChad — ordinary words."
+        let microphoneText = "Mute, CHAT! Silent Chat. Silence Chat. mute charts."
+        let microphoneRuns = runs(microphoneText)
+        check(microphoneRuns.map(\.text).joined() == microphoneText, "Microphone highlighting preserves the exact transcript")
+        check(microphoneRuns.filter { $0.kind != nil }.map(\.text) == ["Mute, CHAT", "Silent Chat", "Silence Chat"], "All microphone commands highlight without fuzzy lookalikes")
+        check(microphoneRuns.filter { $0.kind != nil }.allSatisfy { $0.kind == .exact }, "Microphone commands use the existing exact-match green classification")
+        check(runs("Silent Chat", "Start Lantern", false, end: "End Lantern").first?.kind == .exact, "Microphone commands are independent of custom wake/end phrases and similar-word mode")
         let styled = runs(original)
         check(styled.map(\.text).joined() == original, "Never rewrite recognized text, punctuation or emoji")
         check(styled.filter { $0.kind == .exact }.map(\.text) == ["Hello, CHAT"], "Exact normalized match has original source range")
