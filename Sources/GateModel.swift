@@ -66,26 +66,60 @@ import SwiftUI
         }
     }
     @Published private(set) var changingModel = false
-    @Published var wakePhrase = UserDefaults.standard.string(forKey: "wakePhrase") ?? "Hello Chat" {
+    @Published var wakePhrase = PhraseSlot.wakePhrase.savedValue() {
         didSet { UserDefaults.standard.set(wakePhrase, forKey: "wakePhrase"); updatePhrases() }
     }
-    @Published var sleepPhrase = UserDefaults.standard.string(forKey: "sleepPhrase") ?? "Bye Chat" {
+    @Published var sleepPhrase = PhraseSlot.sleepPhrase.savedValue() {
         didSet { UserDefaults.standard.set(sleepPhrase, forKey: "sleepPhrase"); updatePhrases() }
     }
-    @Published var mutePhrase = UserDefaults.standard.string(forKey: "mutePhrase") ?? PhraseMatcher.mutePhrase {
+    @Published var mutePhrase = PhraseSlot.mutePhrase.savedValue() {
         didSet { UserDefaults.standard.set(mutePhrase, forKey: "mutePhrase"); updatePhrases() }
     }
-    @Published var silentPhrase = UserDefaults.standard.string(forKey: "silentPhrase") ?? PhraseMatcher.silentPhrase {
+    @Published var silentPhrase = PhraseSlot.silentPhrase.savedValue() {
         didSet { UserDefaults.standard.set(silentPhrase, forKey: "silentPhrase"); updatePhrases() }
     }
-    @Published var silencePhrase = UserDefaults.standard.string(forKey: "silencePhrase") ?? PhraseMatcher.silencePhrase {
+    @Published var silencePhrase = PhraseSlot.silencePhrase.savedValue() {
         didSet { UserDefaults.standard.set(silencePhrase, forKey: "silencePhrase"); updatePhrases() }
     }
-    @Published var unmutePhrase = UserDefaults.standard.string(forKey: "unmutePhrase") ?? PhraseMatcher.unmutePhrase {
+    @Published var unmutePhrase = PhraseSlot.unmutePhrase.savedValue() {
         didSet { UserDefaults.standard.set(unmutePhrase, forKey: "unmutePhrase"); updatePhrases() }
     }
-    @Published var unsilencePhrase = UserDefaults.standard.string(forKey: "unsilencePhrase") ?? PhraseMatcher.unsilencePhrase {
+    @Published var unsilencePhrase = PhraseSlot.unsilencePhrase.savedValue() {
         didSet { UserDefaults.standard.set(unsilencePhrase, forKey: "unsilencePhrase"); updatePhrases() }
+    }
+    @Published var phraseDictionaries = UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]] ?? [:] {
+        didSet { UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); rebuildPhraseDictionaries(); updatePhrases() }
+    }
+    private(set) var matchingDictionaries = PhraseDictionaries(Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.compactMap { slot in
+        (UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]])?[slot.rawValue].map { (PhraseMatcher.words(slot.defaultText).joined(), $0) }
+    }))
+    private func rebuildPhraseDictionaries() {
+        matchingDictionaries = PhraseDictionaries(Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.compactMap { slot in
+            phraseDictionaries[slot.rawValue].map { (PhraseMatcher.words(slot.defaultText).joined(), $0) }
+        }))
+    }
+    func pattern(for slot: PhraseSlot) -> PhrasePattern {
+        PhrasePattern(slot: slot, text: self[keyPath: phraseKeyPath(for: slot)], similar: similarPhrases, dictionaries: matchingDictionaries)
+    }
+    var phrasePatterns: [PhrasePattern] { PhraseSlot.allCases.map { pattern(for: $0) } }
+    private func patterns(for action: VoiceAudioAction) -> [PhrasePattern] {
+        switch action {
+        case .muteMicrophone: return [pattern(for: .mutePhrase)]
+        case .unmuteMicrophone: return [pattern(for: .unmutePhrase)]
+        case .silenceSpeakers: return [pattern(for: .silentPhrase), pattern(for: .silencePhrase)]
+        case .unsilenceSpeakers: return [pattern(for: .unsilencePhrase)]
+        }
+    }
+    func phraseKeyPath(for slot: PhraseSlot) -> ReferenceWritableKeyPath<GateModel, String> {
+        switch slot {
+        case .wakePhrase: return \.wakePhrase
+        case .sleepPhrase: return \.sleepPhrase
+        case .mutePhrase: return \.mutePhrase
+        case .unmutePhrase: return \.unmutePhrase
+        case .silentPhrase: return \.silentPhrase
+        case .silencePhrase: return \.silencePhrase
+        case .unsilencePhrase: return \.unsilencePhrase
+        }
     }
     var controlPhrases: [String] { VoiceAudioAction.allCases.flatMap { phrases(for: $0) } }
     private func phrases(for action: VoiceAudioAction) -> [String] {
@@ -658,7 +692,7 @@ import SwiftUI
         finishedStartupObservation = nil
         let context = VoiceStartContext()
         voiceStartContext = context
-        startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, phrase: wakePhrase, similar: similarPhrases)
+        startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, pattern: pattern(for: .wakePhrase))
         context.prepareNewCall = { [weak self, weak context] in
             guard let self, let context, self.voiceStartContext === context,
                   var capture = self.startupSpeech, capture.id == context.id else { return }
@@ -770,15 +804,16 @@ import SwiftUI
     }
     private func checkStandaloneWake() {
         guard enabled, detectionRunning else { return }
+        let wakePattern = pattern(for: .wakePhrase), endPattern = pattern(for: .sleepPhrase)
         if !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
             && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
-            && endPhrase.pollEnd(at: Diagnostics.now, phrase: sleepPhrase, similar: similarPhrases) {
+            && endPhrase.poll(at: Diagnostics.now, phrase: sleepPhrase, similar: endPattern.similar, rejectNegated: true, ending: true, patterns: [endPattern]) {
             for action in VoiceAudioAction.allCases {
                 let values = phrases(for: action)
-                if let first = values.first { audioPhraseDetectors[action, default: StandaloneWake()].cancelPending(phrase: first, endPhrase: sleepPhrase, similar: similarPhrases, alternatives: Array(values.dropFirst())) }
+                if !values.isEmpty { audioPhraseDetectors[action, default: StandaloneWake()].cancelPending(patterns: patterns(for: action), endPattern: endPattern) }
             } // An explicit End wins over audio commands in the same transcript.
             cancelStartupSpeech()
-            standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
+            standaloneWake.cancelPending(patterns: [wakePattern], endPattern: endPattern)
             Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
             // Ethan's "buy chat" / Bye Chat gets its cue when recognized, even
             // while cancelling an opening or when Voice is already off. Native
@@ -793,7 +828,7 @@ import SwiftUI
         let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int)? in
             let values = phrases(for: action)
             guard let first = values.first,
-                  audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first, similar: similarPhrases, alternatives: Array(values.dropFirst()), rejectNegated: true),
+                  audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first, similar: similarPhrases, alternatives: Array(values.dropFirst()), rejectNegated: true, patterns: patterns(for: action)),
                   let position = audioPhraseDetectors[action]?.acceptedRange?.lowerBound else { return nil }
             return (action, position)
         }.sorted { $0.position < $1.position }
@@ -801,8 +836,8 @@ import SwiftUI
             // Reserve synchronously, as beginVoice does. Consume busy commands
             // rather than replaying a surprise mute when an opening/End finishes.
             guard !busy, !quitting else { return }
-            for phrase in controlPhrases {
-                standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: phrase, similar: similarPhrases) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
+            for pattern in phrasePatterns.dropFirst(2) {
+                standaloneWake.cancelPending(patterns: [wakePattern], endPattern: pattern) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
             }
             busy = true
             let token = generation
@@ -836,7 +871,7 @@ import SwiftUI
             return
         }
         guard enabled, detectionRunning,
-              standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases, onDecision: { decision, quiet, stable in
+              standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: wakePattern.similar, patterns: [wakePattern], onDecision: { decision, quiet, stable in
                   Diagnostics.shared.record("phrase.wake.evaluated", numbers: ["quiet_s": quiet, "stable_s": stable], info: ["decision": decision])
               }) else { return }
         Diagnostics.shared.record("phrase.wake.detected", info: ["contextChecked": "true", "busy": String(busy)])

@@ -18,8 +18,8 @@ struct StandaloneWake {
     }
     // End uses the same direct-address filter as wake and mute. B Chat is
     // only a safe discussion name, never an extra command alias.
-    mutating func pollEnd(at time: Double, phrase: String, similar: Bool) -> Bool {
-        poll(at: time, phrase: phrase, similar: similar, rejectNegated: true, ending: true)
+    mutating func pollEnd(at time: Double, phrase: String, similar: Bool, dictionaries: PhraseDictionaries = .init()) -> Bool {
+        poll(at: time, phrase: phrase, similar: similar, rejectNegated: true, ending: true, dictionaries: dictionaries)
     }
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     private var context: [String] = []
@@ -35,7 +35,8 @@ struct StandaloneWake {
     private var revision = 0
     private var checkedRevision = -1
     private var waitingForPause = false
-    private var configuration = ""
+    private var configuration: [PhrasePattern] = []
+    private var rejectsNegated = false
     private(set) var acceptedRange: Range<Int>?
 
     mutating func reset() { self = StandaloneWake(requiredPause: requiredPause) }
@@ -73,17 +74,18 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false,
+    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
-        let key = "\(phrase)|\(similar)|\(alternatives)|\(rejectNegated)|\(ending)"
-        if configuration != key { configuration = key; checkedRevision = -1 }
+        let patterns = patterns ?? ([phrase] + alternatives).map { PhrasePattern(text: $0, similar: similar, ending: ending, dictionaries: dictionaries) }
+        if configuration != patterns || rejectsNegated != rejectNegated {
+            configuration = patterns; rejectsNegated = rejectNegated; checkedRevision = -1
+        }
         guard heardSpeech, checkedRevision != revision || waitingForPause else { return false }
         // Alternative command wording shares one occurrence count, so a revised
         // hypothesis from "mute chat" to "silent chat" cannot toggle twice.
         var candidates: [(start: Int, end: Int)] = []
-        for candidatePhrase in [phrase] + alternatives {
-            candidates.append(contentsOf: matches(phrase: candidatePhrase, similar: similar, allowEndAddressEdit: ending))
-        }
+        for pattern in patterns { candidates.append(contentsOf: pattern.matches(in: context, timings: wordTimings)) }
+        candidates = Array(Set(candidates.map { $0.start..<$0.end })).map { ($0.lowerBound, $0.upperBound) } // Two aliases for one action can cover the same occurrence.
         candidates.sort { left, right in left.start == right.start ? left.end < right.end : left.start < right.start }
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
         let audioRanges: [Range<Double>?] = candidates.map { match in
@@ -100,7 +102,8 @@ struct StandaloneWake {
                     continue
                 }
             } else if index + 1 <= consumed { continue }
-            let weakSplit = !ending && similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
+            let weakSplit = patterns.contains { !$0.ending && $0.similar && PhraseMatcher.words($0.text) == ["hello", "chat"]
+                && $0.dictionaries[PhraseMatcher.words($0.text).joined()] == nil }
                 && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                 && sentenceStarts.contains { $0 > match.start && $0 < match.end }
             if isMention(start: match.start, end: match.end, rejectNegated: rejectNegated) || weakSplit {
@@ -158,23 +161,22 @@ struct StandaloneWake {
         } else { consumedAudioRanges.append(range) }
     }
 
-    mutating func cancelPending(phrase: String, endPhrase: String, similar: Bool, alternatives: [String] = []) {
-        // An end command can arrive before this settled-text poll. Do not let
-        // that earlier greeting reopen Voice after the end was handled.
-        guard let end = matches(phrase: endPhrase, similar: similar, allowEndAddressEdit: true).last?.end else { return }
-        let earlier = ([phrase] + alternatives).flatMap { matches(phrase: $0, similar: similar) }.filter { $0.end <= end }
+    mutating func cancelPending(phrase: String, endPhrase: String, similar: Bool, alternatives: [String] = [], dictionaries: PhraseDictionaries = .init()) {
+        cancelPending(patterns: ([phrase] + alternatives).map { PhrasePattern(text: $0, similar: similar, dictionaries: dictionaries) },
+            endPattern: PhrasePattern(text: endPhrase, similar: similar, ending: true, dictionaries: dictionaries))
+    }
+    mutating func cancelPending(patterns: [PhrasePattern], endPattern: PhrasePattern) {
+        // End and audio commands consume earlier wakes using the same slot rules that accepted them.
+        guard let end = endPattern.matches(in: context, timings: wordTimings).last?.end else { return }
+        let earlier = Array(Set(patterns.flatMap { $0.matches(in: context, timings: wordTimings) }.filter { $0.end <= end }.map { $0.start..<$0.end })) // Count the same ranges as poll when two spellings share one action.
         consumed = max(consumed, earlier.count)
         if let wordTimings, wordTimings.map(\.word) == context {
             for match in earlier {
-                let start = wordTimings[match.start].start, finish = wordTimings[match.end - 1].end
+                let start = wordTimings[match.lowerBound].start, finish = wordTimings[match.upperBound - 1].end
                 if start.isFinite, finish.isFinite, start <= finish { rememberConsumed(start..<max(finish, start.nextUp)) }
             }
         }
         checkedRevision = -1
-    }
-
-    private func matches(phrase: String, similar: Bool, allowEndAddressEdit: Bool = false) -> [(start: Int, end: Int)] {
-        PhraseMatcher.matches(in: context, phrase: phrase, similar: similar, ending: allowEndAddressEdit, timings: wordTimings)
     }
 
     private func isMention(start: Int, end: Int, rejectNegated: Bool) -> Bool {

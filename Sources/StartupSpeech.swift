@@ -356,7 +356,7 @@ final class StartupSpeechFile: @unchecked Sendable {
     }
 }
 
-// Preserve partial-transcript corrections, including joined/fuzzy wake spellings.
+// Preserve partial-transcript corrections, including explicit wake dictionary spellings.
 // Only the accepted occurrence is stripped; earlier background speech stays out.
 struct StartupSpeechBuffer {
     enum Alignment: String { case wake, baseline, context, unmatchedWake, unmatchedBaseline }
@@ -374,8 +374,7 @@ struct StartupSpeechBuffer {
     // own microphone is normally live, so later words reach it natively.
     static let openLimitSeconds = 30.0
     let id: UUID
-    private let phrase: String
-    private let similar: Bool
+    private let pattern: PhrasePattern
     private var anchorStart: Int?
     private var baseline: [String]?
     private var completed = ""
@@ -391,7 +390,10 @@ struct StartupSpeechBuffer {
     var text: String { String([completed, current].filter { !$0.isEmpty }.joined(separator: " ").prefix(StartupSpeechFile.textLimit)) }
 
     init(id: UUID, text: String, wakeRange: Range<Int>?, phrase: String, similar: Bool) {
-        self.id = id; self.phrase = phrase; self.similar = similar
+        self.init(id: id, text: text, wakeRange: wakeRange, pattern: .init(text: phrase, similar: similar))
+    }
+    init(id: UUID, text: String, wakeRange: Range<Int>?, pattern: PhrasePattern) {
+        self.id = id; self.pattern = pattern
         anchorStart = wakeRange?.lowerBound
         baseline = wakeRange == nil ? PhraseMatcher.words(text) : nil
         observe(text)
@@ -431,9 +433,10 @@ struct StartupSpeechBuffer {
         // A revision that can't be aligned is still recognizer activity: never
         // call it a pause while the HUD keeps changing. The limit still applies.
         if let anchorStart {
-            let lower = max(0, anchorStart - 8), upper = min(words.count, anchorStart + 12)
+            let aliasSpan = pattern.dictionaries.maximumSpan(for: PhraseMatcher.words(pattern.text).joined())
+            let lower = max(0, anchorStart - 8), upper = min(words.count, anchorStart + max(12, aliasSpan))
             guard lower < upper,
-                  let match = PhraseMatcher.matches(in: Array(words[lower..<upper]), phrase: phrase, similar: similar)
+                  let match = pattern.matches(in: Array(words[lower..<upper]))
                     .min(by: { abs($0.start + lower - anchorStart) < abs($1.start + lower - anchorStart) }) else { alignment = .unmatchedWake; unchangedSeconds = 0; return }
             offset = match.end + lower
             alignment = .wake
@@ -447,18 +450,18 @@ struct StartupSpeechBuffer {
         let changed = current != String(tail.prefix(StartupSpeechFile.textLimit))
         if changed { utteranceEnded = false; unchangedSeconds = 0 }
         current = String(tail.prefix(StartupSpeechFile.textLimit))
-        if changed { hasOpeningWords = Self.containsOpeningWords(self.text, phrase: phrase, similar: similar) }
+        if changed { hasOpeningWords = Self.containsOpeningWords(self.text, pattern: pattern) }
         truncated = truncated || completed.count + current.count + (completed.isEmpty ? 0 : 1) > StartupSpeechFile.textLimit || tail.count > StartupSpeechFile.textLimit
     }
 
     // A retry such as "Hello chat. Hello chat." must not make a wake-only
     // buffer eligible for the two-second finish before the question arrives.
     // Retain those words, but classify only on text updates, never per frame.
-    private static func containsOpeningWords(_ text: String, phrase: String, similar: Bool) -> Bool {
+    private static func containsOpeningWords(_ text: String, pattern: PhrasePattern) -> Bool {
         let words = PhraseMatcher.words(text)
         guard !words.isEmpty else { return false }
         var end = 0
-        for match in PhraseMatcher.matches(in: words, phrase: phrase, similar: similar) {
+        for match in pattern.matches(in: words) {
             guard match.start == end else { break }
             end = match.end
         }

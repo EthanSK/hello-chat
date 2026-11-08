@@ -28,7 +28,7 @@ import Foundation
         check(styled.map(\.text).joined() == original, "Never rewrite recognized text, punctuation or emoji")
         check(styled.filter { $0.kind == .exact }.map(\.text) == ["Hello, CHAT"], "Exact normalized match has original source range")
         check(styled.filter { $0.kind == .dictionary }.map(\.text) == ["As well chat", "HelloChad"], "Dictionary ranges share the detector")
-        check(runs("Hey Chatt", "Hey Chat").first?.kind == .fuzzy, "Custom phrase edit classified separately")
+        check(runs("Hey Chatt", "Hey Chat").allSatisfy { $0.kind == nil }, "Custom phrase no longer gets fuzzy highlights")
         check(runs("Hey Chat", "Hey Chat").first?.kind == .exact, "Custom exact phrase wins")
         check(runs("H E L L O C H A T").map(\.text).joined() == "H E L L O C H A T", "Spelled letters preserve text around the detector's accepted span")
         check(runs("Hello Chat / Harlow Chat", "Hello Chat", false).filter { $0.kind != nil }.count == 1, "Exact-only preference excludes aliases")

@@ -17,7 +17,7 @@ enum PhraseHighlights {
     }
 
     static func runs(in text: String, phrase: String, endPhrase: String = "", similar: Bool, limit: Int? = nil,
-                     controlPhrases: [String] = PhraseMatcher.controlPhrases) -> [Run] {
+                     controlPhrases: [String] = PhraseMatcher.controlPhrases, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil) -> [Run] {
         let visibleLimit = limit ?? text.count
         guard !text.isEmpty, visibleLimit > 0 else { return [] }
         let visibleStart = text.index(text.endIndex, offsetBy: -min(visibleLimit, text.count))
@@ -34,15 +34,14 @@ enum PhraseHighlights {
             cursor = end
         }
         var candidates: [Span] = []
-        let phrases = [(phrase, false, similar), (endPhrase, true, similar)]
-            + controlPhrases.map { ($0, false, similar) }
-        for (savedPhrase, ending, allowSimilar) in phrases {
-            // End phrases use the detector's closing-command dictionary too:
-            // Ethan's "by chat" must colour like the accepted Bye Chat variant.
-            for match in PhraseMatcher.matches(in: tokens, phrase: savedPhrase, similar: allowSimilar, ending: ending) {
+        let phrases = patterns ?? ([PhrasePattern(text: phrase, similar: similar, dictionaries: dictionaries),
+            PhrasePattern(text: endPhrase, similar: similar, ending: true, dictionaries: dictionaries)]
+            + controlPhrases.map { PhrasePattern(text: $0, similar: similar, dictionaries: dictionaries) })
+        // End patterns retain the closing dictionary, so detection and highlighting agree.
+        for pattern in phrases {
+            for match in pattern.matches(in: tokens) {
                 guard ranges[match.start].lowerBound >= visibleStart,
-                      let kind = PhraseMatcher.matchKind(tokens[match.start..<match.end].joined(),
-                          to: savedPhrase, similar: allowSimilar, ending: ending) else { continue }
+                      let kind = pattern.kind(for: tokens[match.start..<match.end].joined()) else { continue }
                 candidates.append(Span(start: match.start, end: match.end, kind: kind))
             }
         }

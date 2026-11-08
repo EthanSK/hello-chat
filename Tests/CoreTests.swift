@@ -21,7 +21,7 @@ import CoreGraphics
         check(!PhraseMatcher.hasOpenEndedWakeVariants("Hey Lantern", similar: true, ending: false), "Custom phrase does not claim the default wake rule")
         check(PhraseMatcher.knownSpellings(for: "Unsilence Chat", similar: true, ending: false).contains("unsilencedchat"), "Dictionary includes the archived ending-D variant")
         check(!PhraseMatcher.knownSpellings(for: "Mute Chat", similar: true, ending: false).contains("unmutechat"), "Dictionary cannot cross audio directions")
-        check(PhraseMatcher.knownSpellings(for: "Bye Lantern", similar: true, ending: true).contains("buylantern"), "Custom End dictionary includes its two-edit homophone from the canonical address set")
+        check(PhraseMatcher.knownSpellings(for: "Bye Lantern", similar: true, ending: true) == ["Bye Lantern"], "Custom End phrases no longer generate homophones")
         for (positive, inverse, variants) in [("Mute Chat", "Unmute Chat", ["un mute chat", "un-mute chat"]),
                                                ("Silence Chat", "Unsilence Chat", ["un silence chat", "un-silence chat"])] {
             for text in variants {
@@ -172,9 +172,10 @@ import CoreGraphics
         check(matcher.consume("HeyChat", wake: "Hey Chat", sleep: "Thanks Chat") == .wake, "Joined wake phrase")
         check(matcher.consume("Hey Chat", wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == nil, "Spacing revision cannot repeat a command")
         check(matcher.consume("Hey Chat thankschat", wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == .sleep, "Joined end phrase after wake")
-        for positive in ["hey chad", "hey chatt", "hey chta", "Hey, CHAD!", "hey c hat", "hi chat", "HiChat", "hay chat"] {
+        check(PhraseMatcher.equivalent("hey c hat", to: "Hey Chat", similar: true), "Spacing normalization still accepts exact saved letters")
+        for positive in ["hey chad", "hey chatt", "hey chta", "Hey, CHAD!", "hi chat", "HiChat", "hay chat"] {
             matcher.reset()
-            check(matcher.consume(positive, wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == .wake, "Small spelling difference: \(positive)")
+            check(matcher.consume(positive, wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == nil, "Custom phrase rejects spelling difference: \(positive)")
         }
         for negative in ["hi Charles", "hi chad", "hay cat", "HR", "hey that", "hey cat", "hey Janet", "hey chatter", "chat", "thanks that", "the chat", "hey charity"] {
             matcher.reset()
@@ -183,9 +184,9 @@ import CoreGraphics
         matcher.reset()
         check(PhraseMatcher.equivalent("hi chat", to: "Hey Chat", similar: false) == false, "Exact mode rejects alternate address")
         check(matcher.consume("Hey Chad", wake: "Hey Chat", sleep: "Thanks Chat", similar: false) == nil, "Exact mode remains available")
-        check(matcher.consume("Hey Chad", wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == .wake, "Fuzzy wake after exact miss")
+        check(matcher.consume("Hey Chad", wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == nil, "Custom phrase remains exact with alternatives on")
         check(matcher.consume("Hey Chatt", wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == nil, "A revised spelling at the same start cannot trigger twice")
-        check(matcher.consume("Hey Chatt tell me thanks chad", wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == .sleep, "Fuzzy end after earlier wake")
+        check(matcher.consume("Hey Chatt tell me thanks chad", wake: "Hey Chat", sleep: "Thanks Chat", similar: true) == nil, "Custom end remains exact with alternatives on")
         check(GateDecision.set(.muted, current: nil) == .unavailable, "Unknown state never toggles")
         check(GateDecision.set(.listening, current: nil) == .unavailable, "Unknown wake never toggles")
         check(GateDecision.set(.muted, current: .muted) == .unchanged, "Already muted stays muted")

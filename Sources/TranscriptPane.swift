@@ -11,6 +11,7 @@ struct TranscriptPane: View {
     let viewportHeight: CGFloat
     let scale: Double
     var controlPhrases: [String] = PhraseMatcher.controlPhrases
+    var patterns: [PhrasePattern]? = nil
     @State private var top: CGFloat?
 
     private var height: CGFloat {
@@ -18,7 +19,7 @@ struct TranscriptPane: View {
     }
     var body: some View {
         NativeTranscript(segments: segments, phrase: phrase, endPhrase: endPhrase, similar: similar,
-                         enabled: enabled, scale: scale, controlPhrases: controlPhrases)
+                         enabled: enabled, scale: scale, controlPhrases: controlPhrases, patterns: patterns)
             .frame(height: height)
             .background {
                 GeometryReader { geometry in
@@ -41,6 +42,7 @@ private struct NativeTranscript: NSViewRepresentable {
     let enabled: Bool
     let scale: Double
     let controlPhrases: [String]
+    let patterns: [PhrasePattern]?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSScrollView {
@@ -71,7 +73,7 @@ private struct NativeTranscript: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let coordinator = context.coordinator
-        let configuration = HeardTranscript.HighlightCache.Configuration(phrase: phrase, endPhrase: endPhrase, similar: similar, controlPhrases: controlPhrases)
+        let configuration = HeardTranscript.HighlightCache.Configuration(phrase: phrase, endPhrase: endPhrase, similar: similar, controlPhrases: controlPhrases, patterns: patterns)
         let appearanceChanged = coordinator.configuration != configuration || coordinator.scale != scale
         coordinator.configuration = configuration; coordinator.scale = scale
         coordinator.latestSegments = segments

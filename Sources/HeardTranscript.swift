@@ -10,19 +10,20 @@ struct HeardTranscript: View, Equatable {
     let similar: Bool
     let enabled: Bool
     var controlPhrases: [String] = PhraseMatcher.controlPhrases
+    var patterns: [PhrasePattern]? = nil
     @State private var highlights = HighlightCache()
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.segments == rhs.segments && lhs.phrase == rhs.phrase
             && lhs.endPhrase == rhs.endPhrase && lhs.similar == rhs.similar
-            && lhs.enabled == rhs.enabled && lhs.controlPhrases == rhs.controlPhrases
+            && lhs.enabled == rhs.enabled && lhs.controlPhrases == rhs.controlPhrases && lhs.patterns == rhs.patterns
     }
     var body: some View {
         let values = segments ?? (text.isEmpty ? [] : [text])
         if values.isEmpty {
             Text(enabled ? "Nothing heard yet" : "Start listening to see what's heard")
         } else {
-            Text(highlights.render(values, configuration: .init(phrase: phrase, endPhrase: endPhrase, similar: similar, controlPhrases: controlPhrases)))
+            Text(highlights.render(values, configuration: .init(phrase: phrase, endPhrase: endPhrase, similar: similar, controlPhrases: controlPhrases, patterns: patterns)))
         }
     }
 
@@ -34,6 +35,7 @@ struct HeardTranscript: View, Equatable {
             let endPhrase: String
             let similar: Bool
             let controlPhrases: [String]
+            var patterns: [PhrasePattern]? = nil
         }
         private var configuration: Configuration?
         private var sources: [String] = []
@@ -63,7 +65,7 @@ struct HeardTranscript: View, Equatable {
         private func style(_ text: String, configuration: Configuration) -> AttributedString {
             var result = AttributedString()
             for run in PhraseHighlights.runs(in: text, phrase: configuration.phrase, endPhrase: configuration.endPhrase,
-                                            similar: configuration.similar, controlPhrases: configuration.controlPhrases) {
+                                            similar: configuration.similar, controlPhrases: configuration.controlPhrases, patterns: configuration.patterns) {
                 var part = AttributedString(run.text)
                 if let kind = run.kind {
                     let color: Color = kind == .exact ? .green : (kind == .dictionary ? .orange : .purple)

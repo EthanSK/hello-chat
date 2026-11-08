@@ -44,28 +44,147 @@ struct MicrophoneOwnership {
     }
 }
 
+// One list owns all seven default fields, their saved keys and their dictionary identity.
+enum PhraseSlot: String, CaseIterable, Identifiable {
+    case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .wakePhrase: return "Wake phrase"
+        case .sleepPhrase: return "End phrase"
+        case .mutePhrase: return "Mute phrase"
+        case .unmutePhrase: return "Unmute phrase"
+        case .silentPhrase: return "Silent phrase"
+        case .silencePhrase: return "Silence phrase"
+        case .unsilencePhrase: return "Unsilence phrase"
+        }
+    }
+    var defaultText: String {
+        switch self {
+        case .wakePhrase: return "Hello Chat"
+        case .sleepPhrase: return "Bye Chat"
+        case .mutePhrase: return "Mute Chat"
+        case .unmutePhrase: return "Unmute Chat"
+        case .silentPhrase: return "Silent Chat"
+        case .silencePhrase: return "Silence Chat"
+        case .unsilencePhrase: return "Unsilence Chat"
+        }
+    }
+    var ending: Bool { self == .sleepPhrase }
+    var identifier: String { self == .sleepPhrase ? "endPhrase" : rawValue }
+    func isDefault(_ text: String) -> Bool { PhraseMatcher.words(text) == PhraseMatcher.words(defaultText) }
+    func savedValue(in defaults: UserDefaults = .standard) -> String {
+        guard let saved = defaults.string(forKey: rawValue) else { return defaultText }
+        // Standardize only the old shipped lowercase audio defaults. Custom text stays verbatim.
+        return !ending && self != .wakePhrase && saved == defaultText.lowercased() ? defaultText : saved
+    }
+}
+
+// Dictionaries are explicit full phrases, one per line. Blank means the default phrase only.
+enum PhraseDictionary {
+    static let maximumBytes = 256 * 1024
+    static let maximumEntries = 2_000
+    enum ValidationError: LocalizedError {
+        case tooLarge, tooMany, invalidLine(Int), conflictingCommand(Int, String), notText
+        var errorDescription: String? {
+            switch self {
+            case .tooLarge: return "Dictionary must be 256 KB or smaller."
+            case .tooMany: return "Dictionary can contain up to 2,000 spellings."
+            case .invalidLine(let line): return "Line \(line) needs letters or numbers and at most 120 characters."
+            case .conflictingCommand(let line, let label): return "Line \(line) is already the default \(label.lowercased())."
+            case .notText: return "Choose a UTF-8 plain text file."
+            }
+        }
+    }
+    static func parse(_ text: String, for slot: PhraseSlot? = nil) throws -> [String] {
+        guard text.utf8.count <= maximumBytes else { throw ValidationError.tooLarge }
+        var entries: [String] = [], seen: Set<String> = []
+        for (index, line) in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines).enumerated() {
+            let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.isEmpty { continue }
+            guard value.count <= 120, !PhraseMatcher.words(value).isEmpty,
+                  !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                throw ValidationError.invalidLine(index + 1)
+            }
+            let normalized = PhraseMatcher.words(value).joined()
+            if let slot, let other = PhraseSlot.allCases.first(where: { PhraseMatcher.words($0.defaultText).joined() == normalized }),
+               slot != other, Set([slot, other]) != Set([.silentPhrase, .silencePhrase]) {
+                throw ValidationError.conflictingCommand(index + 1, other.label) // Keep explicit dictionaries from reversing another built-in command; Silent/Silence intentionally share an action.
+            }
+            if seen.insert(normalized).inserted { entries.append(value) }
+            guard entries.count <= maximumEntries else { throw ValidationError.tooMany }
+        }
+        return entries
+    }
+    static func read(_ url: URL, for slot: PhraseSlot? = nil) throws -> [String] {
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        let data = try file.read(upToCount: maximumBytes + 1) ?? Data()
+        guard data.count <= maximumBytes else { throw ValidationError.tooLarge }
+        guard let text = String(data: data, encoding: .utf8) else { throw ValidationError.notText }
+        return try parse(text.trimmingCharacters(in: CharacterSet(charactersIn: "\u{feff}")), for: slot)
+    }
+}
+
+struct PhraseDictionaries: Equatable {
+    private let spellings: [String: [String]]
+    private let normalized: [String: Set<String>]
+    private let spans: [String: Int]
+    init(_ spellings: [String: [String]] = [:]) {
+        self.spellings = spellings
+        normalized = spellings.mapValues { Set($0.map { PhraseMatcher.words($0).joined() }) }
+        spans = normalized.mapValues { $0.map(\.count).max() ?? 0 }
+    }
+    subscript(_ key: String) -> [String]? { spellings[key] }
+    func contains(_ candidate: String, for key: String) -> Bool { normalized[key]?.contains(candidate) == true }
+    func maximumSpan(for key: String) -> Int { spans[key] ?? 0 }
+}
+
+// Slot identity keeps an edited phrase exact even when its text happens to be another slot's default.
+struct PhrasePattern: Equatable {
+    let text: String
+    let similar: Bool
+    let ending: Bool
+    let dictionaries: PhraseDictionaries
+    init(text: String, similar: Bool, ending: Bool = false, dictionaries: PhraseDictionaries = .init()) {
+        self.text = text; self.similar = similar; self.ending = ending; self.dictionaries = dictionaries
+    }
+    init(slot: PhraseSlot, text: String, similar: Bool, dictionaries: PhraseDictionaries) {
+        self.init(text: text, similar: similar && slot.isDefault(text), ending: slot.ending, dictionaries: dictionaries)
+    }
+    func matches(in tokens: [String], timings: [(word: String, start: Double, end: Double)]? = nil) -> [(start: Int, end: Int)] {
+        PhraseMatcher.matches(in: tokens, phrase: text, similar: similar, ending: ending, timings: timings, dictionaries: dictionaries)
+    }
+    func kind(for candidate: String) -> PhraseMatcher.MatchKind? {
+        PhraseMatcher.matchKind(candidate, to: text, similar: similar, ending: ending, dictionaries: dictionaries)
+    }
+}
+
 struct PhraseMatcher {
     enum MatchKind: String { case exact, dictionary, fuzzy }
-    static let mutePhrase = "mute chat", unmutePhrase = "unmute chat"
-    static let silentPhrase = "silent chat", silencePhrase = "silence chat", unsilencePhrase = "unsilence chat"
+    static let mutePhrase = PhraseSlot.mutePhrase.defaultText.lowercased(), unmutePhrase = PhraseSlot.unmutePhrase.defaultText.lowercased()
+    static let silentPhrase = PhraseSlot.silentPhrase.defaultText.lowercased(), silencePhrase = PhraseSlot.silencePhrase.defaultText.lowercased(), unsilencePhrase = PhraseSlot.unsilencePhrase.defaultText.lowercased()
     static let microphonePhrases = [mutePhrase]
     static let controlPhrases = [mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase]
+    private static let defaultEndings = Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { (words($0.defaultText).joined(), $0.ending) }) // Normalize defaults once; this lookup runs for every candidate span.
     private static let audioDictionaryNames: Set<String> = ["chat", "chad", "chatt"] // Deliberately narrower than the wake dictionary; never turn "unmute" into "mute".
-    private static let customEndAddresses: Set<String> = ["by", "byte", "buy"]
-    private static let customWakeAddresses: Set<String> = ["hi", "hay"]
 
-    static func hasOpenEndedWakeVariants(_ phrase: String, similar: Bool, ending: Bool) -> Bool {
-        usesWakeDictionary(words(phrase), similar: similar, ending: ending)
+    static func hasOpenEndedWakeVariants(_ phrase: String, similar: Bool, ending: Bool, dictionaries: PhraseDictionaries = .init()) -> Bool {
+        dictionaries[words(phrase).joined()] == nil && usesWakeDictionary(words(phrase), similar: similar, ending: ending)
     }
     private static func usesWakeDictionary(_ expected: [String], similar: Bool, ending: Bool) -> Bool {
         similar && expected == ["hello", "chat"] && !ending
     }
     // The information popover derives its known spellings from the matcher.
     // It is not an exhaustive list of spacing or open-ended wake combinations.
-    static func knownSpellings(for phrase: String, similar: Bool, ending: Bool) -> [String] {
+    static func knownSpellings(for phrase: String, similar: Bool, ending: Bool, dictionaries: PhraseDictionaries = .init()) -> [String] {
         let expected = words(phrase), compact = expected.joined()
         guard !compact.isEmpty else { return [] }
         guard similar else { return [phrase] }
+        guard let slot = PhraseSlot.allCases.first(where: { $0.isDefault(phrase) && $0.ending == ending }) else { return [phrase] }
+        if let entries = dictionaries[words(slot.defaultText).joined()] {
+            return [phrase] + entries.filter { words($0).joined() != compact }
+        }
         var candidates: Set<String>
         if usesWakeDictionary(expected, similar: similar, ending: ending) {
             candidates = wakeVariants.union(weakWakeVariants)
@@ -74,12 +193,7 @@ struct PhraseMatcher {
         } else if controlPhrases.contains(expected.joined(separator: " ")) {
             candidates = combinations(oneEdits(expected[0]), audioDictionaryNames)
         } else {
-            candidates = oneEdits(compact)
-            if !ending, expected.count == 2, expected[0] == "hey", let last = expected.last {
-                candidates.formUnion(combinations(customWakeAddresses, [last]))
-            } else if ending, expected.count == 2, expected[0] == "bye", let last = expected.last {
-                candidates.formUnion(combinations(customEndAddresses, [last]))
-            }
+            return [phrase]
         }
         candidates.remove(compact)
         return [phrase] + candidates.filter {
@@ -90,8 +204,8 @@ struct PhraseMatcher {
     // Presentation uses the same acceptance rules as command detection. A
     // highlighted phrase is a textual match, not proof a Voice action ran.
     static func matchKind(_ candidate: String, to phrase: String, similar: Bool,
-                          ending: Bool = false) -> MatchKind? {
-        guard equivalent(candidate, to: phrase, similar: similar, allowEndAddressEdit: ending) else { return nil }
+                          ending: Bool = false, dictionaries: PhraseDictionaries = .init()) -> MatchKind? {
+        guard equivalent(candidate, to: phrase, similar: similar, allowEndAddressEdit: ending, dictionaries: dictionaries) else { return nil }
         let expected = words(phrase)
         if words(candidate).joined() == expected.joined() { return .exact }
         if (!ending && expected == ["hello", "chat"]) || (ending && expected == ["bye", "chat"])
@@ -224,12 +338,16 @@ struct PhraseMatcher {
     static func words(_ text: String) -> [String] {
         text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
     }
-    static func equivalent(_ candidate: String, to phrase: String, similar: Bool, allowEndAddressEdit: Bool = false) -> Bool {
+    static func equivalent(_ candidate: String, to phrase: String, similar: Bool, allowEndAddressEdit: Bool = false, dictionaries: PhraseDictionaries = .init()) -> Bool {
         let expected = words(phrase), actual = words(candidate).joined()
-        return equivalentCompact(actual, expected: expected, compact: expected.joined(), similar: similar, allowEndAddressEdit: allowEndAddressEdit)
+        return equivalentCompact(actual, expected: expected, compact: expected.joined(), similar: similar, allowEndAddressEdit: allowEndAddressEdit, dictionaries: dictionaries)
     }
-    private static func equivalentCompact(_ actual: String, expected: [String], compact: String, similar: Bool, allowEndAddressEdit: Bool) -> Bool {
+    private static func equivalentCompact(_ actual: String, expected: [String], compact: String, similar: Bool, allowEndAddressEdit: Bool, dictionaries: PhraseDictionaries = .init()) -> Bool {
         if actual == compact { return !compact.isEmpty }
+        guard similar, defaultEndings[compact] == allowEndAddressEdit else { return false }
+        if dictionaries[compact] != nil {
+            return dictionaries.contains(actual, for: compact) // Explicit overrides replace generated alternatives, including the open-ended wake rule.
+        }
         if usesWakeDictionary(expected, similar: similar, ending: allowEndAddressEdit) {
             // Ethan wants "hello" followed by any word beginning C H to wake.
             // The existing compact form also preserves joined/spelled variants.
@@ -250,31 +368,7 @@ struct PhraseMatcher {
                     && oneEditApart(Array(verb), Array(expectedVerb)))
             }
         }
-        // Keep the address and the start of the name intact. A single spelling
-        // edit can cover Chat/Chad/Chatt without accepting HR, Hey that or Hey cat.
-        guard similar, expected.count >= 2, let last = expected.last, last.count >= 4 else { return false }
-        // Ethan's "ByteChat" / "B-Y chat" refer to the Bye Chat end command.
-        // Accept speech-to-text homophones only for Bye, with the full saved
-        // name intact; do not broaden wake phrases or exact matching mode.
-        if allowEndAddressEdit, expected.count == 2, expected[0] == "bye",
-           customEndAddresses.contains(where: { actual == $0 + last }) { return true }
-        // Ethan's repeated "by charts" / "by chats" are confirmed mishearings
-        // of Bye Chat. Keep this end-only dictionary specific to that name.
-        if allowEndAddressEdit, expected == ["bye", "chat"],
-           ["bye", "by", "byte", "buy"].contains(where: { address in
-               ["chart", "charts", "chats"].contains { actual == address + $0 }
-           }) { return true }
-        // Local short-phrase recognition can spell the spoken address Hi/Hay.
-        // Only allow those addresses with the exact saved name, in fuzzy mode.
-        if !allowEndAddressEdit, expected.count == 2, expected[0] == "hey",
-           customWakeAddresses.contains(where: { actual == $0 + last }) { return true }
-        let anchor = expected.dropLast().joined() + last.prefix(2)
-        if actual.hasPrefix(anchor) { return oneEditApart(Array(actual), Array(compact)) }
-        // End phrases may contain a short homophone such as Bye/By. Keep the
-        // complete name and address prefix, and still allow only one total edit.
-        guard allowEndAddressEdit, expected.count == 2, let first = expected.first,
-              first.count >= 2, actual.hasPrefix(first.prefix(2)), actual.hasSuffix(last) else { return false }
-        return oneEditApart(Array(actual), Array(compact))
+        return false // Edited/custom phrases never acquire generated spelling alternatives.
     }
     private static func oneEditApart(_ a: [Character], _ b: [Character]) -> Bool {
         guard abs(a.count - b.count) <= 1 else { return false }
@@ -290,12 +384,13 @@ struct PhraseMatcher {
         return edits + (a.count - i) + (b.count - j) <= 1
     }
     static func matches(in tokens: [String], phrase: String, similar: Bool, ending: Bool = false,
-                        timings: [(word: String, start: Double, end: Double)]? = nil) -> [(start: Int, end: Int)] {
+                        timings: [(word: String, start: Double, end: Double)]? = nil, dictionaries: PhraseDictionaries = .init()) -> [(start: Int, end: Int)] {
         let expected = words(phrase)
         guard !expected.isEmpty else { return [] }
         let compact = expected.joined()
         let common = similar && (expected == ["hello", "chat"] && !ending || expected == ["bye", "chat"] && ending)
-        let maxSpan = common ? maximumDefaultSpan : expected.count + 1
+        let overrideSpan = similar ? dictionaries.maximumSpan(for: compact) : 0
+        let maxSpan = max(common ? maximumDefaultSpan : expected.count + 1, overrideSpan) // Explicit aliases can be longer; preserve existing scan bounds for every unmodified phrase.
         var result: [(start: Int, end: Int)] = [], start = 0
         while start < tokens.count {
             if start > 0, tokens[start - 1] == "un", controlPhrases.contains(expected.joined(separator: " ")),
@@ -312,7 +407,7 @@ struct PhraseMatcher {
                 // candidate and saved phrase again for every possible span.
                 candidate = tokens[start..<end].joined()
                 guard equivalentCompact(candidate, expected: expected, compact: compact,
-                                        similar: similar, allowEndAddressEdit: ending) else { continue }
+                                        similar: similar, allowEndAddressEdit: ending, dictionaries: dictionaries) else { continue }
                 guard closeInTime(start: start, end: end, tokens: tokens, timings: timings) else { continue }
                 result.append((start, end)); start = end; found = true; break
             }

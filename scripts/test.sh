@@ -1,4 +1,5 @@
 #!/bin/zsh
+# Compile and run the local regression suites with injected transports, never live Voice calls.
 set -euo pipefail
 cd "${0:A:h:h}"
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
@@ -59,3 +60,6 @@ swiftc -swift-version 5 -parse-as-library Sources/DesktopSession.swift Tests/Des
 
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/PhraseHighlights.swift Sources/HeardTranscript.swift Tests/TranscriptRenderingTests.swift -o "$build_dir/TranscriptRenderingTests" -framework SwiftUI
 "$build_dir/TranscriptRenderingTests"
+
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/StandaloneWake.swift Sources/PhraseHighlights.swift Tests/PhraseDictionaryTests.swift -o "$build_dir/PhraseDictionaryTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
+"$build_dir/PhraseDictionaryTests"

@@ -403,7 +403,7 @@ struct MainView: View {
                     TranscriptPane(segments: model.transcriptHistory.segments, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
                                    similar: model.similarPhrases, enabled: model.enabled,
                                    viewportHeight: viewport.size.height, scale: zoom.scale,
-                                   controlPhrases: model.controlPhrases)
+                                   controlPhrases: model.controlPhrases, patterns: model.phrasePatterns)
                 } header: {
                     HStack {
                         Text("Heard (local model)")
@@ -507,66 +507,147 @@ struct OpenSettingsButton: View {
 private struct PhraseFields: View {
     @ObservedObject var model: GateModel
     var body: some View {
-        PhraseField(label: "Wake phrase", text: $model.wakePhrase, similar: model.similarPhrases, identifier: "wakePhrase")
-        PhraseField(label: "End phrase", text: $model.sleepPhrase, similar: model.similarPhrases, ending: true, identifier: "endPhrase")
-        PhraseField(label: "Mute phrase", text: $model.mutePhrase, similar: model.similarPhrases, identifier: "mutePhrase")
-        PhraseField(label: "Unmute phrase", text: $model.unmutePhrase, similar: model.similarPhrases, identifier: "unmutePhrase")
-        PhraseField(label: "Silent phrase", text: $model.silentPhrase, similar: model.similarPhrases, identifier: "silentPhrase")
-        PhraseField(label: "Silence phrase", text: $model.silencePhrase, similar: model.similarPhrases, identifier: "silencePhrase")
-        PhraseField(label: "Unsilence phrase", text: $model.unsilencePhrase, similar: model.similarPhrases, identifier: "unsilencePhrase")
+        ForEach(PhraseSlot.allCases) { slot in
+            PhraseField(slot: slot, text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
+                set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }), similar: model.similarPhrases,
+                dictionary: Binding(get: { model.phraseDictionaries[slot.rawValue] },
+                    set: { model.phraseDictionaries[slot.rawValue] = $0 }))
+        }
     }
 }
 
 private struct PhraseField: View {
-    let label: String
+    let slot: PhraseSlot
     @Binding var text: String
     let similar: Bool
-    var ending = false
-    let identifier: String
+    @Binding var dictionary: [String]?
     @State private var showingSpellings = false
+    private var available: Bool { slot.isDefault(text) }
     var body: some View {
-        HStack(spacing: 5) { // Interactive label content in LabeledContent was merged into the text field's accessibility label.
-            Text(label).fixedSize(horizontal: true, vertical: false)
+        HStack(spacing: 5) { // Keep the button separate so Accessibility does not merge it into the field label.
+            Text(slot.label).fixedSize(horizontal: true, vertical: false)
             Button { showingSpellings = true } label: { Image(systemName: "info.circle") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
-                .accessibilityLabel("\(label) spellings").accessibilityIdentifier(identifier + "Info")
+                .disabled(!available)
+                .help(available ? "Recognized spellings" : "Spellings are only available for “\(slot.defaultText)”. Custom phrases match exactly.")
+                .accessibilityLabel("\(slot.label) spellings").accessibilityIdentifier(slot.identifier + "Info")
                 .popover(isPresented: $showingSpellings) {
-                    PhraseSpellings(phrase: text, similar: similar, ending: ending)
+                    PhraseSpellings(slot: slot, phrase: text, similar: similar, dictionary: $dictionary)
                 }
             Spacer(minLength: 8)
-            TextField(label, text: $text).labelsHidden()
-                .multilineTextAlignment(.trailing).accessibilityLabel(label).accessibilityIdentifier(identifier)
+            TextField(slot.label, text: $text).labelsHidden()
+                .multilineTextAlignment(.trailing).accessibilityLabel(slot.label).accessibilityIdentifier(slot.identifier)
+            if !available {
+                Button { text = slot.defaultText } label: { Image(systemName: "arrow.counterclockwise") }
+                    .buttonStyle(.plain).help("Restore default phrase")
+                    .accessibilityLabel("Restore default \(slot.label.lowercased())")
+                    .accessibilityIdentifier(slot.identifier + "Reset")
+            }
         }.accessibilityElement(children: .contain)
     }
 }
 
 private struct PhraseSpellings: View {
+    let slot: PhraseSlot
     let phrase: String
     let similar: Bool
-    let ending: Bool
+    @Binding var dictionary: [String]?
+    @Environment(\.dismiss) private var dismiss
     @State private var search = ""
     @State private var spellings: [String] = []
+    @State private var editing = false
+    @State private var draft = ""
+    @State private var error: String?
+    @State private var importing = false
+    @State private var loaded = false
+    private enum Focus: Hashable { case search, editor }
+    @FocusState private var focus: Focus?
+    private struct Configuration: Equatable {
+        let phrase: String
+        let similar: Bool
+        let dictionary: [String]?
+    }
+    private var dictionaries: PhraseDictionaries {
+        PhraseDictionaries(dictionary.map { [PhraseMatcher.words(slot.defaultText).joined(): $0] } ?? [:])
+    }
     private var matching: [String] {
         let query = PhraseMatcher.words(search).joined()
         return query.isEmpty ? spellings : spellings.filter { PhraseMatcher.words($0).joined().contains(query) }
     }
     var body: some View {
+        let visible = matching
+        let emptyDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         VStack(alignment: .leading, spacing: 10) {
-            Text("Recognized spellings").font(.headline)
+            HStack {
+                Text(editing ? "Edit Dictionary" : "Recognized Spellings").font(.headline)
+                Spacer()
+                if !editing { Button("Close") { dismiss() }.keyboardShortcut(.cancelAction) }
+            }
             Text(phrase).font(.subheadline)
             Text("Spaces, punctuation and capitalization may differ.").font(.caption).foregroundStyle(.secondary)
-            if PhraseMatcher.hasOpenEndedWakeVariants(phrase, similar: similar, ending: ending) {
-                Text("The default wake phrase also accepts “hello” followed by a word starting with “ch”. The list shows known dictionary spellings.")
-                    .font(.caption).foregroundStyle(.secondary)
+            if !similar {
+                Text("Alternate spellings are off in Settings. Only the saved phrase is recognized.").font(.callout)
             }
-            TextField("Find a spelling", text: $search).textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("phraseSpellingSearch")
-            List(matching, id: \.self) { Text($0).textSelection(.enabled) }
-                .accessibilityIdentifier("phraseSpellingList")
-            Text(matching.count == 1 ? "1 spelling" : "\(matching.count) spellings").font(.caption).foregroundStyle(.secondary)
-        }.padding().frame(width: 390, height: 410)
-            .task(id: "\(phrase)|\(similar)|\(ending)") {
-                spellings = PhraseMatcher.knownSpellings(for: phrase, similar: similar, ending: ending)
+            if editing {
+                Text("One full spelling per line. Saving replaces the built-in alternatives. The default phrase always works; leave this blank to use only that phrase.")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $draft).font(.body.monospaced()).disabled(!similar || !slot.isDefault(phrase))
+                    .border(.separator).accessibilityLabel("Custom dictionary")
+                    .accessibilityIdentifier("phraseDictionaryEditor").focused($focus, equals: .editor)
+                if let error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
+                HStack {
+                    Button("Import text file…") { importing = true }
+                        .disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionaryImport")
+                    Spacer()
+                    Button("Cancel") { editing = false; error = nil }.keyboardShortcut(.cancelAction)
+                    Button(emptyDraft ? "Use phrase only" : "Save") {
+                        do { dictionary = try PhraseDictionary.parse(draft, for: slot); editing = false; error = nil }
+                        catch { self.error = error.localizedDescription }
+                    }.disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionarySave")
+                }
+            } else {
+                Text(similar ? (dictionary == nil ? "Built-in dictionary" : "Custom dictionary") : (dictionary == nil ? "Built-in dictionary (off)" : "Saved custom dictionary (off)"))
+                    .font(.caption).foregroundStyle(.secondary)
+                if PhraseMatcher.hasOpenEndedWakeVariants(phrase, similar: similar, ending: slot.ending, dictionaries: dictionaries) {
+                    Text("Also accepts “hello” followed by a word starting with “ch”. The list shows known spellings.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                TextField("Find a spelling", text: $search).textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("phraseSpellingSearch").focused($focus, equals: .search)
+                if !loaded {
+                    ProgressView("Loading spellings…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if visible.isEmpty {
+                    Text("No spellings found").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(visible, id: \.self) { Text($0).textSelection(.enabled) }
+                        .accessibilityIdentifier("phraseSpellingList")
+                }
+                Text(loaded ? (visible.count == 1 ? "1 spelling" : "\(visible.count) spellings") : "").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Edit dictionary…") { draft = (dictionary ?? []).joined(separator: "\n"); editing = true; error = nil }
+                        .disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionaryEdit")
+                    Spacer()
+                    if dictionary != nil {
+                        Button("Restore built-in") { dictionary = nil; search = "" }
+                            .disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionaryRestore")
+                    }
+                }
+            }
+        }.padding().frame(width: 420, height: 470)
+            .task(id: Configuration(phrase: phrase, similar: similar, dictionary: dictionary)) { // nil means built-in; an empty dictionary means exact-only, so they must have different identities.
+                spellings = PhraseMatcher.knownSpellings(for: phrase, similar: similar, ending: slot.ending, dictionaries: dictionaries)
+                loaded = true
+            }
+            .task(id: editing) { focus = editing ? .editor : .search }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
+                switch result {
+                case .success(let url):
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    do { draft = try PhraseDictionary.read(url, for: slot).joined(separator: "\n"); error = nil }
+                    catch { self.error = error.localizedDescription }
+                case .failure(let failure): error = failure.localizedDescription
+                }
             }
     }
 }
@@ -594,9 +675,9 @@ struct SettingsView: View {
                 PhraseFields(model: model)
                 Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Repeating a command keeps its requested state.")
                     .foregroundStyle(.secondary)
-                Toggle("Allow small spelling differences", isOn: $model.similarPhrases)
+                Toggle("Alternate spellings for default phrases", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
-                Text(model.similarPhrases ? "Matches dictionary variants and small spelling differences. Green is exact, orange is dictionary, and purple is a spelling difference." : "Matches saved phrases exactly. Spaces and punctuation may differ.")
+                Text(model.similarPhrases ? "Custom phrases match exactly. Use each default phrase’s info button to view or replace its dictionary. Green is exact; orange is an alternate spelling." : "Alternate spellings are off. Saved phrases match exactly, ignoring capitalization, spacing and punctuation.")
                     .foregroundStyle(.secondary)
                 if PhraseMatcher.words(model.wakePhrase).isEmpty || PhraseMatcher.words(model.sleepPhrase).isEmpty {
                     Text("Enter both phrases").foregroundStyle(.red)

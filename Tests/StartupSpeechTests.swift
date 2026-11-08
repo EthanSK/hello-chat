@@ -105,6 +105,20 @@ private final class StartupEventLog: @unchecked Sendable {
         expect(beforeOpen.markUtteranceEnded())
         expect(beforeOpen.text == "this is a complete opening request.")
 
+        let dictionaryPattern = PhrasePattern(slot: .wakePhrase, text: "Hello Chat", similar: true,
+            dictionaries: .init(["hellochat": ["Open Lantern", "Open the orange lantern near the back door and listen for my request now"]]))
+        var dictionaryOpening = StartupSpeechBuffer(id: UUID(), text: "Open Lantern, turn on the lights", wakeRange: 0..<2, pattern: dictionaryPattern)
+        expect(dictionaryOpening.alignment == .wake && dictionaryOpening.text == "turn on the lights" && dictionaryOpening.hasOpeningWords)
+        dictionaryOpening.observe("Open Lantern. Open Lantern.")
+        expect(!dictionaryOpening.hasOpeningWords)
+        dictionaryOpening.observe("Open Lantern. Open Lantern. Turn on the lights")
+        expect(dictionaryOpening.hasOpeningWords && dictionaryOpening.text == "Open Lantern. Turn on the lights")
+        let longAlias = "Open the orange lantern near the back door and listen for my request now"
+        var longOpening = StartupSpeechBuffer(id: UUID(), text: longAlias + ", tell me the time", wakeRange: 0..<15, pattern: dictionaryPattern)
+        expect(longOpening.alignment == .wake && longOpening.text == "tell me the time" && longOpening.hasOpeningWords)
+        longOpening.observe(longAlias + ", tell me the date")
+        expect(longOpening.text == "tell me the date")
+
         var custom = StartupSpeechBuffer(id: UUID(), text: "Good morning computer, open the calendar.",
             wakeRange: 0..<3, phrase: "Good morning computer", similar: true)
         expect(custom.text == "open the calendar.")

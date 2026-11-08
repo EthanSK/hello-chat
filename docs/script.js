@@ -35,7 +35,7 @@
       bye: { words: ["Bye", "Chat"], from: 0, kind: "end" },
       alias: {
         words: ["Harlow", "Chat"], from: 0, kind: "alias",
-        note: "Harlow Chat counts as Hello Chat while Allow small spelling differences is on.",
+        note: "Harlow Chat counts as Hello Chat while Alternate spellings for default phrases is on.",
       },
       mention: {
         words: ["I", "said", "Hello", "Chat"], from: 2, kind: "mention",
