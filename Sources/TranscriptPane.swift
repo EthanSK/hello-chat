@@ -63,13 +63,28 @@ private struct NativeTranscript: NSViewRepresentable {
         scroll.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scrolled),
                                                name: NSView.boundsDidChangeNotification, object: scroll.contentView)
-        DispatchQueue.main.async { context.coordinator.applyLatest(forceLayout: true) } // Initial SwiftUI sizing arrives after the first text update.
+        scroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scrolled),
+                                               name: NSView.frameDidChangeNotification, object: scroll.contentView)
+        DispatchQueue.main.async { context.coordinator.apply(context.coordinator.latest, following: true, forceLayout: true) } // Initial SwiftUI sizing arrives after the first text update.
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let cache = context.coordinator.cache
-        let values = segments.isEmpty ? [enabled ? "Nothing heard yet" : "Start listening to see what's heard"] : segments
-        let styled = segments.isEmpty ? AttributedString(values[0]) : cache.render(values, configuration: .init(phrase: phrase, endPhrase: endPhrase, similar: similar, controlPhrases: controlPhrases))
+        let coordinator = context.coordinator
+        let configuration = HeardTranscript.HighlightCache.Configuration(phrase: phrase, endPhrase: endPhrase, similar: similar, controlPhrases: controlPhrases)
+        let appearanceChanged = coordinator.configuration != configuration || coordinator.scale != scale
+        coordinator.configuration = configuration; coordinator.scale = scale
+        coordinator.latestSegments = segments
+        coordinator.latest = nativeText(segments, cache: coordinator.cache, configuration: configuration)
+        if segments.isEmpty || coordinator.isAtBottom { coordinator.followsLatest = true }
+        if coordinator.followsLatest { coordinator.apply(coordinator.latest, following: true) }
+        else if appearanceChanged { // Restyle the held words without replacing them with pending speech or moving the reader.
+            coordinator.apply(nativeText(coordinator.displayedSegments, cache: coordinator.cache, configuration: configuration), following: false)
+        }
+    }
+    private func nativeText(_ segments: [String], cache: HeardTranscript.HighlightCache,
+                            configuration: HeardTranscript.HighlightCache.Configuration) -> NSAttributedString {
+        let styled = segments.isEmpty ? AttributedString(enabled ? "Nothing heard yet" : "Start listening to see what's heard") : cache.render(segments, configuration: configuration)
         let font = NSFont.systemFont(ofSize: 13 * scale)
         let native = NSMutableAttributedString(string: String(styled.characters), attributes: [.font: font, .foregroundColor: NSColor.labelColor])
         var location = 0
@@ -82,9 +97,7 @@ private struct NativeTranscript: NSViewRepresentable {
             }
             location += length
         }
-        context.coordinator.latest = native
-        if segments.isEmpty { context.coordinator.followsLatest = true }
-        if context.coordinator.followsLatest { context.coordinator.applyLatest() }
+        return native
     }
 
     final class Coordinator: NSObject {
@@ -92,28 +105,39 @@ private struct NativeTranscript: NSViewRepresentable {
         weak var scroll: NSScrollView?
         var latest = NSAttributedString()
         var followsLatest = true
+        var latestSegments: [String] = []
+        var displayedSegments: [String] = []
+        var configuration: HeardTranscript.HighlightCache.Configuration?
+        var scale: Double?
         private var applying = false
         private var viewportSize = NSSize.zero
         private var documentHeight: CGFloat = 0
         deinit { NotificationCenter.default.removeObserver(self) }
 
+        var isAtBottom: Bool {
+            guard let scroll, let text = scroll.documentView else { return false }
+            return scroll.documentVisibleRect.maxY >= text.bounds.maxY - 24
+        }
         @objc func scrolled() {
             guard !applying, let scroll, let text = scroll.documentView as? NSTextView else { return }
             if scroll.contentSize != viewportSize || text.bounds.height != documentHeight {
                 viewportSize = scroll.contentSize; documentHeight = text.bounds.height
-                if followsLatest { applyLatest(forceLayout: true) }
+                if isAtBottom { followsLatest = true }
+                if followsLatest { apply(latest, following: true, forceLayout: true) }
                 return // Resizing the viewport or text is not a user scroll away from the bottom.
             }
-            followsLatest = scroll.documentVisibleRect.maxY >= text.bounds.maxY - 24
-            if followsLatest { applyLatest() }
+            followsLatest = isAtBottom
+            if followsLatest { apply(latest, following: true) }
         }
-        func applyLatest(forceLayout: Bool = false) {
+        func apply(_ value: NSAttributedString, following: Bool, forceLayout: Bool = false) {
             guard !applying, let scroll, let text = scroll.documentView as? NSTextView,
-                  let storage = text.textStorage, forceLayout || !storage.isEqual(to: latest) else { return }
+                  let storage = text.textStorage else { return }
+            if following { displayedSegments = latestSegments }
+            guard forceLayout || !storage.isEqual(to: value) else { return }
             applying = true
             defer { applying = false }
-            let selection = text.selectedRanges
-            if !storage.isEqual(to: latest) { storage.setAttributedString(latest) }
+            let selection = text.selectedRanges, origin = scroll.contentView.bounds.origin
+            if !storage.isEqual(to: value) { storage.setAttributedString(value) }
             text.selectedRanges = selection.map { value in
                 let range = value.rangeValue
                 let start = min(range.location, storage.length)
@@ -125,7 +149,8 @@ private struct NativeTranscript: NSViewRepresentable {
                 text.setFrameSize(NSSize(width: scroll.contentSize.width, height: max(scroll.contentSize.height, layout.usedRect(for: container).height)))
             }
             viewportSize = scroll.contentSize; documentHeight = text.bounds.height
-            text.scrollRangeToVisible(NSRange(location: storage.length, length: 0))
+            if following { text.scrollRangeToVisible(NSRange(location: storage.length, length: 0)) }
+            else { scroll.contentView.scroll(to: origin); scroll.reflectScrolledClipView(scroll.contentView) }
         }
     }
 }
