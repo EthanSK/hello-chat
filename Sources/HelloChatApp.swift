@@ -65,6 +65,7 @@ import Darwin
             let endMentionIgnored = !endContext.pollEnd(at: 1, phrase: "Bye Chat", similar: true)
             endContext.resetContext()
             endContext.update("Bye Chat", at: 2)
+            endContext.audio(level: 0, seconds: StandaloneWake.commandPauseSeconds)
             let directEndAccepted = endContext.pollEnd(at: 2, phrase: "Bye Chat", similar: true)
             let variants = PhraseMatcher.defaultVariantCounts
             let report: [String: Any] = ["wakeSpellings": variants.wake, "endSpellings": variants.end,
@@ -398,6 +399,27 @@ struct MainView: View {
     var body: some View {
         GeometryReader { viewport in
             Form {
+                Section {
+                    TranscriptPane(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
+                                   similar: model.similarPhrases, enabled: model.enabled,
+                                   viewportHeight: viewport.size.height, scale: zoom.scale,
+                                   microphonePhrases: model.microphonePhrases)
+                } header: {
+                    HStack {
+                        Text("Heard (local model)")
+                        Spacer()
+                        Button(model.chatActionTitle) { model.toggleChat() }
+                            .buttonStyle(.bordered)
+                            .disabled(model.busy && !connecting)
+                            .accessibilityIdentifier("voiceButton")
+                        Button { model.refreshVoice() } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless).help("Refresh chat status")
+                        .disabled(model.busy).accessibilityIdentifier("voiceRefreshButton")
+                    }
+                    .textCase(nil)
+                }
                 if updater.waitingToInstall {
                     Section {
                         Text("Update ready.")
@@ -423,16 +445,7 @@ struct MainView: View {
                     Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
                         .disabled(model.busy && !preparing && !model.enabled)
                         .accessibilityIdentifier("listeningToggle")
-                    TextField("Wake phrase", text: $model.wakePhrase)
-                        .multilineTextAlignment(.trailing)
-                        .accessibilityIdentifier("wakePhraseLabel")
-                    TextField("End phrase", text: $model.sleepPhrase)
-                        .multilineTextAlignment(.trailing)
-                        .accessibilityIdentifier("endPhraseLabel")
-                    LabeledContent("Status", value: preparing ? "Preparing local model…" : model.status)
-                        .accessibilityIdentifier("listeningStatus")
-                    Text(model.detail)
-                        .foregroundStyle(.secondary)
+                    PhraseFields(model: model)
                     Picker("Speech model", selection: $model.speechModel) {
                         ForEach(SpeechModel.allCases) { choice in
                             Text(choice.title).tag(choice)
@@ -446,26 +459,7 @@ struct MainView: View {
                         Button("Allow Microphone") { model.requestAudioPermissions() }
                     }
                 }
-                Section {
-                    TranscriptPane(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
-                                   similar: model.similarPhrases, enabled: model.enabled,
-                                   viewportHeight: viewport.size.height, scale: zoom.scale)
-                } header: {
-                    HStack {
-                        Text("Heard (local model)")
-                        Spacer()
-                        Button(model.chatActionTitle) { model.toggleChat() }
-                            .buttonStyle(.bordered)
-                            .disabled(model.busy && !connecting)
-                            .accessibilityIdentifier("voiceButton")
-                        Button { model.refreshVoice() } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .buttonStyle(.borderless).help("Refresh chat status")
-                        .disabled(model.busy).accessibilityIdentifier("voiceRefreshButton")
-                    }
-                    .textCase(nil)
-                }
+
             }
             .formStyle(.grouped)
             .font(.system(size: 13 * zoom.scale))
@@ -509,6 +503,18 @@ struct OpenSettingsButton: View {
     }
 }
 
+// Both windows edit the same saved phrases, using the existing native form fields.
+private struct PhraseFields: View {
+    @ObservedObject var model: GateModel
+    var body: some View {
+        TextField("Wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
+        TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
+        TextField("Mute phrase", text: $model.mutePhrase).accessibilityIdentifier("mutePhrase")
+        TextField("Silent phrase", text: $model.silentPhrase).accessibilityIdentifier("silentPhrase")
+        TextField("Silence phrase", text: $model.silencePhrase).accessibilityIdentifier("silencePhrase")
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: GateModel
     @ObservedObject var zoom: InterfaceZoom
@@ -529,13 +535,12 @@ struct SettingsView: View {
                 DockStatus(dock: model.dock)
             }
             Section("Phrases") {
-                TextField("Wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
-                TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
-                Text("Say the wake phrase to start chat. Clear mentions of the phrase are ignored. The end phrase acts immediately, including while chat is connecting.")
+                PhraseFields(model: model)
+                Text("Pause for 0.6 seconds after each phrase. All three microphone phrases toggle the microphone.")
                     .foregroundStyle(.secondary)
                 Toggle("Allow small spelling differences", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
-                Text(model.similarPhrases ? "Matches joined words and small changes such as Hello Chatt for Hello Chat. Requires the full wake phrase." : "Matches saved phrases exactly. Spaces and punctuation may differ.")
+                Text(model.similarPhrases ? "Matches dictionary variants and small spelling differences. Green is exact, orange is dictionary, and purple is a spelling difference." : "Matches saved phrases exactly. Spaces and punctuation may differ.")
                     .foregroundStyle(.secondary)
                 if PhraseMatcher.words(model.wakePhrase).isEmpty || PhraseMatcher.words(model.sleepPhrase).isEmpty {
                     Text("Enter both phrases").foregroundStyle(.red)

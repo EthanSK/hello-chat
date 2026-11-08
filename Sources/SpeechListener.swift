@@ -9,7 +9,7 @@ import CoreAudio
     var onError: ((Error) -> Void)?
     var onSession: (() -> Void)?
     var onWaiting: (() -> Void)?
-    var onAudioActivity: ((Double, Double) -> Void)?
+    var onAudioActivity: ((Double, Double, Double) -> Void)?
     var onFrame: (() -> Void)?
     var onUtteranceEnd: (() -> Void)?
     var onComputePlan: ((Double) -> Void)?
@@ -176,6 +176,7 @@ import CoreAudio
             var continuity = SpeechContinuity()
             var timing = SpeechTimingTracker()
             var frames = 0, textUpdates = 0, gaps = 0
+            var modelAudioTime = 0.0
             var queueMax = 0.0, processMax = 0.0, processTotal = 0.0, audioTotal = 0.0
             var summaryAt = Diagnostics.now
             do {
@@ -209,10 +210,11 @@ import CoreAudio
                     audioTotal += Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate
                     self.resultAudioSeconds = frame.audioEnd ?? audioTotal
                     if result.reset { self.diagnostics?.record("speech.context.reset"); self.onSession?(); timing = SpeechTimingTracker() }
-                    self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate)
+                    modelAudioTime = result.audioTime
+                    self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate, modelAudioTime)
                     if let text = result.text {
                         textUpdates += 1
-                        self.onText?(text, timing.update(text, at: frame.audioEnd ?? frame.capturedAt, supplied: result.wordTimings))
+                        self.onText?(text, timing.update(text, at: modelAudioTime, supplied: result.wordTimings))
                     }
                     if result.utteranceEnded {
                         self.diagnostics?.record("speech.utterance.ended", info: ["source": "model_eou"])
@@ -228,7 +230,7 @@ import CoreAudio
                 if recording != nil, !Task.isCancelled, let self, self.session == token {
                     let text = try await worker.finish()
                     self.resultWasFlushed = true
-                    if !text.isEmpty { self.onText?(text, timing.update(text, at: self.resultAudioSeconds, supplied: nil)) }
+                    if !text.isEmpty { self.onText?(text, timing.update(text, at: modelAudioTime, supplied: nil)) }
                 }
             } catch is CancellationError { }
             catch {

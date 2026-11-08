@@ -8,9 +8,10 @@ struct HeardTranscript: View, Equatable {
     let endPhrase: String
     let similar: Bool
     let enabled: Bool
+    var microphonePhrases: [String] = PhraseMatcher.microphonePhrases
     private var styled: AttributedString {
         var result = AttributedString()
-        for run in PhraseHighlights.runs(in: text, phrase: phrase, endPhrase: endPhrase, similar: similar) {
+        for run in PhraseHighlights.runs(in: text, phrase: phrase, endPhrase: endPhrase, similar: similar, microphonePhrases: microphonePhrases) {
             var part = AttributedString(run.text)
             if let kind = run.kind {
                 let color: Color = kind == .exact ? .green : (kind == .dictionary ? .orange : .purple)

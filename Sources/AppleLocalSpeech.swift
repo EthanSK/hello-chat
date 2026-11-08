@@ -18,6 +18,7 @@ actor AppleLocalSpeech: SpeechBackend {
     private var finalizedTimings: [(word: String, start: Double, end: Double)] = []
     private var failure: Error?
     private var duration = 0.0
+    private var processedSeconds = 0.0
     private var quiet = 0.0
     private var generation = UUID()
 
@@ -98,13 +99,14 @@ actor AppleLocalSpeech: SpeechBackend {
             if case .dropped = continuation.yield(AnalyzerInput(buffer: buffer)) {
                 // Never silently feed discontinuous audio to the analyzer.
                 try await resetForDiscontinuity()
-                return SpeechUpdate(text: nil, reset: true)
+                return SpeechUpdate(text: nil, audioTime: processedSeconds, reset: true)
             }
+            processedSeconds += Double(buffer.frameLength) / buffer.format.sampleRate
         }
         await Task.yield()
-        guard latest != emitted, !latest.isEmpty else { return SpeechUpdate(text: nil, reset: reset) }
+        guard latest != emitted, !latest.isEmpty else { return SpeechUpdate(text: nil, audioTime: processedSeconds, reset: reset) }
         emitted = latest
-        return SpeechUpdate(text: latest, reset: reset, wordTimings: latestTimings)
+        return SpeechUpdate(text: latest, audioTime: processedSeconds, reset: reset, wordTimings: latestTimings)
     }
     func finish() async throws -> String {
         continuation?.finish()
@@ -125,6 +127,7 @@ actor AppleLocalSpeech: SpeechBackend {
         results?.cancel(); await results?.value; results = nil
         analyzer = nil; targetFormat = nil; converter = nil
         latest = ""; emitted = ""; finalized = ""; failure = nil; duration = 0; quiet = 0
+        processedSeconds = 0
         latestTimings = []; finalizedTimings = []
     }
 }

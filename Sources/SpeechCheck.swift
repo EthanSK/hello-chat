@@ -24,6 +24,7 @@ struct SpeechCheckResult {
         listener.model = model
         var matcher = PhraseMatcher()
         var standaloneWake = StandaloneWake()
+        var standaloneEnd = StandaloneWake()
         var commands: [PhraseCommand] = []
         var text = ""
         var share = 0.0
@@ -44,10 +45,12 @@ struct SpeechCheckResult {
             if !text.isEmpty { segments.append(text); if segments.count > 8 { segments.removeFirst() }; text = "" }
             matcher.reset()
             standaloneWake.resetContext()
+            standaloneEnd.resetContext()
         }
         listener.onComputePlan = { share = $0 }
-        listener.onAudioActivity = { level, seconds in
-            standaloneWake.audio(level: level, seconds: seconds)
+        listener.onAudioActivity = { level, seconds, audioTime in
+            standaloneWake.audio(level: level, seconds: seconds, at: audioTime)
+            standaloneEnd.audio(level: level, seconds: seconds, at: audioTime)
             if !startupReady {
                 if level >= 0.02 { startup?.speechResumed() }
                 startup?.audioProcessed(seconds: seconds)
@@ -64,7 +67,12 @@ struct SpeechCheckResult {
             if !startupReady, let boundary = startup?.boundaryReached {
                 startupReady = true; startupBoundary = boundary.rawValue
             }
-            if standalone || captureStartup, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar) {
+            if standalone || captureStartup, standaloneEnd.pollEnd(at: Diagnostics.now, phrase: "Bye Chat", similar: similar) {
+                standaloneWake.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: similar)
+                commands.append(.sleep)
+                detections.append(["command": "end", "elapsed_ms": (Diagnostics.now - started) * 1000,
+                                   "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false])
+            } else if standalone || captureStartup, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar) {
                 commands.append(.wake)
                 if captureStartup, startup == nil {
                     // Simulate the fastest possible native connection. Later
@@ -82,10 +90,8 @@ struct SpeechCheckResult {
             text = value
             if !startupReady { startup?.observe(value) }
             standaloneWake.update(value, at: Diagnostics.now, timings: timings)
-            if let command = matcher.consume(value, wake: standalone ? "" : "Hello Chat", sleep: "Bye Chat", similar: similar, timings: timings) {
-                if standalone, command == .sleep {
-                    standaloneWake.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: similar)
-                }
+            standaloneEnd.update(value, at: Diagnostics.now, timings: timings)
+            if !standalone && !captureStartup, let command = matcher.consume(value, wake: "Hello Chat", sleep: "Bye Chat", similar: similar, timings: timings) { // Recognition-only checks remain distinct from the paused command path above.
                 commands.append(command)
                 detections.append(["command": command == .wake ? "wake" : "end", "elapsed_ms": (Diagnostics.now - started) * 1000,
                                    "audio_seconds": listener?.resultAudioSeconds ?? 0, "after_flush": listener?.resultWasFlushed ?? false])

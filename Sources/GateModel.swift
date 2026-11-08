@@ -71,8 +71,18 @@ import SwiftUI
     @Published var sleepPhrase = UserDefaults.standard.string(forKey: "sleepPhrase") ?? "Bye Chat" {
         didSet { UserDefaults.standard.set(sleepPhrase, forKey: "sleepPhrase"); updatePhrases() }
     }
+    @Published var mutePhrase = UserDefaults.standard.string(forKey: "mutePhrase") ?? PhraseMatcher.microphonePhrases[0] {
+        didSet { UserDefaults.standard.set(mutePhrase, forKey: "mutePhrase"); updatePhrases() }
+    }
+    @Published var silentPhrase = UserDefaults.standard.string(forKey: "silentPhrase") ?? PhraseMatcher.microphonePhrases[1] {
+        didSet { UserDefaults.standard.set(silentPhrase, forKey: "silentPhrase"); updatePhrases() }
+    }
+    @Published var silencePhrase = UserDefaults.standard.string(forKey: "silencePhrase") ?? PhraseMatcher.microphonePhrases[2] {
+        didSet { UserDefaults.standard.set(silencePhrase, forKey: "silencePhrase"); updatePhrases() }
+    }
+    var microphonePhrases: [String] { [mutePhrase, silentPhrase, silencePhrase].filter { !PhraseMatcher.words($0).isEmpty } }
     @Published var similarPhrases = UserDefaults.standard.object(forKey: "similarPhrases") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); endPhrase.reset() }
+        didSet { UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); updatePhrases() }
     }
     @Published private(set) var error: String?
     // Shortcut activation is independent of microphone/model preparation, which
@@ -170,10 +180,10 @@ import SwiftUI
             if complete { self.finishStartupSpeech(preserveRequested: true, boundary: .utterance) }
         }
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.microphonePhrase.reset(); self?.detectionRunning = false }
-        listener.onAudioActivity = { [weak self] level, seconds in
-            self?.standaloneWake.audio(level: level, seconds: seconds)
-            self?.microphonePhrase.audio(level: level, seconds: seconds)
-            self?.endPhrase.audio(level: level, seconds: seconds)
+        listener.onAudioActivity = { [weak self] level, seconds, audioTime in
+            self?.standaloneWake.audio(level: level, seconds: seconds, at: audioTime)
+            self?.microphonePhrase.audio(level: level, seconds: seconds, at: audioTime)
+            self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
             // Raw speech can resume before its first text hypothesis arrives.
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
             self?.startupSpeech?.audioProcessed(seconds: seconds)
@@ -393,10 +403,11 @@ import SwiftUI
         restartMicrophone(settle: true)
     }
     private func updatePhrases() {
-        listener.contextualPhrases = [wakePhrase, sleepPhrase] + StandaloneWake.microphonePhrases
+        listener.contextualPhrases = [wakePhrase, sleepPhrase] + microphonePhrases
         endPhrase.reset()
         standaloneWake.reset()
         microphonePhrase.reset()
+        if enabled { listener.discardPendingRecognition() } // Apply edited phrases to fresh audio; resetting counters must not replay a keyword from the old transcript.
         if status == "Listening" || status == "Off" { showListening() }
         phraseUpdateTask?.cancel()
         if speechModel == .appleLocal, enabled {
@@ -685,49 +696,51 @@ import SwiftUI
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
         microphonePhrase.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
-        let ending = !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
-            && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
-            && endPhrase.pollEnd(at: Diagnostics.now, phrase: sleepPhrase, similar: similarPhrases)
-        if !ending {
-            if var capture = startupSpeech {
-                let previous = capture.text
-                capture.observe(text); startupSpeech = capture
-                if changed { recordStartupSnapshot(capture, event: "recognition", inputCharacters: text.count) }
-                // Only the opening's own revisions; other transcript edits don't touch the file.
-                if capture.published, capture.text != previous {
-                    startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated)
-                }
-            } else if changed, let finished = finishedStartupObservation {
-                finishedStartupObservation = nil
-                let elapsed = Diagnostics.now - finished.at
-                if elapsed <= StartupSpeechBuffer.openLimitSeconds {
-                    Diagnostics.shared.record("voice.startup_speech.recognition_after_finish",
-                        numbers: ["seconds_after_finish": elapsed, "input_characters": Double(text.count)],
-                        info: ["request": finished.id.uuidString])
-                }
+        // Keep collecting while a keyword waits for its audio pause. An accepted
+        // End below cancels the startup file before dispatching the native command.
+        if var capture = startupSpeech {
+            let previous = capture.text
+            capture.observe(text); startupSpeech = capture
+            if changed { recordStartupSnapshot(capture, event: "recognition", inputCharacters: text.count) }
+            // Only the opening's own revisions; other transcript edits don't touch the file.
+            if capture.published, capture.text != previous {
+                startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated)
             }
-            return
-        }
-        _ = microphonePhrase.pollMicrophone(at: Diagnostics.now) // An explicit End wins over mute in the same transcript.
-        cancelStartupSpeech()
-        standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
-        Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
-        // Ethan's "buy chat" / Bye Chat gets an immediate detection cue even
-        // while cancelling an opening or when Voice is already off. Native
-        // status and errors still report the actual ending outcome separately.
-        feedback.play(.ended)
-        if busy { manualMute() }
-        else {
-            voiceTask = Task { await muteVoice(event: "Heard \(sleepPhrase)", feedbackAlreadyPlayed: true) }
+        } else if changed, let finished = finishedStartupObservation {
+            finishedStartupObservation = nil
+            let elapsed = Diagnostics.now - finished.at
+            if elapsed <= StartupSpeechBuffer.openLimitSeconds {
+                Diagnostics.shared.record("voice.startup_speech.recognition_after_finish",
+                    numbers: ["seconds_after_finish": elapsed, "input_characters": Double(text.count)],
+                    info: ["request": finished.id.uuidString])
+            }
         }
     }
     private func checkStandaloneWake() {
+        guard enabled, detectionRunning else { return }
+        if !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
+            && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
+            && endPhrase.pollEnd(at: Diagnostics.now, phrase: sleepPhrase, similar: similarPhrases) {
+            _ = microphonePhrase.pollMicrophone(at: Diagnostics.now, phrases: microphonePhrases, similar: similarPhrases) // An explicit End wins over mute in the same transcript.
+            cancelStartupSpeech()
+            standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
+            Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
+            // Ethan's "buy chat" / Bye Chat gets its cue after the required pause, even
+            // while cancelling an opening or when Voice is already off. Native
+            // status and errors still report the actual ending outcome separately.
+            feedback.play(.ended)
+            if busy { manualMute() }
+            else {
+                voiceTask = Task { await muteVoice(event: "Heard \(sleepPhrase)", feedbackAlreadyPlayed: true) }
+            }
+            return
+        }
         if enabled, detectionRunning,
-           microphonePhrase.pollMicrophone(at: Diagnostics.now) {
+           microphonePhrase.pollMicrophone(at: Diagnostics.now, phrases: microphonePhrases, similar: similarPhrases) {
             // Reserve synchronously, as beginVoice does. Consume busy commands
             // rather than replaying a surprise mute when an opening/End finishes.
             guard !busy, !quitting else { return }
-            for phrase in StandaloneWake.microphonePhrases {
+            for phrase in microphonePhrases {
                 standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: phrase, similar: similarPhrases) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
             }
             busy = true

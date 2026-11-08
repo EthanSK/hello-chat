@@ -19,6 +19,7 @@ actor NeuralSpeech: SpeechBackend {
     private var previousText = ""
     private var completedUtterance = false
     private var utteranceHasText = false
+    private var fedSamples = 0
 
     init(model: SpeechModel = .defaultModel) {
         self.model = model
@@ -108,7 +109,7 @@ actor NeuralSpeech: SpeechBackend {
         }
         let changed = !text.isEmpty && text != previousText
         if changed { previousText = text }
-        return SpeechUpdate(text: changed ? text : nil, reset: reset, utteranceEnded: ended,
+        return SpeechUpdate(text: changed ? text : nil, audioTime: await currentAudioTime(), reset: reset, utteranceEnded: ended,
                             wordTimings: changed ? await currentWordTimings() : nil)
     }
     private func currentWordTimings() async -> [(word: String, start: Double, end: Double)] {
@@ -134,6 +135,7 @@ actor NeuralSpeech: SpeechBackend {
         if let manager { await manager.reset() }
         if let nemotron { await nemotron.reset() }
         resampler.reset()
+        fedSamples = 0
         if let manager { await manager.setUtteranceEndDebounce(milliseconds: .max) }
         try await prime()
         rollover = SpeechRollover(); previousText = ""
@@ -141,6 +143,7 @@ actor NeuralSpeech: SpeechBackend {
     }
     func close() async {
         resampler.reset()
+        fedSamples = 0
         if let manager { await manager.cleanup() }
         if let nemotron { await nemotron.cleanup() }
         recentAudio.removeAll(); recentSeconds = 0; previousText = ""
@@ -151,6 +154,19 @@ actor NeuralSpeech: SpeechBackend {
         guard let buffer = try resampler.convert(input) else { return }
         if let manager { _ = try await manager.process(audioBuffer: buffer) }
         if let nemotron { _ = try await nemotron.process(audioBuffer: buffer) }
+        fedSamples += Int(buffer.frameLength)
+    }
+    private func currentAudioTime() async -> Double {
+        if let nemotron {
+            let chunk = await nemotron.config.chunkSamples
+            return Double(fedSamples / chunk * chunk) / 16000 // Pending SDK input is not yet decoded and must not count toward the speech pause.
+        }
+        if let manager {
+            let chunk = await manager.chunkSize
+            let count = fedSamples < chunk.chunkSamples ? 0 : 1 + (fedSamples - chunk.chunkSamples) / chunk.shiftSamples
+            return Double(count * chunk.shiftSamples) / 16000 // Parakeet token times advance by the overlap shift, not the complete input window.
+        }
+        return 0
     }
     private func partial() async -> String {
         if let manager { return await manager.getPartialTranscript() }

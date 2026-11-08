@@ -9,7 +9,8 @@ import Foundation
         func endCommand(_ detector: inout StandaloneWake, _ text: String, at time: Double = 1) -> Bool {
             detector.audio(level: 0.2, seconds: 0.1)
             detector.update(text, at: time)
-            return detector.pollEnd(at: time, phrase: "Bye Chat", similar: true)
+            detector.audio(level: 0, seconds: 0.6)
+            return detector.pollEnd(at: time + 0.6, phrase: "Bye Chat", similar: true)
         }
         for text in ["B Chat", "bee chat", "be chat", "H Chat", "the existing Notion UI chat",
                      "I said bye chat", "the bye chat command", "do not bye chat", "don't bye chat",
@@ -19,7 +20,7 @@ import Foundation
         }
         for text in ["Bye Chat", "by chat", "okay, bye chat", "thanks for your help. Bye Chat!"] {
             var detector = StandaloneWake()
-            expect(endCommand(&detector, text), "Direct End remains immediate")
+            expect(endCommand(&detector, text), "Direct End activates after its pause")
             expect(!endCommand(&detector, text, at: 2), "End does not replay")
         }
         var endRevision = StandaloneWake()
@@ -29,7 +30,8 @@ import Foundation
         func muteCommand(_ detector: inout StandaloneWake, _ text: String, at time: Double = 1) -> Bool {
             detector.audio(level: 0.2, seconds: 0.1)
             detector.update(text, at: time)
-            return detector.pollMicrophone(at: time)
+            detector.audio(level: 0, seconds: 0.6)
+            return detector.pollMicrophone(at: time + 0.6)
         }
         for phrase in ["mute chat", "silent chat", "silence chat", "MUTE CHAT!", "okay, silence chat"] {
             var detector = StandaloneWake()
@@ -56,6 +58,7 @@ import Foundation
         expect(!precedingWake.poll(at: 1, phrase: "Hello Chat", similar: true),
                "A fuzzy wake before mute cannot unmute again on the following frame")
         precedingWake.update("hello chad mute chat. Hello Chat", at: 2)
+        precedingWake.audio(level: 0, seconds: 0.6)
         expect(precedingWake.poll(at: 2, phrase: "Hello Chat", similar: true), "A later fresh wake still works")
         var separatedMute = StandaloneWake()
         separatedMute.audio(level: 0.2, seconds: 0.1)
@@ -69,7 +72,8 @@ import Foundation
         expect(!timed.poll(at: 20, phrase: "Hello Chat", similar: true), "Old hello and later chat do not wake")
         timed.update("hello chat hello chat", at: 30, timings:
             [("hello", 0, 0.3), ("chat", 19, 19.4), ("hello", 29, 29.3), ("chat", 29.5, 29.8)])
-        expect(timed.poll(at: 30, phrase: "Hello Chat", similar: true), "A later fresh complete phrase still wakes immediately")
+        timed.audio(level: 0, seconds: 0.6)
+        expect(timed.poll(at: 30, phrase: "Hello Chat", similar: true), "A later fresh complete phrase wakes after its pause")
         func check(_ text: String, expected: Bool, phrase: String = "Hello Chat", similar: Bool = true) {
             var detector = StandaloneWake()
             detector.audio(level: 0.2, seconds: 0.1)
@@ -78,15 +82,13 @@ import Foundation
             expect(detector.poll(at: 1.6, phrase: phrase, similar: similar) == expected, text)
             expect(!detector.poll(at: 2, phrase: phrase, similar: similar), "Do not replay: \(text)")
         }
-        for text in ["Hello Chat", "HelloChat", "Hello Chad", "Hello Chat, how are you?",
-                     "Hello Chat can you help me", "Okay hello chat", "I stopped the video hello chat",
+        for text in ["Hello Chat", "HelloChat", "Hello Chad", "Okay hello chat", "I stopped the video hello chat",
                      "That was a long sentence. Hello Chat", "That was a long sentence hello chat",
-                     "He said that was all. Hello Chat", "Hello Chat! What time is it?",
-                     "Hello Chat is it raining", "Hello Chat does it work on my Mac",
-                     "hello chance can you help", "hello chocolate", "hello chatty"] {
+                     "He said that was all. Hello Chat", "hello chocolate", "hello chatty"] {
             check(text, expected: true)
         }
-        for text in ["I said hello chat", "When I say hello chat", "It is called Hello Chat",
+        for text in ["Hello Chat, how are you?", "Hello Chat can you help me", "Hello Chat! What time is it?",
+                     "Hello Chat is it raining", "Hello Chat does it work on my Mac", "hello chance can you help", "I said hello chat", "When I say hello chat", "It is called Hello Chat",
                      "I'm talking about hello chat", "the hello chat detection isn't good enough",
                      "Why doesn't hello chat work", "Hello Chat is the phrase", "Hello Chat doesn't work",
                      "Hello Chat should work", "She mentioned hello chat yesterday", "It detects hello chat",
@@ -101,8 +103,8 @@ import Foundation
         check("Hello Chad", expected: false, similar: false)
         check("Hello chance", expected: false, similar: false)
         check("Hello chance", expected: false, phrase: "Hey Chat")
-        for text in ["Helo Chatt", "Hallo Chad", "Yellow Chat", "H E L L O C H A T",
-                     "The video stopped. Hullo Chart, can you help?"] { check(text, expected: true) }
+        for text in ["Helo Chatt", "Hallo Chad", "Yellow Chat", "H E L L O C H A T"] { check(text, expected: true) }
+        check("The video stopped. Hullo Chart, can you help?", expected: false)
         for text in ["Hi Chat", "High Chat", "Hi Chad", "H I chat", "H I G H chat",
                      "Oh hi chat", "highchat", "it registered as high chat", "it registered as Hello Chat"] {
             check(text, expected: false)
@@ -118,7 +120,7 @@ import Foundation
                      "I said as well chat", "as well chat detection", "that as well. Chat what next", "help chat"] {
             check(text, expected: false)
         }
-        check("Computer Listen can you help me", expected: true, phrase: "Computer Listen")
+        check("Computer Listen can you help me", expected: false, phrase: "Computer Listen")
         check("High At", expected: true, phrase: "High At", similar: false)
         check("it's too high at low speed. Hello Chat", expected: true)
         var detector = StandaloneWake()
@@ -131,9 +133,9 @@ import Foundation
             return detector.poll(at: at, phrase: "Hello Chat", similar: true)
         }
         detector.audio(level: 0.2, seconds: 0.1); update("Hello Chat", 1)
-        expect(detector.poll(at: 1.01, phrase: "Hello Chat", similar: true), "Wake as soon as the address is heard, without a pause")
+        expect(!detector.poll(at: 1.01, phrase: "Hello Chat", similar: true), "An address remains pending before its pause")
         update("Hello Chat is the phrase", 1.3)
-        expect(!poll(2), "A later mention correction cannot repeat the wake (accepted trade-off)")
+        expect(!poll(2), "A later mention correction cancels the pending wake")
         update("Hello Chat is the phrase. Hello Chat", 3)
         expect(poll(3.6), "A new address after a mention wakes")
         update("Hello Chat was the phrase. Hello Chat", 4)
@@ -170,7 +172,7 @@ import Foundation
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("Helo Chatt U I Chat", 1)
         detector.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true)
-        expect(poll(2), "Removed discussion alias must not cancel a genuine wake")
+        expect(!poll(2), "Uninterrupted discussion after a wake has no command pause")
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("as well chat", 1)
         expect(poll(1.6), "The screenshot phrase wakes once")
@@ -190,27 +192,67 @@ import Foundation
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("Hello Chat", 1)
         detector.audio(level: 0.2, seconds: 1)
-        expect(detector.poll(at: 2, phrase: "Hello Chat", similar: true), "Continued speech after the address does not delay the wake")
+        expect(!detector.poll(at: 2, phrase: "Hello Chat", similar: true), "Continued speech cannot satisfy the required pause")
         update("Hello Chat what's the weather like", 2.5)
         expect(!detector.poll(at: 2.6, phrase: "Hello Chat", similar: true), "Words spoken straight after the wake cannot repeat it")
         expect(!detector.poll(at: 3, phrase: "Hello Chat", similar: true), "One address wakes only once")
         for text in ["Hello Chat", "A video sentence. Hello Chat", "Yellow Chat"] {
             detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update(text, at: 1)
             var decisions: [String] = []
-            expect(detector.poll(at: 1.01, phrase: "Hello Chat", similar: true, onDecision: { reason, _, _ in
+            expect(!detector.poll(at: 1.01, phrase: "Hello Chat", similar: true, onDecision: { reason, _, _ in
                 decisions.append(reason)
-            }), "Steady background noise does not delay a direct address")
-            expect(decisions == ["accepted_immediately"], "The decision is logged without recognized words")
+            }), "Noise alone never satisfies the silence gate")
+            expect(decisions == ["waiting_for_pause"], "The wait is logged without recognized words")
+            detector.audio(level: 0, seconds: 0.6)
+            expect(detector.poll(at: 1.6, phrase: "Hello Chat", similar: true), "Quiet audio releases the pending command")
             expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "The address fires only once")
         }
         for text in ["I said Hello Chat", "the Hello Chat", "Hello Chat is the phrase", "Hello Chat can you help"] {
             detector.reset(); detector.audio(level: 0.05, seconds: 3); detector.update(text, at: 1)
-            expect(detector.poll(at: 1.01, phrase: "Hello Chat", similar: true) == (text == "Hello Chat can you help"),
-                   "Words already heard still filter mentions; a request wakes at once")
+            expect(!detector.poll(at: 1.01, phrase: "Hello Chat", similar: true),
+                   "Mentions and uninterrupted following speech remain inert")
         }
         detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update("Hello Chat Bye Chat", at: 1)
         detector.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true)
         expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "An end in the same transcript still cancels the wake")
+        for (phrase, ending) in [("Hello Chat", false), ("Bye Chat", true), ("Mute Chat", false)] {
+            var pending = StandaloneWake()
+            pending.audio(level: 0.2, seconds: 0.1)
+            pending.update(phrase, at: 100, timings: [(phrase.lowercased().components(separatedBy: " ")[0], 0, 0.2), ("chat", 0.2, 0.4)])
+            expect(!pending.poll(at: 1000, phrase: phrase, similar: false, ending: ending), "Wall-clock delay cannot substitute for audio silence")
+            pending.audio(level: 0, seconds: 0.59)
+            expect(!pending.poll(at: 1001, phrase: phrase, similar: false, ending: ending), "590 ms is too short for every command")
+            pending.audio(level: 0, seconds: 0.02)
+            expect(pending.poll(at: 1002, phrase: phrase, similar: false, ending: ending), "610 ms releases every command once")
+            expect(!pending.poll(at: 1003, phrase: phrase, similar: false, ending: ending), "A paused command cannot replay")
+        }
+        for gap in [0.1, 0.599, 0.6, 0.8] {
+            var laterWords = StandaloneWake()
+            laterWords.audio(level: 0.2, seconds: 2)
+            laterWords.update("hello chat continue", at: 999, timings: [("hello", 0, 0.2), ("chat", 0.2, 0.4), ("continue", 0.4 + gap, 1.4 + gap)])
+            expect(laterWords.poll(at: 999, phrase: "Hello Chat", similar: true) == (gap >= 0.6), "Only the audio timestamp gap permits following words")
+        }
+        var customMute = StandaloneWake()
+        customMute.audio(level: 0.2, seconds: 0.1)
+        customMute.update("Quiet Lantern", at: 1)
+        customMute.audio(level: 0, seconds: 0.6)
+        expect(customMute.pollMicrophone(at: 2, phrases: ["Quiet Lantern"], similar: true), "Saved microphone phrases use the same pause gate")
+        var ambient = StandaloneWake()
+        ambient.audio(level: 0.08, seconds: 0.1, at: 1.0)
+        ambient.update("hello chat", at: 500, timings: [("hello", 0.2, 0.4), ("chat", 0.4, 0.6)])
+        expect(!ambient.poll(at: 500, phrase: "Hello Chat", similar: true), "A delayed callback cannot manufacture a speech gap")
+        ambient.audio(level: 0.08, seconds: 0.19, at: 1.19)
+        expect(!ambient.poll(at: 501, phrase: "Hello Chat", similar: true), "Ambient noise does not shorten the 600 ms word-time gap")
+        ambient.audio(level: 0.08, seconds: 0.01, at: 1.2)
+        expect(ambient.poll(at: 502, phrase: "Hello Chat", similar: true), "Ambient noise cannot block a timestamped speech pause")
+        var continuing = StandaloneWake()
+        continuing.audio(level: 0.08, seconds: 2, at: 2)
+        continuing.update("hello chat continue", at: 500, timings: [("hello", 0.2, 0.4), ("chat", 0.4, 0.6), ("continue", 0.7, 1.0)])
+        expect(!continuing.poll(at: 500, phrase: "Hello Chat", similar: true), "Continuing speech with a short gap stays inert even after a later pause")
+        var microphoneAlias = StandaloneWake()
+        microphoneAlias.audio(level: 0.08, seconds: 0.1, at: 1.2)
+        microphoneAlias.update("silent chad", at: 5, timings: [("silent", 0.2, 0.4), ("chad", 0.4, 0.6)])
+        expect(microphoneAlias.pollMicrophone(at: 5, similar: true), "The narrow microphone dictionary uses the same timestamp pause")
         let started = Date()
         for _ in 0..<100_000 { precondition(!poll(4), "Idle frames do not repeat a wake") }
         print("Context-aware wake: \(checks) checks passed; 100000 idle polls in \(Date().timeIntervalSince(started))s")

@@ -1,20 +1,18 @@
 import Foundation
 
-// A direct address may follow other speech. It wakes as soon as it is heard,
-// so Ethan can keep talking straight into Voice. On 1 Nov he turned off the
-// earlier "EOU afterwards" wait (0.6 s of quiet, 1.2 s of stable text over
-// noise, or Parakeet's native EOU): it delayed Voice, and with constant room
-// noise a wake followed by more words never completed at all. Don't bring
-// the wait back. The trade-off is that words after the phrase can no longer
-// cancel a wake, so only words already heard filter out mentions.
+// Ethan reinstated a 600 ms pause after every keyword on 8 November 2026.
+// Use word timestamps and the recognizer's audio clock, not room volume or
+// transcript arrival time. Ambient noise is not the same as continuing speech.
 struct StandaloneWake {
-    // Parakeet's end-of-utterance debounce. It no longer gates waking.
+    static let commandPauseSeconds = 0.6
+    // Keep the model's existing utterance boundary independent of command gating.
     static let endSilenceSeconds = 0.6
     static let microphonePhrases = PhraseMatcher.microphonePhrases
 
-    mutating func pollMicrophone(at time: Double) -> Bool {
-        poll(at: time, phrase: Self.microphonePhrases[0], similar: false,
-             alternatives: Array(Self.microphonePhrases.dropFirst()), rejectNegated: true)
+    mutating func pollMicrophone(at time: Double, phrases: [String] = Self.microphonePhrases, similar: Bool = false) -> Bool {
+        guard let first = phrases.first else { return false }
+        return poll(at: time, phrase: first, similar: similar,
+             alternatives: Array(phrases.dropFirst()), rejectNegated: true)
     }
     // End uses the same direct-address filter as wake and mute. B Chat is
     // only a safe discussion name, never an extra command alias.
@@ -27,11 +25,13 @@ struct StandaloneWake {
     private var sentenceStarts: [Int] = []
     private var audioBoundary = 0
     private var quiet = 1.0
+    private var audioTime: Double?
     private var changedAt = 0.0
     private var consumed = 0
     private var heardSpeech = false
     private var revision = 0
     private var checkedRevision = -1
+    private var waitingForPause = false
     private var configuration = ""
     private(set) var acceptedRange: Range<Int>?
 
@@ -40,9 +40,12 @@ struct StandaloneWake {
         context = []; sentenceStarts = []; audioBoundary = 0
         wordTimings = nil
         consumed = 0; revision += 1; quiet = 0
+        waitingForPause = false
+        audioTime = nil
         acceptedRange = nil
     }
-    mutating func audio(level: Double, seconds: Double) {
+    mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
+        audioTime = time
         if level < 0.02 { quiet += seconds }
         else {
             if quiet >= 0.35, heardSpeech { audioBoundary = context.count }
@@ -70,7 +73,7 @@ struct StandaloneWake {
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
         let key = "\(phrase)|\(similar)|\(alternatives)|\(rejectNegated)|\(ending)"
         if configuration != key { configuration = key; checkedRevision = -1 }
-        guard heardSpeech, checkedRevision != revision else { return false }
+        guard heardSpeech, checkedRevision != revision || waitingForPause else { return false }
         // Alternative command wording shares one occurrence count, so a revised
         // hypothesis from "mute chat" to "silent chat" cannot toggle twice.
         var candidates: [(start: Int, end: Int)] = []
@@ -78,21 +81,48 @@ struct StandaloneWake {
             candidates.append(contentsOf: matches(phrase: candidatePhrase, similar: similar, allowEndAddressEdit: ending))
         }
         candidates.sort { left, right in left.start == right.start ? left.end < right.end : left.start < right.start }
-        let accepted = candidates.enumerated().first { index, match in
-            index + 1 > consumed
-                && !isMention(start: match.start, end: match.end, rejectNegated: rejectNegated)
-                && !(!ending && similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
-                     && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
-                     && sentenceStarts.contains { $0 > match.start && $0 < match.end })
+        waitingForPause = false
+        var accepted: (start: Int, end: Int)?
+        for (index, match) in candidates.enumerated() where index + 1 > consumed {
+            let weakSplit = !ending && similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
+                && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
+                && sentenceStarts.contains { $0 > match.start && $0 < match.end }
+            if isMention(start: match.start, end: match.end, rejectNegated: rejectNegated) || weakSplit {
+                consumed = index + 1
+                continue
+            }
+            if match.end < context.count {
+                // A late transcript can already contain words after the pause.
+                // Never infer that gap from punctuation or ASR arrival time.
+                guard let timings = wordTimings, timings.map(\.word) == context,
+                      timings[match.end].start.isFinite,
+                      timings[match.end].start - timings[match.end - 1].end + 1e-9 >= Self.commandPauseSeconds else { // Avoid rounding an exact 600 ms gap below the boundary.
+                    consumed = index + 1
+                    continue
+                }
+            } else {
+                let elapsed: Double
+                if let audioTime, let timings = wordTimings, timings.map(\.word) == context {
+                    elapsed = audioTime - timings[match.end - 1].end
+                } else {
+                    elapsed = quiet // Text-only diagnostics have no model clock; live backends supply it for every frame.
+                }
+                if !elapsed.isFinite || elapsed + 1e-9 < Self.commandPauseSeconds {
+                    waitingForPause = true
+                    break // Keep this occurrence pending; another audio frame can satisfy its pause.
+                }
+            }
+            accepted = match
+            break
         }
-        acceptedRange = accepted.map { $0.element.start..<$0.element.end }
+        acceptedRange = accepted.map { $0.start..<$0.end }
         let directAddress = accepted != nil
         checkedRevision = revision
         // Monotonic occurrence counts prevent corrections to an old sentence
         // from replaying either a rejected mention or an accepted address.
-        consumed = max(consumed, candidates.count)
+        if !waitingForPause { consumed = max(consumed, candidates.count) }
         if !candidates.isEmpty {
-            onDecision?(directAddress ? "accepted_immediately" : "rejected_context_or_consumed", quiet, time - changedAt)
+            onDecision?(directAddress ? "accepted_after_pause" : (waitingForPause ? "waiting_for_pause" : "rejected_context_or_consumed"), quiet, time - changedAt)
         }
         return directAddress
     }

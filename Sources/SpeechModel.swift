@@ -36,6 +36,7 @@ enum SpeechModel: String, CaseIterable, Identifiable, Sendable {
 
 struct SpeechUpdate {
     var text: String?
+    var audioTime: Double // Audio progress on the same resettable clock as wordTimings, including model priming.
     var reset = false
     var utteranceEnded = false
     var wordTimings: [(word: String, start: Double, end: Double)]? = nil

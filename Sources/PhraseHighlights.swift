@@ -16,7 +16,8 @@ enum PhraseHighlights {
         var priority: Int { kind == .exact ? 0 : (kind == .dictionary ? 1 : 2) }
     }
 
-    static func runs(in text: String, phrase: String, endPhrase: String = "", similar: Bool, limit: Int = 600) -> [Run] {
+    static func runs(in text: String, phrase: String, endPhrase: String = "", similar: Bool, limit: Int = 600,
+                     microphonePhrases: [String] = PhraseMatcher.microphonePhrases) -> [Run] {
         guard limit > 0, !text.isEmpty else { return [] }
         let visibleStart = text.index(text.endIndex, offsetBy: -min(limit, text.count))
         var ranges: [Range<String.Index>] = []
@@ -33,7 +34,7 @@ enum PhraseHighlights {
         }
         var candidates: [Span] = []
         let phrases = [(phrase, false, similar), (endPhrase, true, similar)]
-            + PhraseMatcher.microphonePhrases.map { ($0, false, false) }
+            + microphonePhrases.map { ($0, false, similar) }
         for (savedPhrase, ending, allowSimilar) in phrases {
             // End phrases use the detector's closing-command dictionary too:
             // Ethan's "by chat" must colour like the accepted Bye Chat variant.

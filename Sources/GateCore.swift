@@ -27,7 +27,8 @@ struct MicrophoneOwnership {
 
 struct PhraseMatcher {
     enum MatchKind: String { case exact, dictionary, fuzzy }
-    static let microphonePhrases = ["mute chat", "silent chat", "silence chat"] // Shared by detection and transcript highlighting; no fuzzy microphone aliases.
+    static let microphonePhrases = ["mute chat", "silent chat", "silence chat"] // Shared default values for saved settings, detection and highlighting.
+    private static let microphoneDictionaryNames: Set<String> = ["chat", "chad", "chatt"] // Deliberately narrower than the wake dictionary; never turn "unmute" into "mute".
 
     // Presentation uses the same acceptance rules as command detection. A
     // highlighted phrase is a textual match, not proof a Voice action ran.
@@ -36,7 +37,8 @@ struct PhraseMatcher {
         guard equivalent(candidate, to: phrase, similar: similar, allowEndAddressEdit: ending) else { return nil }
         let expected = words(phrase)
         if words(candidate).joined() == expected.joined() { return .exact }
-        if (!ending && expected == ["hello", "chat"]) || (ending && expected == ["bye", "chat"]) {
+        if (!ending && expected == ["hello", "chat"]) || (ending && expected == ["bye", "chat"])
+            || microphonePhrases.contains(expected.joined(separator: " ")) {
             return .dictionary
         }
         return .fuzzy
@@ -180,6 +182,9 @@ struct PhraseMatcher {
         if similar, expected == ["bye", "chat"], allowEndAddressEdit {
             return !ordinaryEndPhrases.contains(actual) && (endVariants.contains(actual) || observedEndVariants.contains(actual))
         }
+        if similar, microphonePhrases.contains(expected.joined(separator: " ")) {
+            return microphoneDictionaryNames.contains { actual == expected[0] + $0 }
+        }
         // Keep the address and the start of the name intact. A single spelling
         // edit can cover Chat/Chad/Chatt without accepting HR, Hey that or Hey cat.
         guard similar, expected.count >= 2, let last = expected.last, last.count >= 4 else { return false }
@@ -230,11 +235,13 @@ struct PhraseMatcher {
         while start < tokens.count {
             var found = false
             var candidate = ""
-            for length in 1...min(maxSpan, tokens.count - start) {
+            let lengths = Array(1...min(maxSpan, tokens.count - start))
+            let exactLength = lengths.first { tokens[start..<(start + $0)].joined() == compact }
+            for length in exactLength.map({ [$0] }) ?? lengths { // Preserve a full spelled-out command before a shorter dictionary prefix such as H E L L O C H.
                 let end = start + length
                 // Tokens are already normalized; don't tokenize the growing
                 // candidate and saved phrase again for every possible span.
-                candidate += tokens[end - 1]
+                candidate = tokens[start..<end].joined()
                 guard equivalentCompact(candidate, expected: expected, compact: compact,
                                         similar: similar, allowEndAddressEdit: ending) else { continue }
                 guard closeInTime(start: start, end: end, tokens: tokens, timings: timings) else { continue }
@@ -247,7 +254,7 @@ struct PhraseMatcher {
     }
     // Ethan's "hello ... much later ... chat" must not become a command.
     // These are model audio timestamps when exposed, with observed revision
-    // times as fallback. No wait is added after a naturally spoken phrase.
+    // times as fallback. StandaloneWake owns the separate post-keyword pause.
     static func closeInTime(start: Int, end: Int, tokens: [String],
                             timings: [(word: String, start: Double, end: Double)]?) -> Bool {
         guard let timings else { return true } // Text-only callers have no audio clock.
