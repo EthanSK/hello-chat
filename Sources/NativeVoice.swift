@@ -281,7 +281,8 @@ import Foundation
         guard fresh.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
         if fresh.applicationAbsent { return false }
         guard fresh.pid != nil, fresh.microphone != nil || fresh.outputMuted != nil || fresh.endControlAvailable else {
-            guard fresh.pid != nil, fresh.controlsComplete || (!fresh.applicationHasWindow && !fresh.inputRunning) else {
+            let absent = fresh.controlsComplete && (fresh.applicationReady || !fresh.inputRunning) // A complete native shell with active input still cannot prove Voice is absent.
+            guard fresh.pid != nil, absent || (!fresh.applicationHasWindow && !fresh.inputRunning) else {
                 throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
             }
             diagnostics?.record("voice.audio.inactive", info: ["action": action.rawValue])

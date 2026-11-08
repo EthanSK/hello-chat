@@ -85,6 +85,13 @@ import Foundation
             let active = try await noWindow.setAudio(.muteMicrophone, onRecognized: { silentCues += 1 })
             precondition(!active && silentCues == 0, "Closed windows and completely scanned empty shells remain silent no-ops")
         }
+        let inputOnlyShell = NativeVoice(transport: .init(snapshot: {
+            var shell = state(input: true)
+            shell.applicationReady = false; shell.applicationHasWindow = true
+            return shell
+        }, send: { _, _ in fatalError("An input-only shell does not prove which channel to toggle") }, activate: { _ in }))
+        do { try await inputOnlyShell.setAudio(.muteMicrophone); fatalError("A complete shell with active input remains unknown") }
+        catch is BridgeError { }
         for permission in [false, true] {
             var reads = 0, cues = 0
             let unavailable = NativeVoice(transport: .init(snapshot: {

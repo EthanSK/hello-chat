@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct TranscriptPane: View {
     static let coordinateSpace = "transcriptViewport"
@@ -11,66 +12,120 @@ struct TranscriptPane: View {
     let scale: Double
     var controlPhrases: [String] = PhraseMatcher.controlPhrases
     @State private var top: CGFloat?
-    @State private var followsLatest = true
-    @State private var userScrolling = false
-    @State private var heldSegments: [String]?
 
     private var height: CGFloat {
         TranscriptViewport.height(viewport: viewportHeight, top: top, scale: scale)
     }
-    private var readable: Bool {
-        TranscriptViewport.isReadable(viewport: viewportHeight, top: top, height: height, scale: scale)
+    var body: some View {
+        NativeTranscript(segments: segments, phrase: phrase, endPhrase: endPhrase, similar: similar,
+                         enabled: enabled, scale: scale, controlPhrases: controlPhrases)
+            .frame(height: height)
+            .background {
+                GeometryReader { geometry in
+                    Color.clear.onGeometryChange(for: CGFloat.self) { geometry in
+                        geometry.frame(in: .named(Self.coordinateSpace)).minY
+                    } action: { top = $0 }
+                }
+            }
     }
-    private func atEnd(_ geometry: ScrollGeometry) -> Bool {
-        geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 24
+}
+
+// SwiftUI Text drew the entire long history on every revision. NSTextView owns
+// efficient scrolling and continuous selection; the matcher still styles each
+// recognition segment separately through the same cache used by previews.
+private struct NativeTranscript: NSViewRepresentable {
+    let segments: [String]
+    let phrase: String
+    let endPhrase: String
+    let similar: Bool
+    let enabled: Bool
+    let scale: Double
+    let controlPhrases: [String]
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+        scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
+        scroll.drawsBackground = false; scroll.borderType = .noBorder
+        scroll.setAccessibilityIdentifier("transcriptScroll")
+        let text = NSTextView(frame: .zero)
+        text.isEditable = false; text.isSelectable = true; text.drawsBackground = false
+        text.isVerticallyResizable = true; text.isHorizontallyResizable = false
+        text.autoresizingMask = [.width]
+        text.minSize = .zero; text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        text.textContainerInset = .zero
+        text.textContainer?.lineFragmentPadding = 0
+        text.textContainer?.widthTracksTextView = true
+        text.setAccessibilityIdentifier("heardText")
+        text.setAccessibilityLabel("Heard transcript")
+        scroll.documentView = text
+        context.coordinator.scroll = scroll
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.scrolled),
+                                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        DispatchQueue.main.async { context.coordinator.applyLatest(forceLayout: true) } // Initial SwiftUI sizing arrives after the first text update.
+        return scroll
+    }
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let cache = context.coordinator.cache
+        let values = segments.isEmpty ? [enabled ? "Nothing heard yet" : "Start listening to see what's heard"] : segments
+        let styled = segments.isEmpty ? AttributedString(values[0]) : cache.render(values, configuration: .init(phrase: phrase, endPhrase: endPhrase, similar: similar, controlPhrases: controlPhrases))
+        let font = NSFont.systemFont(ofSize: 13 * scale)
+        let native = NSMutableAttributedString(string: String(styled.characters), attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+        var location = 0
+        for run in styled.runs {
+            let length = String(styled.characters[run.range]).utf16.count
+            if let color = run.foregroundColor {
+                let nativeColor: NSColor = color == .green ? .systemGreen : (color == .orange ? .systemOrange : .systemPurple)
+                native.addAttributes([.foregroundColor: nativeColor, .backgroundColor: nativeColor.withAlphaComponent(0.12),
+                                      .font: NSFont.boldSystemFont(ofSize: font.pointSize)], range: NSRange(location: location, length: length))
+            }
+            location += length
+        }
+        context.coordinator.latest = native
+        if segments.isEmpty { context.coordinator.followsLatest = true }
+        if context.coordinator.followsLatest { context.coordinator.applyLatest() }
     }
 
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    HeardTranscript(segments: heldSegments ?? segments, phrase: phrase, endPhrase: endPhrase, similar: similar, enabled: enabled, controlPhrases: controlPhrases)
-                        .equatable()
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .accessibilityIdentifier("heardText")
-                    Color.clear.frame(height: 1).id("transcriptTail")
-                }
-                .padding(.trailing, 4)
+    final class Coordinator: NSObject {
+        let cache = HeardTranscript.HighlightCache()
+        weak var scroll: NSScrollView?
+        var latest = NSAttributedString()
+        var followsLatest = true
+        private var applying = false
+        private var viewportSize = NSSize.zero
+        private var documentHeight: CGFloat = 0
+        deinit { NotificationCenter.default.removeObserver(self) }
+
+        @objc func scrolled() {
+            guard !applying, let scroll, let text = scroll.documentView as? NSTextView else { return }
+            if scroll.contentSize != viewportSize || text.bounds.height != documentHeight {
+                viewportSize = scroll.contentSize; documentHeight = text.bounds.height
+                if followsLatest { applyLatest(forceLayout: true) }
+                return // Resizing the viewport or text is not a user scroll away from the bottom.
             }
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.top, for: .alignment)
-            .onScrollGeometryChange(for: Bool.self, of: atEnd) { _, atEnd in
-                if userScrolling { followsLatest = atEnd }
-            }
-            .onScrollPhaseChange { _, phase, context in
-                userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
-                if userScrolling { followsLatest = atEnd(context.geometry) }
-            }
-            .onChange(of: segments) { _, value in
-                if value.isEmpty { heldSegments = nil; followsLatest = true }
-                if followsLatest && readable { proxy.scrollTo("transcriptTail", anchor: .bottom) }
-            }
-            .onChange(of: followsLatest) { _, follows in
-                // Keep the complete text stable while it is selected or read.
-                heldSegments = follows ? nil : segments
-                if follows && readable { proxy.scrollTo("transcriptTail", anchor: .bottom) }
-            }
-            .onChange(of: readable) { _, visible in
-                if visible && followsLatest { proxy.scrollTo("transcriptTail", anchor: .bottom) }
-            }
-            .onChange(of: height) { _, _ in
-                if followsLatest && readable { proxy.scrollTo("transcriptTail", anchor: .bottom) }
-            }
+            followsLatest = scroll.documentVisibleRect.maxY >= text.bounds.maxY - 24
+            if followsLatest { applyLatest() }
         }
-        .frame(height: height)
-        .background {
-            GeometryReader { geometry in
-                Color.clear.onGeometryChange(for: CGFloat.self) { geometry in
-                    geometry.frame(in: .named(Self.coordinateSpace)).minY
-                } action: { top = $0 }
+        func applyLatest(forceLayout: Bool = false) {
+            guard !applying, let scroll, let text = scroll.documentView as? NSTextView,
+                  let storage = text.textStorage, forceLayout || !storage.isEqual(to: latest) else { return }
+            applying = true
+            defer { applying = false }
+            let selection = text.selectedRanges
+            if !storage.isEqual(to: latest) { storage.setAttributedString(latest) }
+            text.selectedRanges = selection.map { value in
+                let range = value.rangeValue
+                let start = min(range.location, storage.length)
+                return NSValue(range: NSRange(location: start, length: min(range.length, storage.length - start)))
             }
+            if let container = text.textContainer, let layout = text.layoutManager {
+                container.containerSize = NSSize(width: max(1, scroll.contentSize.width), height: CGFloat.greatestFiniteMagnitude)
+                layout.ensureLayout(for: container)
+                text.setFrameSize(NSSize(width: scroll.contentSize.width, height: max(scroll.contentSize.height, layout.usedRect(for: container).height)))
+            }
+            viewportSize = scroll.contentSize; documentHeight = text.bounds.height
+            text.scrollRangeToVisible(NSRange(location: storage.length, length: 0))
         }
-        .accessibilityIdentifier("transcriptScroll")
     }
 }
