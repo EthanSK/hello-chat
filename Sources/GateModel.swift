@@ -757,12 +757,14 @@ import SwiftUI
             }
             return
         }
-        let actions = VoiceAudioAction.allCases.filter { action in
+        let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int)? in
             let values = phrases(for: action)
-            guard let first = values.first else { return false }
-            return audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first, similar: similarPhrases, alternatives: Array(values.dropFirst()), rejectNegated: true)
-        }
-        if let action = actions.first {
+            guard let first = values.first,
+                  audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first, similar: similarPhrases, alternatives: Array(values.dropFirst()), rejectNegated: true),
+                  let position = audioPhraseDetectors[action]?.acceptedRange?.lowerBound else { return nil }
+            return (action, position)
+        }.sorted { $0.position < $1.position }
+        if !actions.isEmpty {
             // Reserve synchronously, as beginVoice does. Consume busy commands
             // rather than replaying a surprise mute when an opening/End finishes.
             guard !busy, !quitting else { return }
@@ -775,19 +777,21 @@ import SwiftUI
             voiceTask = Task {
                 defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
                 do {
-                    try await voice.setAudio(action)
-                    guard generation == token else { return }
-                    error = nil
-                    if !action.controlsSpeakers { microphone = action.targetMuted ? .muted : .listening }
-                    switch action {
-                    case .muteMicrophone: feedback.play(.microphoneMuted)
-                    case .unmuteMicrophone: feedback.play(.microphoneUnmuted)
-                    case .silenceSpeakers: feedback.play(.speakersMuted)
-                    case .unsilenceSpeakers: feedback.play(.speakersUnmuted)
+                    for (action, _) in actions { // A delayed transcript can contain both channels or opposite commands; apply them in spoken order.
+                        try await voice.setAudio(action)
+                        guard generation == token else { return }
+                        error = nil
+                        if !action.controlsSpeakers { microphone = action.targetMuted ? .muted : .listening }
+                        switch action {
+                        case .muteMicrophone: feedback.play(.microphoneMuted)
+                        case .unmuteMicrophone: feedback.play(.microphoneUnmuted)
+                        case .silenceSpeakers: feedback.play(.speakersMuted)
+                        case .unsilenceSpeakers: feedback.play(.speakersUnmuted)
+                        }
+                        showListening()
+                        lastEvent = action.controlsSpeakers ? "Chat audio is \(action.targetMuted ? "muted" : "on")" : "Chat is \(action.targetMuted ? "muted" : "listening")"
+                        Diagnostics.shared.record("voice.audio.confirmed", info: ["action": action.rawValue])
                     }
-                    showListening()
-                    lastEvent = action.controlsSpeakers ? "Chat audio is \(action.targetMuted ? "muted" : "on")" : "Chat is \(action.targetMuted ? "muted" : "listening")"
-                    Diagnostics.shared.record("voice.audio.confirmed", info: ["action": action.rawValue])
                 } catch {
                     guard generation == token else { return }
                     self.error = error.localizedDescription
