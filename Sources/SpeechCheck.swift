@@ -16,6 +16,7 @@ struct SpeechCheckResult {
     var startupSpeech = ""
     var startupReady = false
     var startupAtVoiceOpen = ""
+    var startupBoundary = ""
 }
 @MainActor final class SpeechCheck {
     func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false, captureStartup: Bool = false) async -> SpeechCheckResult {
@@ -34,21 +35,35 @@ struct SpeechCheckResult {
         var startup: StartupSpeechBuffer?
         var startupReady = false
         var startupAtVoiceOpen = ""
+        var startupBoundary = ""
         listener.onDelay = { gaps += 1 }
         listener.onSession = {
-            if startup != nil { startupReady = true }
+            // Same startup policy as GateModel: a context reset continues capture.
+            if !startupReady { startup?.boundary() }
             sessions += 1
             if !text.isEmpty { segments.append(text); if segments.count > 8 { segments.removeFirst() }; text = "" }
             matcher.reset()
             standaloneWake.resetContext()
         }
         listener.onComputePlan = { share = $0 }
-        listener.onAudioActivity = { level, seconds in standaloneWake.audio(level: level, seconds: seconds) }
+        listener.onAudioActivity = { level, seconds in
+            standaloneWake.audio(level: level, seconds: seconds)
+            if !startupReady {
+                if level >= 0.02 { startup?.speechResumed() }
+                startup?.audioProcessed(seconds: seconds)
+            }
+        }
         listener.onUtteranceEnd = {
             utteranceEnds += 1
-            if var capture = startup { startupReady = capture.markUtteranceEnded(); startup = capture }
+            if !startupReady, var capture = startup {
+                startupReady = capture.markUtteranceEnded(); startup = capture
+                if startupReady { startupBoundary = StartupSpeechFile.Boundary.utterance.rawValue }
+            }
         }
         listener.onFrame = { [weak listener] in
+            if !startupReady, let boundary = startup?.boundaryReached {
+                startupReady = true; startupBoundary = boundary.rawValue
+            }
             if standalone || captureStartup, standaloneWake.poll(at: Diagnostics.now, phrase: "Hello Chat", similar: similar) {
                 commands.append(.wake)
                 if captureStartup, startup == nil {
@@ -88,7 +103,8 @@ struct SpeechCheckResult {
             await listener.waitUntilStopped()
             return .init(text: failure ?? text, commands: failure == nil ? commands : [], neuralShare: share,
                          cpuSeconds: Self.cpuTime() - cpuStart, audioSeconds: audioSeconds, detections: detections, segments: segments + [text], gaps: gaps, resets: max(0, sessions - 1), utteranceEnds: utteranceEnds,
-                         startupSpeech: startup?.text ?? "", startupReady: startupReady, startupAtVoiceOpen: startupAtVoiceOpen)
+                         startupSpeech: startup?.text ?? "", startupReady: startupReady, startupAtVoiceOpen: startupAtVoiceOpen,
+                         startupBoundary: startupBoundary)
         } catch {
             listener.stop(); listener.onText = nil; listener.onSession = nil
             await listener.waitUntilStopped()

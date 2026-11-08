@@ -1,5 +1,6 @@
 import Foundation
 import os
+import Darwin
 
 // Small, serialized event logs. Never pass recognized words or audio here.
 final class Diagnostics: @unchecked Sendable {
@@ -31,6 +32,13 @@ final class Diagnostics: @unchecked Sendable {
             do {
                 let fm = FileManager.default
                 try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                // The headless startup reader now writes metadata too. Serialize
+                // append and rotation with the app across processes, off-main.
+                let lock = open(directory.appendingPathComponent(".lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+                guard lock >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                defer { close(lock) }
+                guard flock(lock, LOCK_EX) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                defer { flock(lock, LOCK_UN) }
                 let file = directory.appendingPathComponent("events.jsonl")
                 let size = (try? fm.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
                 if size + data.count + 1 > limit {

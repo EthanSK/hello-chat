@@ -24,9 +24,14 @@ import Darwin
                 print("{\"status\":\"invalid_arguments\"}"); exit(2)
             }
             do {
-                let result = try StartupSpeechFile().consume(voiceCreatedAt: Date(timeIntervalSince1970: seconds), threadID: threadID)
+                let result = try StartupSpeechFile(onEvent: {
+                    Diagnostics.shared.record($0.name, numbers: $0.numbers, info: $0.info)
+                }).consume(voiceCreatedAt: Date(timeIntervalSince1970: seconds), threadID: threadID)
+                Diagnostics.shared.flush()
                 print(String(decoding: try JSONEncoder().encode(result), as: UTF8.self)); exit(0)
             } catch {
+                Diagnostics.shared.failure("voice.startup_speech.consume_failed", error)
+                Diagnostics.shared.flush()
                 let failure = error as NSError
                 let status = failure.domain == NSPOSIXErrorDomain && failure.code == Int(EWOULDBLOCK) ? "busy" : "unavailable"
                 print("{\"status\":\"\(status)\"}"); exit(1)
@@ -88,6 +93,7 @@ import Darwin
                 let report: [String: Any] = ["model": selectedModel.rawValue, "text": result.text, "segments": result.segments, "detections": result.detections,
                     "gaps": result.gaps, "resets": result.resets, "utteranceEnds": result.utteranceEnds,
                     "startupSpeech": result.startupSpeech, "startupReady": result.startupReady, "startupAtVoiceOpen": result.startupAtVoiceOpen,
+                    "startupBoundary": result.startupBoundary,
                     "cpuSeconds": result.cpuSeconds, "audioSeconds": result.audioSeconds,
                     "memoryMB": ResourceUsage.footprintMB(), "anePlanShare": selectedModel.neuralPlacementKnown ? result.neuralShare as Any : NSNull()]
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) { print(String(decoding: data, as: UTF8.self)) }

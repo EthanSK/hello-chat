@@ -105,7 +105,10 @@ import SwiftUI
     private var startupSpeech: StartupSpeechBuffer?
     var capturingStartupSpeech: Bool { startupSpeech != nil }
     private var lastStartupSpeechID: UUID?
-    private let startupSpeechFile = StartupSpeechFile(onError: { Diagnostics.shared.failure("voice.startup_speech.file_failed", $0) })
+    private let startupSpeechFile = StartupSpeechFile(onError: { Diagnostics.shared.failure("voice.startup_speech.file_failed", $0) },
+        onEvent: { Diagnostics.shared.record($0.name, numbers: $0.numbers, info: $0.info) })
+    // At most one later revision is logged per capture, never its words.
+    private var finishedStartupObservation: (id: UUID, at: Double)?
     private var listeningTask: Task<Void, Never>?
     private var quitting = false
     // Wait for the output listener to be registered and checked before starting
@@ -156,16 +159,15 @@ import SwiftUI
         }
         listener.onSession = { [weak self] in
             self?.archive.boundary(); self?.endPhrase.resetContext(); self?.standaloneWake.resetContext(); self?.microphonePhrase.resetContext(); self?.detectionRunning = true
-            guard let self else { return }
-            if self.startupSpeech?.voiceOpened == true {
-                self.finishStartupSpeech(preserveRequested: true)
-            } else { self.startupSpeech?.boundary() }
+            // A context reset is not the end of the opening. Keep both the M5's
+            // startup capture and the independent command detector resets.
+            self?.startupSpeech?.boundary()
         }
         listener.onUtteranceEnd = { [weak self] in
             guard let self, var capture = self.startupSpeech else { return }
             let complete = capture.markUtteranceEnded()
             self.startupSpeech = capture
-            if complete { self.finishStartupSpeech(preserveRequested: true) }
+            if complete { self.finishStartupSpeech(preserveRequested: true, boundary: .utterance) }
         }
         listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.microphonePhrase.reset(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds in
@@ -174,9 +176,14 @@ import SwiftUI
             self?.endPhrase.audio(level: level, seconds: seconds)
             // Raw speech can resume before its first text hypothesis arrives.
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
+            self?.startupSpeech?.audioProcessed(seconds: seconds)
         }
         listener.onFrame = { [weak self] in
             self?.speechRecovery.processed(at: Diagnostics.now)
+            // After this frame's text; before a new wake can replace the capture.
+            if let boundary = self?.startupSpeech?.boundaryReached {
+                self?.finishStartupSpeech(preserveRequested: true, boundary: boundary)
+            }
             self?.checkStandaloneWake()
         }
         listener.onLevel = { [weak self] in self?.meter.level = $0 }
@@ -351,6 +358,8 @@ import SwiftUI
                     status = "Needs attention"
                     guard SpeechRecovery.isTransient(error), speechRecovery.retry() else {
                         listener.stop()
+                        // No more frames will arrive to end the opening; keep its words.
+                        finishStartupSpeech(preserveRequested: true)
                         Diagnostics.shared.record("speech.recovery.exhausted", numbers: ["attempts": Double(speechRecovery.attempts)])
                         return
                     }
@@ -366,6 +375,7 @@ import SwiftUI
         detectionRunning = false
         listener.stop()
         guard speechRecovery.retry() else {
+            finishStartupSpeech(preserveRequested: true)
             status = "Needs attention"
             detail = "Wake detection stopped."
             Diagnostics.shared.record("speech.recovery.exhausted", numbers: ["attempts": Double(speechRecovery.attempts)])
@@ -583,6 +593,7 @@ import SwiftUI
         // A repeated wake may reuse the current call. Finish its previous
         // opening first; an unpublished reuse buffer must not strand that file.
         finishStartupSpeech(preserveRequested: true)
+        finishedStartupObservation = nil
         let context = VoiceStartContext()
         voiceStartContext = context
         startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, phrase: wakePhrase, similar: similarPhrases)
@@ -610,7 +621,8 @@ import SwiftUI
                 if context.requestedNewCall && (!Task.isCancelled || context.preserveCallOnCancellation) {
                     let complete = capture.markVoiceOpened()
                     startupSpeech = capture
-                    if complete { finishStartupSpeech(preserveRequested: true) }
+                    recordStartupSnapshot(capture, event: "opened", inputCharacters: transcript.count)
+                    if complete { finishStartupSpeech(preserveRequested: true, boundary: .utterance) }
                 } else { finishStartupSpeech(preserveRequested: false) }
             }
             if voiceStartContext === context { voiceStartContext = nil }
@@ -663,7 +675,8 @@ import SwiftUI
     private func heard(_ text: String, timings: [(word: String, start: Double, end: Double)]) {
         guard enabled else { return }
         if saveTranscripts { archive.update(text, model: speechModel.rawValue, microphone: inputs.selectedName) }
-        if transcript != text {
+        let changed = transcript != text
+        if changed {
             transcript = text
         }
         // Use the same phrase and mention rules while Agent Flow records. Its
@@ -676,8 +689,21 @@ import SwiftUI
             && endPhrase.pollEnd(at: Diagnostics.now, phrase: sleepPhrase, similar: similarPhrases)
         if !ending {
             if var capture = startupSpeech {
+                let previous = capture.text
                 capture.observe(text); startupSpeech = capture
-                if capture.published { startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated) }
+                if changed { recordStartupSnapshot(capture, event: "recognition", inputCharacters: text.count) }
+                // Only the opening's own revisions; other transcript edits don't touch the file.
+                if capture.published, capture.text != previous {
+                    startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated)
+                }
+            } else if changed, let finished = finishedStartupObservation {
+                finishedStartupObservation = nil
+                let elapsed = Diagnostics.now - finished.at
+                if elapsed <= StartupSpeechBuffer.openLimitSeconds {
+                    Diagnostics.shared.record("voice.startup_speech.recognition_after_finish",
+                        numbers: ["seconds_after_finish": elapsed, "input_characters": Double(text.count)],
+                        info: ["request": finished.id.uuidString])
+                }
             }
             return
         }
@@ -734,19 +760,35 @@ import SwiftUI
             lastEvent = "Heard \(wakePhrase) · finishing the current Voice action"
         } else { beginVoice(trigger: "Heard \(wakePhrase)", wakeRange: standaloneWake.acceptedRange) }
     }
-    private func finishStartupSpeech(preserveRequested: Bool) {
+    // Stops, new wakes, desktop changes and quit keep the words heard so far,
+    // labelled `interrupted` because the opening's end may be missing.
+    private func finishStartupSpeech(preserveRequested: Bool, boundary: StartupSpeechFile.Boundary = .interrupted) {
         guard let capture = startupSpeech else { return }
         startupSpeech = nil
         guard capture.published else { return }
         if preserveRequested {
-            startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated, ready: true)
-            Diagnostics.shared.record("voice.startup_speech.ready", numbers: ["characters": Double(capture.text.count)], info: ["request": capture.id.uuidString, "truncated": String(capture.truncated)])
+            finishedStartupObservation = (capture.id, Diagnostics.now)
+            startupSpeechFile.update(id: capture.id, text: capture.text, truncated: capture.truncated, boundary: boundary)
+            // Metadata only: never the recognised words.
+            Diagnostics.shared.record("voice.startup_speech.ready",
+                numbers: ["characters": Double(capture.text.count), "seconds_after_open": capture.openSeconds],
+                info: ["request": capture.id.uuidString, "boundary": boundary.rawValue,
+                       "truncated": String(capture.truncated || boundary.mayBeIncomplete),
+                       "opening_words": String(capture.hasOpeningWords), "alignment": capture.alignment.rawValue])
         }
         else { startupSpeechFile.cancel(id: capture.id) }
     }
     private func cancelStartupSpeech() {
         startupSpeech = nil
+        finishedStartupObservation = nil
         if let id = lastStartupSpeechID { startupSpeechFile.cancel(id: id); lastStartupSpeechID = nil }
+    }
+    private func recordStartupSnapshot(_ capture: StartupSpeechBuffer, event: String, inputCharacters: Int) {
+        Diagnostics.shared.record("voice.startup_speech.\(event)",
+            numbers: ["input_characters": Double(inputCharacters), "captured_characters": Double(capture.text.count),
+                      "seconds_after_open": capture.openSeconds],
+            info: ["request": capture.id.uuidString, "alignment": capture.alignment.rawValue,
+                   "opening_words": String(capture.hasOpeningWords)])
     }
     func quit() { NSApp.terminate(nil) }
     func restoreAfterFailedUpdate() async {
