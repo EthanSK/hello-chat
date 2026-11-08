@@ -6,75 +6,63 @@ import Foundation
             VoiceSnapshot(pid: 123, inputRunning: input || mic != nil, recorderRunning: false,
                           microphone: mic, accessibilityAllowed: allowed)
         }
-        var toggledState = state(.listening), toggles: [MicrophoneState] = []
-        let toggledVoice = NativeVoice(transport: .init(snapshot: { toggledState },
-            send: { command, pid in
-                precondition(command == VoiceBridge.muteCommand && pid == 123, "Microphone phrases send only the microphone shortcut")
-                guard let current = toggledState.microphone else { preconditionFailure("Fixture requires an active microphone") }
-                toggles.append(current)
-                toggledState = state(current == .listening ? .muted : .listening)
-            }, activate: { pid in precondition(pid == 123) }))
-        let muted = try await toggledVoice.toggleMicrophone()
-        precondition(muted == .muted && toggledVoice.connected, "Adopt an externally started call and mute without ending it")
-        let unmuted = try await toggledVoice.toggleMicrophone()
-        precondition(unmuted == .listening && toggles == [.listening, .muted], "Second command unmutes exactly once")
-        for unavailable in [state(), state(.muted, allowed: false)] {
-            toggledState = unavailable
-            do { _ = try await toggledVoice.toggleMicrophone(); fatalError("Unknown/off/denied Voice accepted toggle") }
-            catch is BridgeError { }
+        for action in VoiceAudioAction.allCases {
+            var current = state(action.controlsSpeakers ? .listening : (action.targetMuted ? .listening : .muted))
+            current.outputMuted = action.controlsSpeakers ? !action.targetMuted : false
+            let untouchedMicrophone = current.microphone, untouchedOutput = current.outputMuted
+            var sends = 0
+            let audio = NativeVoice(transport: .init(snapshot: { current }, send: { command, pid in
+                precondition(pid == 123)
+                precondition(command == (action.controlsSpeakers ? VoiceBridge.outputMuteCommand : VoiceBridge.muteCommand))
+                sends += 1
+                if action.controlsSpeakers { current.outputMuted = action.targetMuted }
+                else { current.microphone = action.targetMuted ? .muted : .listening }
+            }, activate: { _ in }))
+            try await audio.setAudio(action)
+            precondition(action.isMuted(in: current) == action.targetMuted && sends == 1 && audio.connected)
+            precondition(action.controlsSpeakers ? current.microphone == untouchedMicrophone : current.outputMuted == untouchedOutput,
+                         "Only the requested microphone/speaker channel can change")
+            try await audio.setAudio(action)
+            precondition(sends == 1, "Repeating a directional command must not toggle back")
+            audio.detachForQuit()
+            do { try await audio.setAudio(action); fatalError("Detached helper accepted audio action") }
+            catch is CancellationError { }
         }
-        precondition(toggles.count == 2, "Unavailable controls never send a toggle or start a call")
-        var unknownSends = 0
-        let unknownMicrophoneToggle = NativeVoice(transport: .init(snapshot: { state(input: true) },
-            send: { command, pid in
-                precondition(command == VoiceBridge.muteCommand && pid == 123)
-                unknownSends += 1
-            }, activate: { _ in }))
-        do { _ = try await unknownMicrophoneToggle.toggleMicrophone(); fatalError("Missing labels cannot prove a muted state") }
-        catch is BridgeError { }
-        precondition(unknownSends == 1, "Current call/input with missing AX labels still sends exactly one microphone shortcut")
-
-        var discoveredState = state(input: true)
-        let discoveredMicrophone = NativeVoice(transport: .init(snapshot: { discoveredState },
-            send: { command, _ in
-                precondition(command == VoiceBridge.muteCommand)
-                discoveredState = state(.muted)
-            }, activate: { _ in }))
-        let discovered = try await discoveredMicrophone.toggleMicrophone()
-        precondition(discovered == .muted, "A newly exposed native state confirms the explicit action")
-
-        var closedDuringActivation = state(input: true)
-        let closedMicrophone = NativeVoice(transport: .init(snapshot: { closedDuringActivation },
-            send: { _, _ in fatalError("A closed call must not receive a shortcut") },
-            activate: { _ in closedDuringActivation = state() }))
-        do { _ = try await closedMicrophone.toggleMicrophone(); fatalError("Call closure must invalidate delivery") }
-        catch is BridgeError { }
-        toggledState = state(.listening)
-        toggledVoice.detachForQuit()
-        do { _ = try await toggledVoice.toggleMicrophone(); fatalError("Detached helper accepted toggle") }
-        catch is CancellationError { }
-        precondition(toggles.count == 2, "Quit preserves the active microphone")
-        let unconfirmedToggle = NativeVoice(transport: .init(snapshot: { state(.listening) },
-            send: { command, _ in precondition(command == VoiceBridge.muteCommand) },
-            activate: { _ in }))
-        do { _ = try await unconfirmedToggle.toggleMicrophone(); fatalError("Unchanged controls were reported as muted") }
-        catch is BridgeError { }
-
-        var changedMicrophone = state(.listening)
-        let changedBeforeDelivery = NativeVoice(transport: .init(snapshot: { changedMicrophone },
-            send: { _, _ in fatalError("A manual microphone change during activation must cancel the shortcut") },
-            activate: { _ in changedMicrophone = state(.muted) }))
-        do { _ = try await changedBeforeDelivery.toggleMicrophone(); fatalError("Stale microphone state accepted") }
+        for action in VoiceAudioAction.allCases {
+            let unknown = NativeVoice(transport: .init(snapshot: { state(input: true) },
+                send: { _, _ in fatalError("Unknown state must never send a toggle") }, activate: { _ in }))
+            do { try await unknown.setAudio(action); fatalError("Unknown state was reported as success") }
+            catch is BridgeError { }
+            var changing = state(.muted); changing.outputMuted = true
+            let ready = NativeVoice(transport: .init(snapshot: { changing },
+                send: { _, _ in fatalError("A manual action already achieved the desired state") },
+                activate: { _ in
+                    if action.controlsSpeakers { changing.outputMuted = action.targetMuted }
+                    else { changing.microphone = action.targetMuted ? .muted : .listening }
+                }))
+            try await ready.setAudio(action)
+        }
+        let unconfirmed = NativeVoice(transport: .init(snapshot: { state(.listening) },
+            send: { _, _ in }, activate: { _ in }))
+        do { try await unconfirmed.setAudio(.muteMicrophone); fatalError("Unchanged state cannot confirm mute") }
         catch is BridgeError { }
         var failedSends = 0
-        let failedMicrophone = NativeVoice(transport: .init(snapshot: { state(.listening) },
-            send: { command, _ in
-                precondition(command == VoiceBridge.muteCommand); failedSends += 1
-                throw BridgeError.message("Voice shortcuts saved. Restart Codex to apply them.")
-            }, activate: { _ in }))
-        do { _ = try await failedMicrophone.toggleMicrophone(); fatalError("Pending shortcut must remain an error") }
+        let failed = NativeVoice(transport: .init(snapshot: { state(.listening) },
+            send: { _, _ in failedSends += 1; throw BridgeError.message("Not applied") }, activate: { _ in }))
+        do { try await failed.setAudio(.muteMicrophone); fatalError("A rejected native shortcut must fail") }
         catch is BridgeError { }
-        precondition(failedSends == 1, "An unregistered shortcut must not retry or fall back to AXPress")
+        precondition(failedSends == 1, "No retry or AX fallback may invert a channel")
+
+        precondition(VoiceBridge.outputMuteState(label: "Mute speakers") == false)
+        precondition(VoiceBridge.outputMuteState(label: "Unmute speakers") == true)
+        precondition(VoiceBridge.outputMuteState(label: "Mute microphone") == nil, "Microphone state cannot be mistaken for speaker state")
+        var outputRead = 0
+        var output = state(.listening); output.outputMuted = false
+        let separatedReads = NativeVoice(transport: .init(snapshot: { fatalError("Speaker commands need an output-state scan") },
+            send: { command, _ in precondition(command == VoiceBridge.outputMuteCommand); output.outputMuted = true }, activate: { _ in },
+            outputSnapshot: { outputRead += 1; return output }))
+        try await separatedReads.setAudio(.silenceSpeakers)
+        precondition(outputRead == 3 && output.outputMuted == true && output.microphone == .listening)
 
         var mailboxState = state(), mailboxEvents: [String] = []
         let mailboxContext = VoiceStartContext()

@@ -13,6 +13,25 @@ enum MicrophoneState: String, Codable {
         }
     }
 }
+enum VoiceAudioAction: String, CaseIterable, Hashable {
+    case muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers
+    var targetMuted: Bool {
+        switch self {
+        case .muteMicrophone, .silenceSpeakers: return true
+        case .unmuteMicrophone, .unsilenceSpeakers: return false
+        }
+    }
+    var controlsSpeakers: Bool {
+        switch self {
+        case .muteMicrophone, .unmuteMicrophone: return false
+        case .silenceSpeakers, .unsilenceSpeakers: return true
+        }
+    }
+    func isMuted(in snapshot: VoiceSnapshot) -> Bool? {
+        if controlsSpeakers { return snapshot.outputMuted }
+        return snapshot.microphone.map { $0 == .muted }
+    }
+}
 enum PhraseCommand: Equatable { case wake, sleep }
 
 struct MicrophoneOwnership {
@@ -27,8 +46,11 @@ struct MicrophoneOwnership {
 
 struct PhraseMatcher {
     enum MatchKind: String { case exact, dictionary, fuzzy }
-    static let microphonePhrases = ["mute chat", "silent chat", "silence chat"] // Shared default values for saved settings, detection and highlighting.
-    private static let microphoneDictionaryNames: Set<String> = ["chat", "chad", "chatt"] // Deliberately narrower than the wake dictionary; never turn "unmute" into "mute".
+    static let mutePhrase = "mute chat", unmutePhrase = "unmute chat"
+    static let silentPhrase = "silent chat", silencePhrase = "silence chat", unsilencePhrase = "unsilence chat"
+    static let microphonePhrases = [mutePhrase]
+    static let controlPhrases = [mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase]
+    private static let audioDictionaryNames: Set<String> = ["chat", "chad", "chatt"] // Deliberately narrower than the wake dictionary; never turn "unmute" into "mute".
 
     // Presentation uses the same acceptance rules as command detection. A
     // highlighted phrase is a textual match, not proof a Voice action ran.
@@ -38,7 +60,7 @@ struct PhraseMatcher {
         let expected = words(phrase)
         if words(candidate).joined() == expected.joined() { return .exact }
         if (!ending && expected == ["hello", "chat"]) || (ending && expected == ["bye", "chat"])
-            || microphonePhrases.contains(expected.joined(separator: " ")) {
+            || controlPhrases.contains(expected.joined(separator: " ")) {
             return .dictionary
         }
         return .fuzzy
@@ -182,8 +204,8 @@ struct PhraseMatcher {
         if similar, expected == ["bye", "chat"], allowEndAddressEdit {
             return !ordinaryEndPhrases.contains(actual) && (endVariants.contains(actual) || observedEndVariants.contains(actual))
         }
-        if similar, microphonePhrases.contains(expected.joined(separator: " ")) {
-            return microphoneDictionaryNames.contains { actual == expected[0] + $0 }
+        if similar, controlPhrases.contains(expected.joined(separator: " ")) {
+            return audioDictionaryNames.contains { actual == expected[0] + $0 }
         }
         // Keep the address and the start of the name intact. A single spelling
         // edit can cover Chat/Chad/Chatt without accepting HR, Hey that or Hey cat.
@@ -311,6 +333,7 @@ struct VoiceSnapshot: Codable {
     var inputRunning: Bool
     var recorderRunning: Bool
     var microphone: MicrophoneState?
+    var outputMuted: Bool? = nil
     var accessibilityAllowed: Bool
     var endControlAvailable = false
     var controlsComplete = true

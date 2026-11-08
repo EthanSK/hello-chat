@@ -98,7 +98,7 @@ struct VoiceBridge {
         }
     }
 
-    static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96, requireEnd: Bool = false,
+    static func snapshot(readMicrophone: Bool = true, maximumDepth: Int = 96, requireEnd: Bool = false, readOutput: Bool = false,
                          observeCallElements: (([AXUIElement]) -> Void)? = nil) -> VoiceSnapshot {
         let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
         let applications = candidates
@@ -107,14 +107,14 @@ struct VoiceBridge {
         let pids = inputPIDs()
         let voice = app?.bundleURL.map { bundle in pids.contains { executable($0)?.hasPrefix(bundle.path + "/Contents/") == true } } ?? false
         let recorder = pids.contains { executable($0)?.hasPrefix("/Applications/AgentFlow.app/Contents/") == true }
-        var controls = readMicrophone ? voiceControls(app?.processIdentifier, requireEnd: requireEnd, maximumDepth: maximumDepth) : Controls()
+        var controls = (readMicrophone || readOutput) ? voiceControls(app?.processIdentifier, requireEnd: requireEnd, maximumDepth: maximumDepth, requireOutput: readOutput) : Controls()
         observeCallElements?(controls.watchElements + [controls.end, controls.microphoneButton].compactMap { $0 })
         if app == nil { controls.failure = "application_lookup:\(candidates.count)/\(applications.count)" }
         return VoiceSnapshot(pid: app?.processIdentifier, inputRunning: voice, recorderRunning: recorder,
-                             microphone: controls.microphone, accessibilityAllowed: AXIsProcessTrusted(), endControlAvailable: controls.end != nil,
+                             microphone: controls.microphone, outputMuted: controls.outputMuted, accessibilityAllowed: AXIsProcessTrusted(), endControlAvailable: controls.end != nil,
                              controlsComplete: controls.complete, scanNodes: controls.nodes, scanTimeouts: controls.timeouts, scanDepth: controls.depth, scanFailure: controls.failure,
                              applicationReady: app?.isFinishedLaunching == true
-                                && (controls.windowReady || controls.microphone != nil || controls.end != nil),
+                                && (controls.windowReady || controls.microphone != nil || controls.end != nil || controls.outputMuted != nil),
                              applicationLaunching: app.map { !$0.isFinishedLaunching } ?? false,
                              applicationHasWindow: controls.hasWindow,
                              applicationHasWebContent: controls.webContentReady,
@@ -228,6 +228,7 @@ struct VoiceBridge {
     private struct Controls {
         var watchElements: [AXUIElement] = []
         var microphone: MicrophoneState?
+        var outputMuted: Bool?
         var microphoneButton: AXUIElement?
         var end: AXUIElement?
         var endLabel: String?
@@ -245,7 +246,14 @@ struct VoiceBridge {
         static func == (lhs: Self, rhs: Self) -> Bool { CFEqual(lhs.element, rhs.element) }
         func hash(into hasher: inout Hasher) { hasher.combine(CFHash(element)) }
     }
-    private static func voiceControls(_ pid: pid_t?, requireEnd: Bool = false, maximumDepth: Int = 96) -> Controls {
+    static func outputMuteState(label: String) -> Bool? {
+        switch label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "mute speakers": return false
+        case "unmute speakers": return true
+        default: return nil
+        }
+    }
+    private static func voiceControls(_ pid: pid_t?, requireEnd: Bool = false, maximumDepth: Int = 96, requireOutput: Bool = false) -> Controls {
         guard let pid, AXIsProcessTrusted(), codexProcess(pid) else { return Controls() }
         let root = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(root, 0.25)
@@ -278,6 +286,7 @@ struct VoiceBridge {
                     if let state = MicrophoneState.accessibilityLabel(label) {
                         result.microphone = state; result.microphoneButton = element
                     }
+                    if let muted = outputMuteState(label: label) { result.outputMuted = muted }
                     if isEndVoiceLabel(label) {
                         result.end = element; result.endLabel = label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
                     }
@@ -299,7 +308,7 @@ struct VoiceBridge {
                 // A snapshot only needs one exact Voice control to establish
                 // state. Don't keep scanning a large chat for an absent End
                 // button after the microphone was already identified.
-                if result.end != nil || (!requireEnd && result.microphone != nil) { result.complete = true; return result }
+                if requireOutput ? result.outputMuted != nil : (result.end != nil || (!requireEnd && result.microphone != nil)) { result.complete = true; return result }
             }
             if role == "AXWebArea" {
                 // Chromium may announce newly inserted call controls on this
@@ -321,7 +330,7 @@ struct VoiceBridge {
                     for button in buttons {
                         guard Date() < deadline else { result.failure = "deadline"; return result }
                         inspectButton(button)
-                        if result.end != nil || (!requireEnd && result.microphone != nil) { result.complete = true; return result }
+                        if requireOutput ? result.outputMuted != nil : (result.end != nil || (!requireEnd && result.microphone != nil)) { result.complete = true; return result }
                     }
                     continue
                 }

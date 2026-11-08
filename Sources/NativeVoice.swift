@@ -27,6 +27,7 @@ import Foundation
         var startSession: () -> DesktopSessionState = { .interactive }
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
+        var outputSnapshot: (() async -> VoiceSnapshot)? = nil
         static var live: Self {
             Self(snapshot: { await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value },
                  send: { command, pid in
@@ -64,7 +65,9 @@ import Foundation
                             Diagnostics.shared.record(event, numbers: numbers, info: info)
                         })
                     }.value
-                 }, startSession: { .current })
+                 }, startSession: { .current }, outputSnapshot: {
+                    await Task.detached(priority: .utility) { VoiceBridge.snapshot(readOutput: true) }.value
+                 })
         }
     }
     private let transport: Transport
@@ -264,43 +267,44 @@ import Foundation
         }
     }
 
-    // Ethan's "mute chat", "silent chat" and "silence chat" toggle only the
-    // active microphone. setMicrophone(.muted) is the legacy End path, so it
-    // must not be used here. The dedicated native action cannot start a call;
-    // missing AX microphone labels must not prevent sending an explicit toggle.
-    func toggleMicrophone() async throws -> MicrophoneState {
+    // Directional speech commands use the existing toggle shortcut only when
+    // a fresh native state proves it is needed. Unknown state must never invert
+    // the microphone or speakers; repeated commands are harmless no-ops.
+    func setAudio(_ action: VoiceAudioAction) async throws {
         try checkStartAllowed()
-        let fresh = await snapshot()
+        let fresh = await snapshot(output: action.controlsSpeakers)
         try checkStartAllowed()
         guard fresh.accessibilityAllowed, let pid = fresh.pid,
-              fresh.microphone != nil || fresh.endControlAvailable || fresh.inputRunning else {
+              let current = action.isMuted(in: fresh) else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
+        }
+        if current == action.targetMuted {
+            connected = true; lastError = nil
+            diagnostics?.record("voice.audio.unchanged", info: ["action": action.rawValue])
+            return
         }
         try transport.activate(pid)
         try checkStartAllowed()
-        // Recheck after activation, then use the same configured-key transport
-        // as Start/End. AXPress did not change the microphone in Ethan's live test.
-        let ready = await snapshot()
+        let ready = await snapshot(output: action.controlsSpeakers)
         try checkStartAllowed()
         guard ready.accessibilityAllowed, ready.pid == pid,
-              ready.microphone != nil || ready.endControlAvailable || ready.inputRunning,
-              fresh.microphone == nil || ready.microphone == nil || ready.microphone == fresh.microphone else {
+              let readyMuted = action.isMuted(in: ready) else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
-        try await transport.send(VoiceBridge.muteCommand, pid)
-        diagnostics?.record("voice.microphone.shortcut_sent", info: ["command": VoiceBridge.muteCommand])
+        if readyMuted == action.targetMuted {
+            connected = true; lastError = nil
+            return // A manual change during activation already achieved the requested state.
+        }
+        let command = action.controlsSpeakers ? VoiceBridge.outputMuteCommand : VoiceBridge.muteCommand
+        try await transport.send(command, pid)
+        diagnostics?.record(action.controlsSpeakers ? "voice.output.shortcut_sent" : "voice.microphone.shortcut_sent", info: ["command": command, "action": action.rawValue])
         try checkAttached()
-        let confirmed = await snapshot()
+        let confirmed = await snapshot(output: action.controlsSpeakers)
         try checkAttached()
-        // A sent key is not proof of a state change. If the native labels stay
-        // unavailable, retain the unconfirmed result and never play a success cue.
-        let current = ready.microphone ?? fresh.microphone
-        guard confirmed.pid == pid, let state = confirmed.microphone,
-              current == nil || state != current else {
+        guard confirmed.pid == pid, action.isMuted(in: confirmed) == action.targetMuted else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
         connected = true; lastError = nil
-        return state
     }
 
     // Normal H Chat Quit stops our control work, not the Codex conversation.
@@ -481,10 +485,10 @@ import Foundation
 
     // AX reads are bounded and run only during an explicit start/stop, away from
     // the UI thread. There is no background scan of Codex's conversation tree.
-    private func snapshot() async -> VoiceSnapshot {
+    private func snapshot(output: Bool = false) async -> VoiceSnapshot {
         let starting = Diagnostics.now
-        let state = await transport.snapshot()
-        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning), "session": transport.startSession().rawValue])
+        let state = await (output ? (transport.outputSnapshot ?? transport.snapshot) : transport.snapshot)()
+        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "output_muted": state.outputMuted.map(String.init) ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning), "session": transport.startSession().rawValue])
         return state
     }
 }

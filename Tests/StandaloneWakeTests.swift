@@ -33,7 +33,7 @@ import Foundation
             detector.audio(level: 0, seconds: 0.6)
             return detector.pollMicrophone(at: time + 0.6)
         }
-        for phrase in ["mute chat", "silent chat", "silence chat", "MUTE CHAT!", "okay, silence chat"] {
+        for phrase in ["mute chat", "MUTE CHAT!", "okay, mute chat"] {
             var detector = StandaloneWake()
             expect(muteCommand(&detector, phrase), "Mute command: \(phrase)")
             expect(!muteCommand(&detector, phrase, at: 2), "One toggle per occurrence")
@@ -45,8 +45,8 @@ import Foundation
         }
         var revisedMute = StandaloneWake()
         expect(muteCommand(&revisedMute, "mute chat"), "First command toggles")
-        expect(!muteCommand(&revisedMute, "silent chat", at: 2), "A revised alias must not toggle again")
-        expect(muteCommand(&revisedMute, "silent chat. silence chat", at: 3), "A later new command toggles again")
+        expect(!muteCommand(&revisedMute, "MUTE CHAT", at: 2), "A revised alias must not toggle again")
+        expect(muteCommand(&revisedMute, "MUTE CHAT. mute chat", at: 3), "A later new command toggles again")
         revisedMute.resetContext()
         expect(muteCommand(&revisedMute, "mute chat", at: 4), "New recognition context accepts a new command")
         var precedingWake = StandaloneWake()
@@ -215,7 +215,7 @@ import Foundation
         detector.reset(); detector.audio(level: 0.05, seconds: 0.1); detector.update("Hello Chat Bye Chat", at: 1)
         detector.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true)
         expect(!detector.poll(at: 4, phrase: "Hello Chat", similar: true), "An end in the same transcript still cancels the wake")
-        for (phrase, ending) in [("Hello Chat", false), ("Bye Chat", true), ("Mute Chat", false)] {
+        for (phrase, ending) in [("Hello Chat", false), ("Bye Chat", true), ("Mute Chat", false), ("Unmute Chat", false), ("Silence Chat", false), ("Unsilence Chat", false)] {
             var pending = StandaloneWake()
             pending.audio(level: 0.2, seconds: 0.1)
             pending.update(phrase, at: 100, timings: [(phrase.lowercased().components(separatedBy: " ")[0], 0, 0.2), ("chat", 0.2, 0.4)])
@@ -251,7 +251,7 @@ import Foundation
         expect(!continuing.poll(at: 500, phrase: "Hello Chat", similar: true), "Continuing speech with a short gap stays inert even after a later pause")
         var microphoneAlias = StandaloneWake()
         microphoneAlias.audio(level: 0.08, seconds: 0.1, at: 1.2)
-        microphoneAlias.update("silent chad", at: 5, timings: [("silent", 0.2, 0.4), ("chad", 0.4, 0.6)])
+        microphoneAlias.update("mute chad", at: 5, timings: [("mute", 0.2, 0.4), ("chad", 0.4, 0.6)])
         expect(microphoneAlias.pollMicrophone(at: 5, similar: true), "The narrow microphone dictionary uses the same timestamp pause")
         let started = Date()
         for _ in 0..<100_000 { precondition(!poll(4), "Idle frames do not repeat a wake") }

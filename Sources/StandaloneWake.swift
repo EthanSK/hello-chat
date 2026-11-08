@@ -127,11 +127,11 @@ struct StandaloneWake {
         return directAddress
     }
 
-    mutating func cancelPending(phrase: String, endPhrase: String, similar: Bool) {
+    mutating func cancelPending(phrase: String, endPhrase: String, similar: Bool, alternatives: [String] = []) {
         // An end command can arrive before this settled-text poll. Do not let
         // that earlier greeting reopen Voice after the end was handled.
         guard let end = matches(phrase: endPhrase, similar: similar, allowEndAddressEdit: true).last?.end else { return }
-        consumed = max(consumed, matches(phrase: phrase, similar: similar).prefix { $0.end <= end }.count)
+        consumed = max(consumed, ([phrase] + alternatives).flatMap { matches(phrase: $0, similar: similar) }.filter { $0.end <= end }.count)
         checkedRevision = -1
     }
 

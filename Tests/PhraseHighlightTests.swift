@@ -16,8 +16,8 @@ import Foundation
         check(runs("Silent Chat", "Start Lantern", false, end: "End Lantern").first?.kind == .exact, "Microphone commands are independent of custom wake/end phrases and similar-word mode")
         check(runs("Mute Chad. Silent Chatt. Silence Chad.").filter { $0.kind != nil }.map(\.kind) == [.dictionary, .dictionary, .dictionary], "Controlled microphone mishearings use dictionary orange")
         check(runs("Mute Chad", "Hello Chat", false).allSatisfy { $0.kind == nil }, "Exact-only mode disables the microphone dictionary")
-        check(runs("unmute chat. mute charts. silent cat.").allSatisfy { $0.kind == nil }, "The microphone dictionary does not accept other actions or broad lookalikes")
-        let customMicrophone = PhraseHighlights.runs(in: "Quiet Lantern. Mute Chat.", phrase: "Hello Chat", similar: true, microphonePhrases: ["Quiet Lantern"])
+        check(runs("mute charts. silent cat.").allSatisfy { $0.kind == nil }, "The microphone dictionary does not accept other actions or broad lookalikes")
+        let customMicrophone = PhraseHighlights.runs(in: "Quiet Lantern. Mute Chat.", phrase: "Hello Chat", similar: true, controlPhrases: ["Quiet Lantern"])
         check(customMicrophone.filter { $0.kind != nil }.map(\.text) == ["Quiet Lantern"], "Custom microphone phrases replace defaults in highlighting")
         let styled = runs(original)
         check(styled.map(\.text).joined() == original, "Never rewrite recognized text, punctuation or emoji")
@@ -58,6 +58,9 @@ import Foundation
         check(runs("Bye Chat", end: "Bye Chat", limit: 5).allSatisfy { $0.kind == nil }, "A clipped end phrase is never highlighted as complete")
         for text in ["UI Chat", "UIChat", "U I C H A T", "B Chat", "BChat", "be chat", "bee chat", "H Chat"] {
             check(runs(text, end: "Bye Chat").allSatisfy { $0.kind == nil }, "Safe discussion aliases stay unhighlighted")
+        }
+        for text in ["Unmute Chat", "Unsilence Chat"] {
+            check(runs(text).filter { $0.kind != nil }.map(\.text) == [text], "Inverse commands highlight as their complete phrases")
         }
         let overlap = runs("Bye Chat", "Bye Chatt", end: "Bye Chat")
         check(overlap.map(\.text).joined() == "Bye Chat" && overlap.count == 1 && overlap.first?.kind == .exact, "Exact end wins an overlapping fuzzy wake without duplicating text")

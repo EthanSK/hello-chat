@@ -71,16 +71,32 @@ import SwiftUI
     @Published var sleepPhrase = UserDefaults.standard.string(forKey: "sleepPhrase") ?? "Bye Chat" {
         didSet { UserDefaults.standard.set(sleepPhrase, forKey: "sleepPhrase"); updatePhrases() }
     }
-    @Published var mutePhrase = UserDefaults.standard.string(forKey: "mutePhrase") ?? PhraseMatcher.microphonePhrases[0] {
+    @Published var mutePhrase = UserDefaults.standard.string(forKey: "mutePhrase") ?? PhraseMatcher.mutePhrase {
         didSet { UserDefaults.standard.set(mutePhrase, forKey: "mutePhrase"); updatePhrases() }
     }
-    @Published var silentPhrase = UserDefaults.standard.string(forKey: "silentPhrase") ?? PhraseMatcher.microphonePhrases[1] {
+    @Published var silentPhrase = UserDefaults.standard.string(forKey: "silentPhrase") ?? PhraseMatcher.silentPhrase {
         didSet { UserDefaults.standard.set(silentPhrase, forKey: "silentPhrase"); updatePhrases() }
     }
-    @Published var silencePhrase = UserDefaults.standard.string(forKey: "silencePhrase") ?? PhraseMatcher.microphonePhrases[2] {
+    @Published var silencePhrase = UserDefaults.standard.string(forKey: "silencePhrase") ?? PhraseMatcher.silencePhrase {
         didSet { UserDefaults.standard.set(silencePhrase, forKey: "silencePhrase"); updatePhrases() }
     }
-    var microphonePhrases: [String] { [mutePhrase, silentPhrase, silencePhrase].filter { !PhraseMatcher.words($0).isEmpty } }
+    @Published var unmutePhrase = UserDefaults.standard.string(forKey: "unmutePhrase") ?? PhraseMatcher.unmutePhrase {
+        didSet { UserDefaults.standard.set(unmutePhrase, forKey: "unmutePhrase"); updatePhrases() }
+    }
+    @Published var unsilencePhrase = UserDefaults.standard.string(forKey: "unsilencePhrase") ?? PhraseMatcher.unsilencePhrase {
+        didSet { UserDefaults.standard.set(unsilencePhrase, forKey: "unsilencePhrase"); updatePhrases() }
+    }
+    var controlPhrases: [String] { VoiceAudioAction.allCases.flatMap { phrases(for: $0) } }
+    private func phrases(for action: VoiceAudioAction) -> [String] {
+        let values: [String]
+        switch action {
+        case .muteMicrophone: values = [mutePhrase]
+        case .unmuteMicrophone: values = [unmutePhrase]
+        case .silenceSpeakers: values = [silentPhrase, silencePhrase]
+        case .unsilenceSpeakers: values = [unsilencePhrase]
+        }
+        return values.filter { !PhraseMatcher.words($0).isEmpty }
+    }
     @Published var similarPhrases = UserDefaults.standard.object(forKey: "similarPhrases") as? Bool ?? true {
         didSet { UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); updatePhrases() }
     }
@@ -104,7 +120,7 @@ import SwiftUI
     private let listener = SpeechListener()
     private var endPhrase = StandaloneWake() // End shares the direct-address filter; discussion must not hang up.
     private var standaloneWake = StandaloneWake()
-    private var microphonePhrase = StandaloneWake() // Same mention/timing rules, independent of wake/end settings.
+    private var audioPhraseDetectors = Dictionary(uniqueKeysWithValues: VoiceAudioAction.allCases.map { ($0, StandaloneWake()) }) // One occurrence counter per directional action; the two silence aliases share one.
     private lazy var archive = TranscriptArchive(onError: { [weak self] error in
         Diagnostics.shared.failure("transcript.write.failed", error)
         Task { @MainActor [weak self] in self?.archiveError = "Could not save transcript: \(error.localizedDescription)" }
@@ -144,7 +160,7 @@ import SwiftUI
             guard let self else { return }
             // A lock or session switch cannot carry a queued wake into the
             // next desktop. Preserve any late call and require a fresh phrase.
-            self.endPhrase.reset(); self.standaloneWake.reset(); self.microphonePhrase.reset()
+            self.endPhrase.reset(); self.standaloneWake.reset(); self.resetAudioPhrases()
             self.listener.discardPendingRecognition()
             self.finishStartupSpeech(preserveRequested: true)
             if let opening = self.voiceStartContext {
@@ -168,7 +184,7 @@ import SwiftUI
             Diagnostics.shared.failure("voice.shortcuts.failed", error)
         }
         listener.onSession = { [weak self] in
-            self?.archive.boundary(); self?.endPhrase.resetContext(); self?.standaloneWake.resetContext(); self?.microphonePhrase.resetContext(); self?.detectionRunning = true
+            self?.archive.boundary(); self?.endPhrase.resetContext(); self?.standaloneWake.resetContext(); self?.resetAudioPhrases(); self?.detectionRunning = true
             // A context reset is not the end of the opening. Keep both the M5's
             // startup capture and the independent command detector resets.
             self?.startupSpeech?.boundary()
@@ -179,10 +195,10 @@ import SwiftUI
             self.startupSpeech = capture
             if complete { self.finishStartupSpeech(preserveRequested: true, boundary: .utterance) }
         }
-        listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.microphonePhrase.reset(); self?.detectionRunning = false }
+        listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.resetAudioPhrases(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds, audioTime in
             self?.standaloneWake.audio(level: level, seconds: seconds, at: audioTime)
-            self?.microphonePhrase.audio(level: level, seconds: seconds, at: audioTime)
+            for action in VoiceAudioAction.allCases { self?.audioPhraseDetectors[action, default: StandaloneWake()].audio(level: level, seconds: seconds, at: audioTime) }
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
             // Raw speech can resume before its first text hypothesis arrives.
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
@@ -402,11 +418,14 @@ import SwiftUI
         Diagnostics.shared.record("speech.recovery.environment_changed")
         restartMicrophone(settle: true)
     }
+    private func resetAudioPhrases() {
+        for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
+    }
     private func updatePhrases() {
-        listener.contextualPhrases = [wakePhrase, sleepPhrase] + microphonePhrases
+        listener.contextualPhrases = [wakePhrase, sleepPhrase] + controlPhrases
         endPhrase.reset()
         standaloneWake.reset()
-        microphonePhrase.reset()
+        resetAudioPhrases()
         if enabled { listener.discardPendingRecognition() } // Apply edited phrases to fresh audio; resetting counters must not replay a keyword from the old transcript.
         if status == "Listening" || status == "Off" { showListening() }
         phraseUpdateTask?.cancel()
@@ -694,7 +713,7 @@ import SwiftUI
         // Use the same phrase and mention rules while Agent Flow records. Its
         // microphone ownership must not pause H Chat's existing recognizer.
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
-        microphonePhrase.update(text, at: Diagnostics.now, timings: timings)
+        for action in VoiceAudioAction.allCases { audioPhraseDetectors[action, default: StandaloneWake()].update(text, at: Diagnostics.now, timings: timings) }
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
         // Keep collecting while a keyword waits for its audio pause. An accepted
         // End below cancels the startup file before dispatching the native command.
@@ -721,7 +740,10 @@ import SwiftUI
         if !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
             && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
             && endPhrase.pollEnd(at: Diagnostics.now, phrase: sleepPhrase, similar: similarPhrases) {
-            _ = microphonePhrase.pollMicrophone(at: Diagnostics.now, phrases: microphonePhrases, similar: similarPhrases) // An explicit End wins over mute in the same transcript.
+            for action in VoiceAudioAction.allCases {
+                let values = phrases(for: action)
+                if let first = values.first { audioPhraseDetectors[action, default: StandaloneWake()].cancelPending(phrase: first, endPhrase: sleepPhrase, similar: similarPhrases, alternatives: Array(values.dropFirst())) }
+            } // An explicit End wins over audio commands in the same transcript.
             cancelStartupSpeech()
             standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
             Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
@@ -735,31 +757,41 @@ import SwiftUI
             }
             return
         }
-        if enabled, detectionRunning,
-           microphonePhrase.pollMicrophone(at: Diagnostics.now, phrases: microphonePhrases, similar: similarPhrases) {
+        let actions = VoiceAudioAction.allCases.filter { action in
+            let values = phrases(for: action)
+            guard let first = values.first else { return false }
+            return audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first, similar: similarPhrases, alternatives: Array(values.dropFirst()), rejectNegated: true)
+        }
+        if let action = actions.first {
             // Reserve synchronously, as beginVoice does. Consume busy commands
             // rather than replaying a surprise mute when an opening/End finishes.
             guard !busy, !quitting else { return }
-            for phrase in microphonePhrases {
+            for phrase in controlPhrases {
                 standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: phrase, similar: similarPhrases) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
             }
             busy = true
-            feedback.play(.microphoneDetected) // Acknowledges recognition only; mute/unmute cues require a confirmed native state below.
+            feedback.play(.microphoneDetected) // Neutral acknowledgement only; channel-specific success cues require a confirmed native state below.
             let token = generation
             voiceTask = Task {
                 defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
                 do {
-                    let state = try await voice.toggleMicrophone()
+                    try await voice.setAudio(action)
                     guard generation == token else { return }
-                    microphone = state; error = nil
-                    feedback.play(state == .muted ? .microphoneMuted : .microphoneUnmuted)
+                    error = nil
+                    if !action.controlsSpeakers { microphone = action.targetMuted ? .muted : .listening }
+                    switch action {
+                    case .muteMicrophone: feedback.play(.microphoneMuted)
+                    case .unmuteMicrophone: feedback.play(.microphoneUnmuted)
+                    case .silenceSpeakers: feedback.play(.speakersMuted)
+                    case .unsilenceSpeakers: feedback.play(.speakersUnmuted)
+                    }
                     showListening()
-                    lastEvent = "Chat is \(state.rawValue)"
-                    Diagnostics.shared.record("voice.microphone.toggled", info: ["microphone": state.rawValue])
+                    lastEvent = action.controlsSpeakers ? "Chat audio is \(action.targetMuted ? "muted" : "on")" : "Chat is \(action.targetMuted ? "muted" : "listening")"
+                    Diagnostics.shared.record("voice.audio.confirmed", info: ["action": action.rawValue])
                 } catch {
                     guard generation == token else { return }
                     self.error = error.localizedDescription
-                    Diagnostics.shared.failure("voice.microphone.failed", error)
+                    Diagnostics.shared.failure("voice.audio.failed", error)
                 }
             }
             return

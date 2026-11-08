@@ -11,7 +11,9 @@ rate = 44100
 for name, notes in [("Wake", (659.25, 987.77)), ("Ended", (659.25, 439.99)),
                     ("MicrophoneDetected", (784.0,)),
                     ("MicrophoneMuted", (523.25, 349.23)),
-                    ("MicrophoneUnmuted", (349.23, 523.25))]:
+                    ("MicrophoneUnmuted", (349.23, 523.25)),
+                    ("SpeakersMuted", (440.0, 293.66)),
+                    ("SpeakersUnmuted", (293.66, 440.0))]:
     values = []
     for index in range(int(rate * 0.36)):
         t = index / rate

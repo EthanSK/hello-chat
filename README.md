@@ -16,7 +16,8 @@ HelloChat is a native macOS app that listens for both phrases with a local speec
 | Say | What happens |
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
-| **Mute Chat**, **Silent Chat**, **Silence Chat** | Toggles the active Voice call’s microphone between muted and unmuted. The call stays open; these phrases never start a new call. |
+| **Mute Chat** / **Unmute Chat** | Mutes or unmutes the active Voice microphone. Repeating a command keeps that state. |
+| **Silent Chat**, **Silence Chat** / **Unsilence Chat** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 
 For safe conversation about the app, call the helper **H Chat** and its End command **B Chat**. These are discussion names, not extra voice commands. The default dictionary no longer accepts the old UI-name alias or B/Be/Bee spellings as End. End commands use the same mention and negation filter as the other controls, so discussing a command is not treated as issuing it. Matching and transcript highlighting share the dictionary.
@@ -82,7 +83,7 @@ These checks use fixed recordings and text. They don't show how well HelloChat h
 The main window has two sections:
 
 - **Heard (local model)** comes first, with **Start chat** / **End chat**, Refresh and the local transcript. The panel follows new words while you are at the bottom and lets you scroll back without being pulled down. Exact matches are green, dictionary variants orange and other small spelling differences purple. Highlighting identifies matching text, not proof an action ran.
-- **Listening** comes below it, with the listening toggle, all five editable phrase fields, **Speech model** and the microphone level. The same phrase fields appear in Settings and save immediately. The three microphone phrases all toggle the active microphone; they are not separate mute-only/unmute-only actions.
+- **Listening** comes below it, with the listening toggle, all seven editable phrase fields, **Speech model** and the microphone level. The same phrase fields appear in Settings and save immediately. Mute and Unmute control the microphone; Silent/Silence and Unsilence control Voice audio. Every action is directional and repeating it leaves the requested state unchanged.
 
 Every keyword requires a pause of at least 600 ms after it. Word timestamps distinguish a real gap before following words; a trailing keyword uses the recogniser’s processed audio clock. Continuing the same sentence without the gap suppresses that command. Mention and negation filters still apply, but a pause alone cannot guarantee intent. Ordinary background noise does not reset the word-time gap. Recognition errors or delayed results can still affect detection; this is not a guarantee of intent. The microphone dictionary deliberately accepts only the saved default addresses with Chat, Chad or Chatt; custom phrases use the existing small-spelling-difference setting.
 

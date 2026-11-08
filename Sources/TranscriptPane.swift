@@ -9,7 +9,7 @@ struct TranscriptPane: View {
     let enabled: Bool
     let viewportHeight: CGFloat
     let scale: Double
-    var microphonePhrases: [String] = PhraseMatcher.microphonePhrases
+    var controlPhrases: [String] = PhraseMatcher.controlPhrases
     @State private var top: CGFloat?
     @State private var followsLatest = true
     @State private var userScrolling = false
@@ -29,7 +29,7 @@ struct TranscriptPane: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    HeardTranscript(text: heldText ?? text, phrase: phrase, endPhrase: endPhrase, similar: similar, enabled: enabled, microphonePhrases: microphonePhrases)
+                    HeardTranscript(text: heldText ?? text, phrase: phrase, endPhrase: endPhrase, similar: similar, enabled: enabled, controlPhrases: controlPhrases)
                         .equatable()
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)

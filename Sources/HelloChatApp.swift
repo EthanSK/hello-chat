@@ -207,10 +207,10 @@ import Darwin
             }
             RunLoop.main.run(); return
         }
-        if CommandLine.arguments.contains("--check-voice-controls") || CommandLine.arguments.contains("--check-end-controls") {
+        if CommandLine.arguments.contains("--check-voice-controls") || CommandLine.arguments.contains("--check-end-controls") || CommandLine.arguments.contains("--check-output-controls") {
             // Read-only diagnostic: never activates Codex or sends a shortcut.
             for depth in [32, 96] {
-                let state = VoiceBridge.snapshot(maximumDepth: depth, requireEnd: CommandLine.arguments.contains("--check-end-controls"))
+                let state = VoiceBridge.snapshot(maximumDepth: depth, requireEnd: CommandLine.arguments.contains("--check-end-controls"), readOutput: CommandLine.arguments.contains("--check-output-controls"))
                 var info = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(state))) as? [String: Any] ?? [:]
                 info["maximumDepth"] = depth
                 if let json = try? JSONSerialization.data(withJSONObject: info, options: .sortedKeys) { print(String(decoding: json, as: UTF8.self)) }
@@ -403,7 +403,7 @@ struct MainView: View {
                     TranscriptPane(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
                                    similar: model.similarPhrases, enabled: model.enabled,
                                    viewportHeight: viewport.size.height, scale: zoom.scale,
-                                   microphonePhrases: model.microphonePhrases)
+                                   controlPhrases: model.controlPhrases)
                 } header: {
                     HStack {
                         Text("Heard (local model)")
@@ -510,8 +510,10 @@ private struct PhraseFields: View {
         TextField("Wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
         TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
         TextField("Mute phrase", text: $model.mutePhrase).accessibilityIdentifier("mutePhrase")
+        TextField("Unmute phrase", text: $model.unmutePhrase).accessibilityIdentifier("unmutePhrase")
         TextField("Silent phrase", text: $model.silentPhrase).accessibilityIdentifier("silentPhrase")
         TextField("Silence phrase", text: $model.silencePhrase).accessibilityIdentifier("silencePhrase")
+        TextField("Unsilence phrase", text: $model.unsilencePhrase).accessibilityIdentifier("unsilencePhrase")
     }
 }
 
@@ -536,7 +538,7 @@ struct SettingsView: View {
             }
             Section("Phrases") {
                 PhraseFields(model: model)
-                Text("Pause for 0.6 seconds after each phrase. All three microphone phrases toggle the microphone.")
+                Text("Pause for 0.6 seconds after each phrase. Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Repeating a command keeps its requested state.")
                     .foregroundStyle(.secondary)
                 Toggle("Allow small spelling differences", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
@@ -565,6 +567,14 @@ struct SettingsView: View {
                 HStack {
                     Button("Wake sound") { model.previewSound(.wake) }
                     Button("End sound") { model.previewSound(.ended) }
+                }.disabled(!model.soundEffects)
+                HStack {
+                    Button("Mute sound") { model.previewSound(.microphoneMuted) }
+                    Button("Unmute sound") { model.previewSound(.microphoneUnmuted) }
+                }.disabled(!model.soundEffects)
+                HStack {
+                    Button("Silence sound") { model.previewSound(.speakersMuted) }
+                    Button("Unsilence sound") { model.previewSound(.speakersUnmuted) }
                 }.disabled(!model.soundEffects)
             }
             Section("Spotify") {

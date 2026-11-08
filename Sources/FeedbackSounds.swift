@@ -4,6 +4,7 @@ import AppKit
     enum Cue: String, CaseIterable {
         case wake = "Wake", ended = "Ended"
         case microphoneDetected = "MicrophoneDetected", microphoneMuted = "MicrophoneMuted", microphoneUnmuted = "MicrophoneUnmuted"
+        case speakersMuted = "SpeakersMuted", speakersUnmuted = "SpeakersUnmuted"
     }
     private var sounds: [Cue: NSSound] = [:]
     init() {
