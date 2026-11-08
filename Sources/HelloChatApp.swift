@@ -634,11 +634,17 @@ private struct PhraseSpellings: View {
                 }
             }
         }.padding().frame(width: 420, height: 470)
+            .interactiveDismissDisabled(editing)
+            .onExitCommand {
+                if editing { editing = false; error = nil }
+                else { dismiss() }
+            }
             .task(id: Configuration(phrase: phrase, similar: similar, dictionary: dictionary)) { // nil means built-in; an empty dictionary means exact-only, so they must have different identities.
                 spellings = PhraseMatcher.knownSpellings(for: phrase, similar: similar, ending: slot.ending, dictionaries: dictionaries)
                 loaded = true
             }
             .task(id: editing) { focus = editing ? .editor : .search }
+            .onChange(of: draft) { error = nil }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
                 switch result {
                 case .success(let url):
