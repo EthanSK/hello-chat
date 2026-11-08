@@ -12,6 +12,7 @@ import Foundation
         precondition(history.text == longSegment + "\nNext model segment", "Model rollovers retain earlier speech once")
         history.update("Next model segment corrected")
         precondition(history.text == longSegment + "\nNext model segment corrected", "New-segment revisions cannot erase older speech")
+        precondition(history.segments == [longSegment, "Next model segment corrected"], "Completed segments keep stable positions for unchanged highlighted views")
         history = TranscriptHistory()
         precondition(history.text.isEmpty, "Starting a new listening session clears only its previous history")
         var timing = SpeechTimingTracker()

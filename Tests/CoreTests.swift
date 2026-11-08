@@ -8,6 +8,28 @@ import CoreGraphics
         guard try condition() else { fatalError(message) }
     }
     static func main() throws {
+        for (phrase, ending) in [("Hello Chat", false), ("Bye Chat", true), ("Mute Chat", false),
+                                 ("Unmute Chat", false), ("Silent Chat", false), ("Silence Chat", false),
+                                 ("Unsilence Chat", false), ("Hey Lantern", false), ("Stop Lantern", true)] {
+            let spellings = PhraseMatcher.knownSpellings(for: phrase, similar: true, ending: ending)
+            check(spellings.first == phrase && spellings.count == Set(spellings).count, "Dictionary starts with the saved phrase without duplicate entries")
+            check(spellings.allSatisfy { PhraseMatcher.equivalent($0, to: phrase, similar: true, allowEndAddressEdit: ending) }, "Every displayed spelling must be accepted by the canonical matcher")
+            check(PhraseMatcher.knownSpellings(for: phrase, similar: false, ending: ending) == [phrase], "Exact-only dictionary shows only the saved phrase")
+        }
+        check(PhraseMatcher.knownSpellings(for: "", similar: true, ending: false).isEmpty, "Empty phrase has no dictionary")
+        check(PhraseMatcher.hasOpenEndedWakeVariants("Hello Chat", similar: true, ending: false), "Default wake discloses its open-ended matching rule")
+        check(!PhraseMatcher.hasOpenEndedWakeVariants("Hey Lantern", similar: true, ending: false), "Custom phrase does not claim the default wake rule")
+        check(PhraseMatcher.knownSpellings(for: "Unsilence Chat", similar: true, ending: false).contains("unsilencedchat"), "Dictionary includes the archived ending-D variant")
+        check(!PhraseMatcher.knownSpellings(for: "Mute Chat", similar: true, ending: false).contains("unmutechat"), "Dictionary cannot cross audio directions")
+        check(PhraseMatcher.knownSpellings(for: "Bye Lantern", similar: true, ending: true).contains("buylantern"), "Custom End dictionary includes its two-edit homophone from the canonical address set")
+        for (positive, inverse, variants) in [("Mute Chat", "Unmute Chat", ["un mute chat", "un-mute chat"]),
+                                               ("Silence Chat", "Unsilence Chat", ["un silence chat", "un-silence chat"])] {
+            for text in variants {
+                let tokens = PhraseMatcher.words(text)
+                check(PhraseMatcher.matches(in: tokens, phrase: positive, similar: true).isEmpty, "Split inverse must not also match its opposite")
+                check(PhraseMatcher.matches(in: tokens, phrase: inverse, similar: true).count == 1, "Split inverse keeps its intended direction")
+            }
+        }
         for (text, command) in [("hello chat", PhraseCommand.wake), ("by charts", .sleep)] {
             let words = PhraseMatcher.words(text)
             let close = [(word: words[0], start: 1.0, end: 1.4), (word: words[1], start: 1.8, end: 2.2)]

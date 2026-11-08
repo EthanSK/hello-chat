@@ -74,6 +74,63 @@ import Foundation
             try await audio.setAudio(action)
             precondition(sent == 1 && postSendReads >= 4 && time < 0.5, "Wait only for the real state transition without resending")
         }
+        for hasWindow in [false, true] {
+            var silentCues = 0
+            let noWindow = NativeVoice(transport: .init(snapshot: {
+                var empty = state()
+                empty.applicationReady = false; empty.applicationHasWindow = hasWindow
+                empty.controlsComplete = hasWindow
+                return empty
+            }, send: { _, _ in fatalError("No-call shell must not get a key") }, activate: { _ in fatalError("No activation") }))
+            let active = try await noWindow.setAudio(.muteMicrophone, onRecognized: { silentCues += 1 })
+            precondition(!active && silentCues == 0, "Closed windows and completely scanned empty shells remain silent no-ops")
+        }
+        for permission in [false, true] {
+            var reads = 0, cues = 0
+            let unavailable = NativeVoice(transport: .init(snapshot: {
+                reads += 1
+                var snapshot = state(allowed: permission)
+                snapshot.controlsComplete = false
+                snapshot.applicationReady = false; snapshot.applicationHasWindow = true
+                return snapshot
+            }, send: { _, _ in fatalError("Unknown controls never authorize a key") }, activate: { _ in }))
+            do { try await unavailable.setAudio(.muteMicrophone, onRecognized: { cues += 1 }); fatalError("Unknown must be reported") }
+            catch is BridgeError { }
+            precondition(cues == 0 && reads == (permission ? 3 : 1))
+        }
+        var audioTransientReads = 0, transientSends = 0, transientTime: TimeInterval = 0
+        let audioTransient = NativeVoice(transport: .init(snapshot: {
+            audioTransientReads += 1
+            if audioTransientReads == 1 || audioTransientReads == 4 {
+                var unknown = state(); unknown.pid = nil; unknown.controlsComplete = false
+                return unknown
+            }
+            return state(transientSends == 0 ? .listening : .muted)
+        }, send: { _, _ in transientSends += 1 }, activate: { _ in fatalError("Transient reads do not need focus") },
+        now: { transientTime }, wait: { transientTime += $0 }))
+        try await audioTransient.setAudio(.muteMicrophone)
+        precondition(transientSends == 1 && audioTransientReads == 5, "Retry incomplete admission and tolerate transient post-key PID lookup")
+        var wakeTime: TimeInterval = 0, wakeSent = false
+        let wakeUnmute = NativeVoice(transport: .init(snapshot: {
+            state(wakeSent && wakeTime >= 0.6 ? .listening : .muted)
+        }, send: { _, _ in fatalError("Existing call must not start again") }, activate: { _ in fatalError("Wake unmute must not activate") },
+        unmute: { _ in wakeSent = true }, now: { wakeTime }, wait: { wakeTime += $0 }))
+        _ = try await wakeUnmute.start()
+        try await wakeUnmute.setMicrophone(.listening)
+        precondition(wakeSent && wakeTime >= 0.6 && wakeTime < 0.8, "Wake unmute observes delayed completion through the same bounded path")
+        var cancellationSent = false, endRequests = 0
+        var cancelWaiting: CheckedContinuation<Void, Never>?
+        let cancellation = NativeVoice(transport: .init(snapshot: { state(cancellationSent ? .muted : .listening) },
+            send: { _, _ in cancellationSent = true; await withCheckedContinuation { cancelWaiting = $0 } }, activate: { _ in },
+            requestEnd: { endRequests += 1; return nil }))
+        let audioTask = Task { @MainActor in
+            do { try await cancellation.setAudio(.muteMicrophone); fatalError("Cancelled action must not confirm success") }
+            catch is CancellationError { }
+        }
+        while !cancellationSent { await Task.yield() }
+        audioTask.cancel(); cancelWaiting?.resume(); try await audioTask.value
+        _ = try await cancellation.endIfPresent()
+        precondition(endRequests == 1, "Explicit End remains available after cancelling in-flight audio")
         var unconfirmedTime: TimeInterval = 0
         let unconfirmed = NativeVoice(transport: .init(snapshot: { state(.listening) },
             send: { _, _ in }, activate: { _ in }, now: { unconfirmedTime }, wait: { unconfirmedTime += $0 }))
@@ -175,11 +232,12 @@ import Foundation
         _ = try await immediateFeedback.start(onRequestAccepted: { acknowledgedBeforeRead = true })
         var current = state()
         var sent: [String] = []
+        var activationCount = 0
         let voice = NativeVoice(transport: .init(snapshot: { current }, send: { command, _ in
             sent.append(command)
             if command == VoiceBridge.muteCommand { current = state(.listening) }
             else { current = current.microphone == nil ? state(.listening) : state() }
-        }, activate: { _ in }, unmute: { _ in
+        }, activate: { _ in activationCount += 1 }, unmute: { _ in
             sent.append("native.unmute"); current = state(.listening)
         }))
         var startCues = 0
@@ -195,10 +253,12 @@ import Foundation
         precondition(sent.count == 2, "Repeated stop must not reopen a call")
         current = state(.muted)
         let beforeMutedWake = sent.count
+        let beforeMutedWakeActivations = activationCount
         let openedMicrophone = try await voice.start(onRequestAccepted: { startCues += 1 })
         precondition(openedMicrophone == .muted, "Start returns fresh state so callers can skip a redundant snapshot when already listening")
         precondition(sent.count == beforeMutedWake, "Hello Chat adopts an existing muted call without sending the new-chat shortcut")
         try await voice.setMicrophone(.listening)
+        precondition(activationCount == beforeMutedWakeActivations, "Waking an already-open muted call must not activate Codex")
         precondition(Array(sent.dropFirst(beforeMutedWake)) == ["native.unmute"], "Hello Chat sends only unmute for an existing muted native call")
         precondition(startCues == 2, "An accepted wake acknowledges reuse and unmute without a new-call shortcut")
         let beforeRepeatedWake = sent.count

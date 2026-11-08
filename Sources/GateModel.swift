@@ -128,6 +128,7 @@ import SwiftUI
     })
     private var generation = UUID()
     private var voiceTask: Task<Void, Never>?
+    private var endingVoice = false // Repeated End requests share the current teardown instead of queuing another one.
     private var voiceStartContext: VoiceStartContext?
     private var startupSpeech: StartupSpeechBuffer?
     var capturingStartupSpeech: Bool { startupSpeech != nil }
@@ -451,13 +452,28 @@ import SwiftUI
         }
     }
     func previewSound(_ cue: FeedbackSounds.Cue) { feedback.play(cue) }
+    var speechCheckUnavailableReason: String? {
+        if checkingSpeech { return "Checking recorded speech locally…" }
+        if busy || quitting { return "Available when the current action finishes." }
+        if capturingStartupSpeech { return "Available after the opening message is captured." }
+        return nil
+    }
     func checkSpeech() {
-        guard !busy, !checkingSpeech, !voice.connected, playbackAllowed else { return }
-        let resumeListening = enabled
-        stopLocal()
-        busy = true; checkingSpeech = true; speechCheckText = "Checking recorded speech locally…"
+        guard speechCheckUnavailableReason == nil else { return }
+        let requestedGeneration = generation
+        busy = true; checkingSpeech = true; speechCheckText = "Checking Voice status…"
         Task {
-            await voice.stop()
+            _ = await voice.refresh() // An ended call must not leave this diagnostic disabled by a stale cached state.
+            guard generation == requestedGeneration, !quitting else { checkingSpeech = false; speechCheckText = ""; return }
+            guard !voice.connected else {
+                speechCheckText = "End the Voice chat before checking speech recognition."
+                checkingSpeech = false; busy = false; return
+            }
+            let resumeListening = enabled
+            stopLocal()
+            let checkGeneration = generation
+            speechCheckText = "Checking recorded speech locally…"
+            // A recorded test must never send End, even if cached Voice status is stale.
             await listener.waitUntilStopped()
             do {
                 guard let url = Bundle.main.url(forResource: "SpeechCheck", withExtension: "wav"),
@@ -471,8 +487,10 @@ import SwiftUI
                 let placement = speechModel.neuralPlacementKnown ? "Encoder plan: \(Int((normalized.neuralShare * 100).rounded()))% Neural Engine; CPU also used" : "Apple manages processor placement; Neural Engine use isn't verified."
                 speechCheckText = "Sample: \(normalized.text)\nRecorded wake phrase: \(wake ? "detected" : "not detected")\nRecorded end phrase: \(mute ? "detected" : "not detected")\nOther speech: \(negative.text)\nFalse activation: \(ignored ? "none" : "check failed")\n\(placement)"
             } catch { speechCheckText = error.localizedDescription }
-            checkingSpeech = false; busy = false
-            if resumeListening, !quitting { await turnOn() }
+            checkingSpeech = false
+            guard generation == checkGeneration, !quitting else { return }
+            busy = false
+            if resumeListening { await turnOn(preservingTranscript: true) }
             else { applyAutomaticListening() }
         }
     }
@@ -488,7 +506,7 @@ import SwiftUI
 
     // Starting wake detection is local only. Do not open a remote Voice call
     // until the user explicitly wakes it or presses its Voice control.
-    func turnOn() async {
+    func turnOn(preservingTranscript: Bool = false) async {
         guard playbackAllowed else { resumeAfterPlaybackPause = true; return }
         guard !enabled, !busy, !quitting else { return }
         cancelAutomaticStart(reason: "starting")
@@ -505,7 +523,9 @@ import SwiftUI
             try await SpeechListener.authorize()
             guard generation == token, !quitting, playbackAllowed else { return }
             refreshPermissions(); updatePhrases(); endPhrase.reset()
-            transcript = ""; transcriptHistory = TranscriptHistory(); lastEvent = ""
+            transcript = ""; lastEvent = ""
+            if preservingTranscript { transcriptHistory.boundary() } // A resumed recognizer must not replace the words heard before its diagnostic.
+            else { transcriptHistory = TranscriptHistory() }
             try await listener.start()
             guard generation == token, !quitting else { listener.stop(); return }
             enabled = true; detectionRunning = true
@@ -581,10 +601,10 @@ import SwiftUI
             }
         }
     }
-    func manualMute() {
-        guard enabled || voice.connected, !quitting else { return }
+    func manualMute(feedbackAlreadyPlayed: Bool = false) {
+        guard enabled || voice.connected, !quitting, !endingVoice else { return }
         cancelStartupSpeech()
-        if busy {
+        if busy, voiceStartContext != nil {
             let previous = voiceTask
             previous?.cancel()
             let token = generation
@@ -593,8 +613,17 @@ import SwiftUI
                 guard generation == token, enabled else { return }
                 showListening(); busy = false; voiceTask = nil; lastEvent = "Voice connection cancelled"
             }
+        } else if busy {
+            let previous = voiceTask
+            let token = UUID(); generation = token // The cancelled audio task must not clear the End request's busy state or show a cancellation error.
+            previous?.cancel()
+            voiceTask = Task {
+                await previous?.value
+                guard generation == token, !quitting else { return }
+                await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true)
+            }
         } else {
-            voiceTask = Task { await muteVoice(event: "Codex Voice ended") }
+            voiceTask = Task { await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed) }
         }
     }
     // Ethan's 2 Nov "have like a refresh button ... so I can toggle it on and
@@ -680,13 +709,14 @@ import SwiftUI
             if !(error is CancellationError) { self.error = error.localizedDescription }
         }
     }
-    private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false) async {
-        guard enabled || voice.connected, !busy else { return }
+    private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false, reserved: Bool = false) async {
+        guard enabled || voice.connected, !busy || reserved else { return }
         cancelStartupSpeech()
         let token = generation
-        busy = true
+        busy = true; endingVoice = true
         defer {
-            if generation == token { busy = false; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
+            endingVoice = false
+            if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
         }
         do {
             let ended = try await voice.endIfPresent()
@@ -750,11 +780,11 @@ import SwiftUI
             cancelStartupSpeech()
             standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
             Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
-            // Ethan's "buy chat" / Bye Chat gets its cue after the required pause, even
+            // Ethan's "buy chat" / Bye Chat gets its cue when recognized, even
             // while cancelling an opening or when Voice is already off. Native
             // status and errors still report the actual ending outcome separately.
             feedback.play(.ended)
-            if busy { manualMute() }
+            if busy { manualMute(feedbackAlreadyPlayed: true) }
             else {
                 voiceTask = Task { await muteVoice(event: "Heard \(sleepPhrase)", feedbackAlreadyPlayed: true) }
             }
@@ -795,6 +825,8 @@ import SwiftUI
                         lastEvent = action.controlsSpeakers ? "Chat audio is \(action.targetMuted ? "muted" : "on")" : "Chat is \(action.targetMuted ? "muted" : "listening")"
                         Diagnostics.shared.record("voice.audio.confirmed", info: ["action": action.rawValue])
                     }
+                } catch is CancellationError {
+                    return
                 } catch {
                     guard generation == token else { return }
                     self.error = error.localizedDescription

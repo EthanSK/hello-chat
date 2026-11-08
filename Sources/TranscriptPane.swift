@@ -2,7 +2,7 @@ import SwiftUI
 
 struct TranscriptPane: View {
     static let coordinateSpace = "transcriptViewport"
-    let text: String
+    let segments: [String]
     let phrase: String
     let endPhrase: String
     let similar: Bool
@@ -13,7 +13,7 @@ struct TranscriptPane: View {
     @State private var top: CGFloat?
     @State private var followsLatest = true
     @State private var userScrolling = false
-    @State private var heldText: String?
+    @State private var heldSegments: [String]?
 
     private var height: CGFloat {
         TranscriptViewport.height(viewport: viewportHeight, top: top, scale: scale)
@@ -29,7 +29,7 @@ struct TranscriptPane: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    HeardTranscript(text: heldText ?? text, phrase: phrase, endPhrase: endPhrase, similar: similar, enabled: enabled, controlPhrases: controlPhrases)
+                    HeardTranscript(segments: heldSegments ?? segments, phrase: phrase, endPhrase: endPhrase, similar: similar, enabled: enabled, controlPhrases: controlPhrases)
                         .equatable()
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -47,13 +47,13 @@ struct TranscriptPane: View {
                 userScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
                 if userScrolling { followsLatest = atEnd(context.geometry) }
             }
-            .onChange(of: text) { _, value in
-                if value.isEmpty { heldText = nil; followsLatest = true }
+            .onChange(of: segments) { _, value in
+                if value.isEmpty { heldSegments = nil; followsLatest = true }
                 if followsLatest && readable { proxy.scrollTo("transcriptTail", anchor: .bottom) }
             }
             .onChange(of: followsLatest) { _, follows in
                 // Keep the complete text stable while it is selected or read.
-                heldText = follows ? nil : text
+                heldSegments = follows ? nil : segments
                 if follows && readable { proxy.scrollTo("transcriptTail", anchor: .bottom) }
             }
             .onChange(of: readable) { _, visible in

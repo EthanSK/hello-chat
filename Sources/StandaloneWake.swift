@@ -30,6 +30,7 @@ struct StandaloneWake {
     private var audioTime: Double?
     private var changedAt = 0.0
     private var consumed = 0
+    private var consumedAudioRanges: [Range<Double>] = []
     private var heardSpeech = false
     private var revision = 0
     private var checkedRevision = -1
@@ -42,6 +43,7 @@ struct StandaloneWake {
         context = []; sentenceStarts = []; audioBoundary = 0
         wordTimings = nil
         consumed = 0; revision += 1; quiet = 0
+        consumedAudioRanges.removeAll()
         waitingForPause = false
         audioTime = nil
         acceptedRange = nil
@@ -83,14 +85,27 @@ struct StandaloneWake {
             candidates.append(contentsOf: matches(phrase: candidatePhrase, similar: similar, allowEndAddressEdit: ending))
         }
         candidates.sort { left, right in left.start == right.start ? left.end < right.end : left.start < right.start }
+        let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
+        let audioRanges: [Range<Double>?] = candidates.map { match in
+            guard let alignedTimings else { return nil }
+            let start = alignedTimings[match.start].start, end = alignedTimings[match.end - 1].end
+            return start.isFinite && end.isFinite && start <= end ? start..<max(end, start.nextUp) : nil // Fallback words may share one instant; keep their consumed identity.
+        }
         waitingForPause = false
         var accepted: (start: Int, end: Int)?
-        for (index, match) in candidates.enumerated() where index + 1 > consumed {
+        for (index, match) in candidates.enumerated() {
+            if let range = audioRanges[index] {
+                if consumedAudioRanges.contains(where: { $0.overlaps(range) }) {
+                    rememberConsumed(range)
+                    continue
+                }
+            } else if index + 1 <= consumed { continue }
             let weakSplit = !ending && similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
                 && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                 && sentenceStarts.contains { $0 > match.start && $0 < match.end }
             if isMention(start: match.start, end: match.end, rejectNegated: rejectNegated) || weakSplit {
                 consumed = index + 1
+                rememberConsumed(audioRanges[index])
                 continue
             }
             if requiredPause > 0, match.end < context.count {
@@ -100,6 +115,7 @@ struct StandaloneWake {
                       timings[match.end].start.isFinite,
                       timings[match.end].start - timings[match.end - 1].end + 1e-9 >= requiredPause else { // Avoid rounding an exact configured gap below the boundary.
                     consumed = index + 1
+                    rememberConsumed(audioRanges[index])
                     continue
                 }
             } else if requiredPause > 0 {
@@ -122,18 +138,38 @@ struct StandaloneWake {
         checkedRevision = revision
         // Monotonic occurrence counts prevent corrections to an old sentence
         // from replaying either a rejected mention or an accepted address.
-        if !waitingForPause { consumed = max(consumed, candidates.count) }
+        if !waitingForPause {
+            consumed = max(consumed, candidates.count)
+            audioRanges.forEach { rememberConsumed($0) }
+        }
         if !candidates.isEmpty {
             onDecision?(directAddress ? (requiredPause > 0 ? "accepted_after_pause" : "accepted_without_pause") : (waitingForPause ? "waiting_for_pause" : "rejected_context_or_consumed"), quiet, time - changedAt)
         }
         return directAddress
     }
 
+    private mutating func rememberConsumed(_ range: Range<Double>?) {
+        guard let range else { return }
+        // ASR can delete earlier words and renumber every later match. Audio
+        // spans retain occurrence identity without replaying a corrected word.
+        if let index = consumedAudioRanges.firstIndex(where: { $0.overlaps(range) }) {
+            let old = consumedAudioRanges[index]
+            consumedAudioRanges[index] = min(old.lowerBound, range.lowerBound)..<max(old.upperBound, range.upperBound)
+        } else { consumedAudioRanges.append(range) }
+    }
+
     mutating func cancelPending(phrase: String, endPhrase: String, similar: Bool, alternatives: [String] = []) {
         // An end command can arrive before this settled-text poll. Do not let
         // that earlier greeting reopen Voice after the end was handled.
         guard let end = matches(phrase: endPhrase, similar: similar, allowEndAddressEdit: true).last?.end else { return }
-        consumed = max(consumed, ([phrase] + alternatives).flatMap { matches(phrase: $0, similar: similar) }.filter { $0.end <= end }.count)
+        let earlier = ([phrase] + alternatives).flatMap { matches(phrase: $0, similar: similar) }.filter { $0.end <= end }
+        consumed = max(consumed, earlier.count)
+        if let wordTimings, wordTimings.map(\.word) == context {
+            for match in earlier {
+                let start = wordTimings[match.start].start, finish = wordTimings[match.end - 1].end
+                if start.isFinite, finish.isFinite, start <= finish { rememberConsumed(start..<max(finish, start.nextUp)) }
+            }
+        }
         checkedRevision = -1
     }
 

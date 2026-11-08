@@ -56,3 +56,6 @@ swiftc -swift-version 5 -parse-as-library Sources/UpdateInstallation.swift Tests
 
 swiftc -swift-version 5 -parse-as-library Sources/DesktopSession.swift Tests/DesktopSessionTests.swift -o "$build_dir/DesktopSessionTests" -framework AppKit
 "$build_dir/DesktopSessionTests"
+
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/PhraseHighlights.swift Sources/HeardTranscript.swift Tests/TranscriptRenderingTests.swift -o "$build_dir/TranscriptRenderingTests" -framework SwiftUI
+"$build_dir/TranscriptRenderingTests"

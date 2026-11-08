@@ -305,10 +305,9 @@ struct VoiceBridge {
             let role = read(kAXRoleAttribute, element) as? String
             if role == kAXButtonRole {
                 inspectButton(element)
-                // A snapshot only needs one exact Voice control to establish
-                // state. Don't keep scanning a large chat for an absent End
-                // button after the microphone was already identified.
-                if requireOutput ? result.outputMuted != nil : (result.end != nil || (!requireEnd && result.microphone != nil)) { result.complete = true; return result }
+                // Stop after the requested control is found. An End button alone
+                // proves a call exists but cannot tell an audio command its mic state.
+                if requireOutput ? result.outputMuted != nil : (requireEnd ? result.end != nil : result.microphone != nil) { result.complete = true; return result }
             }
             if role == "AXWebArea" {
                 // Chromium may announce newly inserted call controls on this
@@ -330,7 +329,7 @@ struct VoiceBridge {
                     for button in buttons {
                         guard Date() < deadline else { result.failure = "deadline"; return result }
                         inspectButton(button)
-                        if requireOutput ? result.outputMuted != nil : (result.end != nil || (!requireEnd && result.microphone != nil)) { result.complete = true; return result }
+                        if requireOutput ? result.outputMuted != nil : (requireEnd ? result.end != nil : result.microphone != nil) { result.complete = true; return result }
                     }
                     continue
                 }

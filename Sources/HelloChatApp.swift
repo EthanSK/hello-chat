@@ -400,7 +400,7 @@ struct MainView: View {
         GeometryReader { viewport in
             Form {
                 Section {
-                    TranscriptPane(text: model.transcriptHistory.text, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
+                    TranscriptPane(segments: model.transcriptHistory.segments, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
                                    similar: model.similarPhrases, enabled: model.enabled,
                                    viewportHeight: viewport.size.height, scale: zoom.scale,
                                    controlPhrases: model.controlPhrases)
@@ -507,13 +507,67 @@ struct OpenSettingsButton: View {
 private struct PhraseFields: View {
     @ObservedObject var model: GateModel
     var body: some View {
-        TextField("Wake phrase", text: $model.wakePhrase).accessibilityIdentifier("wakePhrase")
-        TextField("End phrase", text: $model.sleepPhrase).accessibilityIdentifier("endPhrase")
-        TextField("Mute phrase", text: $model.mutePhrase).accessibilityIdentifier("mutePhrase")
-        TextField("Unmute phrase", text: $model.unmutePhrase).accessibilityIdentifier("unmutePhrase")
-        TextField("Silent phrase", text: $model.silentPhrase).accessibilityIdentifier("silentPhrase")
-        TextField("Silence phrase", text: $model.silencePhrase).accessibilityIdentifier("silencePhrase")
-        TextField("Unsilence phrase", text: $model.unsilencePhrase).accessibilityIdentifier("unsilencePhrase")
+        PhraseField(label: "Wake phrase", text: $model.wakePhrase, similar: model.similarPhrases, identifier: "wakePhrase")
+        PhraseField(label: "End phrase", text: $model.sleepPhrase, similar: model.similarPhrases, ending: true, identifier: "endPhrase")
+        PhraseField(label: "Mute phrase", text: $model.mutePhrase, similar: model.similarPhrases, identifier: "mutePhrase")
+        PhraseField(label: "Unmute phrase", text: $model.unmutePhrase, similar: model.similarPhrases, identifier: "unmutePhrase")
+        PhraseField(label: "Silent phrase", text: $model.silentPhrase, similar: model.similarPhrases, identifier: "silentPhrase")
+        PhraseField(label: "Silence phrase", text: $model.silencePhrase, similar: model.similarPhrases, identifier: "silencePhrase")
+        PhraseField(label: "Unsilence phrase", text: $model.unsilencePhrase, similar: model.similarPhrases, identifier: "unsilencePhrase")
+    }
+}
+
+private struct PhraseField: View {
+    let label: String
+    @Binding var text: String
+    let similar: Bool
+    var ending = false
+    let identifier: String
+    @State private var showingSpellings = false
+    var body: some View {
+        HStack(spacing: 5) { // Interactive label content in LabeledContent was merged into the text field's accessibility label.
+            Text(label).fixedSize(horizontal: true, vertical: false)
+            Button { showingSpellings = true } label: { Image(systemName: "info.circle") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .accessibilityLabel("\(label) spellings").accessibilityIdentifier(identifier + "Info")
+                .popover(isPresented: $showingSpellings) {
+                    PhraseSpellings(phrase: text, similar: similar, ending: ending)
+                }
+            Spacer(minLength: 8)
+            TextField(label, text: $text).labelsHidden()
+                .multilineTextAlignment(.trailing).accessibilityLabel(label).accessibilityIdentifier(identifier)
+        }.accessibilityElement(children: .contain)
+    }
+}
+
+private struct PhraseSpellings: View {
+    let phrase: String
+    let similar: Bool
+    let ending: Bool
+    @State private var search = ""
+    @State private var spellings: [String] = []
+    private var matching: [String] {
+        let query = PhraseMatcher.words(search).joined()
+        return query.isEmpty ? spellings : spellings.filter { PhraseMatcher.words($0).joined().contains(query) }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recognized spellings").font(.headline)
+            Text(phrase).font(.subheadline)
+            Text("Spaces, punctuation and capitalization may differ.").font(.caption).foregroundStyle(.secondary)
+            if PhraseMatcher.hasOpenEndedWakeVariants(phrase, similar: similar, ending: ending) {
+                Text("The default wake phrase also accepts “hello” followed by a word starting with “ch”. The list shows known dictionary spellings.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            TextField("Find a spelling", text: $search).textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("phraseSpellingSearch")
+            List(matching, id: \.self) { Text($0).textSelection(.enabled) }
+                .accessibilityIdentifier("phraseSpellingList")
+            Text(matching.count == 1 ? "1 spelling" : "\(matching.count) spellings").font(.caption).foregroundStyle(.secondary)
+        }.padding().frame(width: 390, height: 410)
+            .task(id: "\(phrase)|\(similar)|\(ending)") {
+                spellings = PhraseMatcher.knownSpellings(for: phrase, similar: similar, ending: ending)
+            }
     }
 }
 
@@ -548,8 +602,10 @@ struct SettingsView: View {
                     Text("Enter both phrases").foregroundStyle(.red)
                 }
                 Button(model.checkingSpeech ? "Checking speech…" : "Check speech recognition") { model.checkSpeech() }
-                    .disabled(model.busy || model.voice.connected)
+                    .disabled(model.speechCheckUnavailableReason != nil)
                     .accessibilityIdentifier("speechCheck")
+                Text(model.speechCheckUnavailableReason ?? "Checks bundled recordings locally. Pauses H Chat listening during the check.")
+                    .font(.caption).foregroundStyle(.secondary)
                 if !model.speechCheckText.isEmpty {
                     Text(model.speechCheckText).textSelection(.enabled)
                         .accessibilityIdentifier("speechCheckResult")

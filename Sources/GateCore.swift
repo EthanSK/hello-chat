@@ -51,6 +51,41 @@ struct PhraseMatcher {
     static let microphonePhrases = [mutePhrase]
     static let controlPhrases = [mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase]
     private static let audioDictionaryNames: Set<String> = ["chat", "chad", "chatt"] // Deliberately narrower than the wake dictionary; never turn "unmute" into "mute".
+    private static let customEndAddresses: Set<String> = ["by", "byte", "buy"]
+    private static let customWakeAddresses: Set<String> = ["hi", "hay"]
+
+    static func hasOpenEndedWakeVariants(_ phrase: String, similar: Bool, ending: Bool) -> Bool {
+        usesWakeDictionary(words(phrase), similar: similar, ending: ending)
+    }
+    private static func usesWakeDictionary(_ expected: [String], similar: Bool, ending: Bool) -> Bool {
+        similar && expected == ["hello", "chat"] && !ending
+    }
+    // The information popover derives its known spellings from the matcher.
+    // It is not an exhaustive list of spacing or open-ended wake combinations.
+    static func knownSpellings(for phrase: String, similar: Bool, ending: Bool) -> [String] {
+        let expected = words(phrase), compact = expected.joined()
+        guard !compact.isEmpty else { return [] }
+        guard similar else { return [phrase] }
+        var candidates: Set<String>
+        if usesWakeDictionary(expected, similar: similar, ending: ending) {
+            candidates = wakeVariants.union(weakWakeVariants)
+        } else if ending, expected == ["bye", "chat"] {
+            candidates = endVariants.union(observedEndVariants)
+        } else if controlPhrases.contains(expected.joined(separator: " ")) {
+            candidates = combinations(oneEdits(expected[0]), audioDictionaryNames)
+        } else {
+            candidates = oneEdits(compact)
+            if !ending, expected.count == 2, expected[0] == "hey", let last = expected.last {
+                candidates.formUnion(combinations(customWakeAddresses, [last]))
+            } else if ending, expected.count == 2, expected[0] == "bye", let last = expected.last {
+                candidates.formUnion(combinations(customEndAddresses, [last]))
+            }
+        }
+        candidates.remove(compact)
+        return [phrase] + candidates.filter {
+            equivalentCompact($0, expected: expected, compact: compact, similar: similar, allowEndAddressEdit: ending)
+        }.sorted()
+    }
 
     // Presentation uses the same acceptance rules as command detection. A
     // highlighted phrase is a textual match, not proof a Voice action ran.
@@ -195,7 +230,7 @@ struct PhraseMatcher {
     }
     private static func equivalentCompact(_ actual: String, expected: [String], compact: String, similar: Bool, allowEndAddressEdit: Bool) -> Bool {
         if actual == compact { return !compact.isEmpty }
-        if similar, expected == ["hello", "chat"], !allowEndAddressEdit {
+        if usesWakeDictionary(expected, similar: similar, ending: allowEndAddressEdit) {
             // Ethan wants "hello" followed by any word beginning C H to wake.
             // The existing compact form also preserves joined/spelled variants.
             return !ordinaryWakePhrases.contains(actual) && !excludedShortGreetings.contains(actual) &&
@@ -222,7 +257,7 @@ struct PhraseMatcher {
         // Accept speech-to-text homophones only for Bye, with the full saved
         // name intact; do not broaden wake phrases or exact matching mode.
         if allowEndAddressEdit, expected.count == 2, expected[0] == "bye",
-           ["by", "byte", "buy"].contains(where: { actual == $0 + last }) { return true }
+           customEndAddresses.contains(where: { actual == $0 + last }) { return true }
         // Ethan's repeated "by charts" / "by chats" are confirmed mishearings
         // of Bye Chat. Keep this end-only dictionary specific to that name.
         if allowEndAddressEdit, expected == ["bye", "chat"],
@@ -232,7 +267,7 @@ struct PhraseMatcher {
         // Local short-phrase recognition can spell the spoken address Hi/Hay.
         // Only allow those addresses with the exact saved name, in fuzzy mode.
         if !allowEndAddressEdit, expected.count == 2, expected[0] == "hey",
-           ["hi" + last, "hay" + last].contains(actual) { return true }
+           customWakeAddresses.contains(where: { actual == $0 + last }) { return true }
         let anchor = expected.dropLast().joined() + last.prefix(2)
         if actual.hasPrefix(anchor) { return oneEditApart(Array(actual), Array(compact)) }
         // End phrases may contain a short homophone such as Bye/By. Keep the
@@ -263,6 +298,10 @@ struct PhraseMatcher {
         let maxSpan = common ? maximumDefaultSpan : expected.count + 1
         var result: [(start: Int, end: Int)] = [], start = 0
         while start < tokens.count {
+            if start > 0, tokens[start - 1] == "un", controlPhrases.contains(expected.joined(separator: " ")),
+               expected.first?.hasPrefix("un") == false {
+                start += 1; continue // A split "un mute" / "un silence" must never also match the opposite command.
+            }
             var found = false
             var candidate = ""
             let lengths = Array(1...min(maxSpan, tokens.count - start))

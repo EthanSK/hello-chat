@@ -248,22 +248,19 @@ import Foundation
         try checkAttached()
         if state == .muted { _ = try await end() }
         else {
+            try checkStartAllowed()
             guard connected else { throw BridgeError.message("Codex Voice is off.") }
             let fresh = await snapshot()
             guard let pid = fresh.pid, let microphone = fresh.microphone else {
                 throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
             }
             if microphone == .listening { return }
-            try checkAttached()
-            try transport.activate(pid)
+            try checkStartAllowed() // Waking a muted existing call uses the same background key path as explicit Unmute.
             guard let unmute = transport.unmute else {
                 throw BridgeError.message("Couldn't unmute chat. Use the microphone in Codex.")
             }
             try await unmute(pid)
-            try await Task.sleep(nanoseconds: 300_000_000)
-            guard await snapshot().microphone == .listening else {
-                throw BridgeError.message("Codex Voice is still muted. Check the microphone in Codex.")
-            }
+            try await confirmAudio(.unmuteMicrophone, pid: pid)
         }
     }
 
@@ -273,9 +270,20 @@ import Foundation
     @discardableResult
     func setAudio(_ action: VoiceAudioAction, onRecognized: (() -> Void)? = nil) async throws -> Bool {
         try checkStartAllowed()
-        let fresh = await snapshot(output: action.controlsSpeakers)
+        var fresh = await snapshot(output: action.controlsSpeakers)
         try checkStartAllowed()
+        for _ in 0..<2 where fresh.accessibilityAllowed && !fresh.applicationAbsent
+            && fresh.microphone == nil && fresh.outputMuted == nil && !fresh.endControlAvailable
+            && (!fresh.controlsComplete || !fresh.applicationReady) {
+            fresh = await snapshot(output: action.controlsSpeakers) // Retry an incomplete AX view, never a proven absent call or a sent key.
+            try checkStartAllowed()
+        }
+        guard fresh.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
+        if fresh.applicationAbsent { return false }
         guard fresh.pid != nil, fresh.microphone != nil || fresh.outputMuted != nil || fresh.endControlAvailable else {
+            guard fresh.pid != nil, fresh.controlsComplete || (!fresh.applicationHasWindow && !fresh.inputRunning) else {
+                throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
+            }
             diagnostics?.record("voice.audio.inactive", info: ["action": action.rawValue])
             return false // Recognized words alone must never launch Voice or play an action sound.
         }
@@ -305,6 +313,11 @@ import Foundation
         try await transport.send(command, pid)
         diagnostics?.record(action.controlsSpeakers ? "voice.output.shortcut_sent" : "voice.microphone.shortcut_sent", info: ["command": command, "action": action.rawValue])
         try checkAttached()
+        try await confirmAudio(action, pid: pid)
+        return true
+    }
+
+    private func confirmAudio(_ action: VoiceAudioAction, pid: Int32) async throws {
         // Native audio controls update asynchronously. Observe completion for at
         // most two seconds, returning immediately when it arrives; never resend
         // a toggle just because the first read still shows the previous state.
@@ -312,10 +325,10 @@ import Foundation
         repeat {
             let confirmed = await snapshot(output: action.controlsSpeakers)
             try checkAttached()
-            guard confirmed.pid == pid else { break }
-            if action.isMuted(in: confirmed) == action.targetMuted {
+            if confirmed.applicationAbsent || (confirmed.pid != nil && confirmed.pid != pid) { break }
+            if confirmed.pid == pid, action.isMuted(in: confirmed) == action.targetMuted {
                 connected = true; lastError = nil
-                return true
+                return
             }
             let remaining = deadline - transport.now()
             guard remaining > 0 else { break }
@@ -448,7 +461,7 @@ import Foundation
             throw BridgeError.message("Couldn't confirm Codex Voice. End the call in Codex.")
         }
         try checkAttached()
-        // End/unmute retain their app-scoped activation; global Start does not.
+        // End retains its app-scoped activation; Start and audio commands do not.
         // An AXPress acknowledgement is not confirmation that the call ended.
         try transport.activate(pid)
         diagnostics?.record("voice.end.activation_requested")

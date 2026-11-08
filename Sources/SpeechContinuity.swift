@@ -5,7 +5,8 @@ import Foundation
 struct TranscriptHistory {
     private var completed: [String] = []
     private(set) var current = ""
-    var text: String { (completed + (current.isEmpty ? [] : [current])).joined(separator: "\n") }
+    var segments: [String] { completed + (current.isEmpty ? [] : [current]) }
+    var text: String { segments.joined(separator: "\n") }
     mutating func update(_ text: String) { current = text }
     mutating func boundary() {
         if !current.isEmpty { completed.append(current); current = "" }
