@@ -1,10 +1,12 @@
 import Foundation
 
-// Ethan reinstated a 600 ms pause after every keyword on 8 November 2026.
-// Use word timestamps and the recognizer's audio clock, not room volume or
-// transcript arrival time. Ambient noise is not the same as continuing speech.
+// Ethan temporarily disabled the command pause on 8 November 2026 to try
+// immediate recognition. Keep the former timing path available for a requested
+// reversal, without changing the model's own utterance/reset timing.
 struct StandaloneWake {
-    static let commandPauseSeconds = 0.6
+    static let commandPauseSeconds = 0.0
+    private let requiredPause: TimeInterval
+    init(requiredPause: TimeInterval = Self.commandPauseSeconds) { self.requiredPause = requiredPause }
     // Keep the model's existing utterance boundary independent of command gating.
     static let endSilenceSeconds = 0.6
     static let microphonePhrases = PhraseMatcher.microphonePhrases
@@ -35,7 +37,7 @@ struct StandaloneWake {
     private var configuration = ""
     private(set) var acceptedRange: Range<Int>?
 
-    mutating func reset() { self = StandaloneWake() }
+    mutating func reset() { self = StandaloneWake(requiredPause: requiredPause) }
     mutating func resetContext() {
         context = []; sentenceStarts = []; audioBoundary = 0
         wordTimings = nil
@@ -91,23 +93,23 @@ struct StandaloneWake {
                 consumed = index + 1
                 continue
             }
-            if match.end < context.count {
+            if requiredPause > 0, match.end < context.count {
                 // A late transcript can already contain words after the pause.
                 // Never infer that gap from punctuation or ASR arrival time.
                 guard let timings = wordTimings, timings.map(\.word) == context,
                       timings[match.end].start.isFinite,
-                      timings[match.end].start - timings[match.end - 1].end + 1e-9 >= Self.commandPauseSeconds else { // Avoid rounding an exact 600 ms gap below the boundary.
+                      timings[match.end].start - timings[match.end - 1].end + 1e-9 >= requiredPause else { // Avoid rounding an exact configured gap below the boundary.
                     consumed = index + 1
                     continue
                 }
-            } else {
+            } else if requiredPause > 0 {
                 let elapsed: Double
                 if let audioTime, let timings = wordTimings, timings.map(\.word) == context {
                     elapsed = audioTime - timings[match.end - 1].end
                 } else {
                     elapsed = quiet // Text-only diagnostics have no model clock; live backends supply it for every frame.
                 }
-                if !elapsed.isFinite || elapsed + 1e-9 < Self.commandPauseSeconds {
+                if !elapsed.isFinite || elapsed + 1e-9 < requiredPause {
                     waitingForPause = true
                     break // Keep this occurrence pending; another audio frame can satisfy its pause.
                 }
@@ -122,7 +124,7 @@ struct StandaloneWake {
         // from replaying either a rejected mention or an accepted address.
         if !waitingForPause { consumed = max(consumed, candidates.count) }
         if !candidates.isEmpty {
-            onDecision?(directAddress ? "accepted_after_pause" : (waitingForPause ? "waiting_for_pause" : "rejected_context_or_consumed"), quiet, time - changedAt)
+            onDecision?(directAddress ? (requiredPause > 0 ? "accepted_after_pause" : "accepted_without_pause") : (waitingForPause ? "waiting_for_pause" : "rejected_context_or_consumed"), quiet, time - changedAt)
         }
         return directAddress
     }

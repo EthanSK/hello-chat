@@ -538,7 +538,7 @@ struct SettingsView: View {
             }
             Section("Phrases") {
                 PhraseFields(model: model)
-                Text("Pause for 0.6 seconds after each phrase. Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Repeating a command keeps its requested state.")
+                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Repeating a command keeps its requested state.")
                     .foregroundStyle(.secondary)
                 Toggle("Allow small spelling differences", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
