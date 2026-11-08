@@ -17,7 +17,7 @@ import Foundation
                 sends += 1
                 if action.controlsSpeakers { current.outputMuted = action.targetMuted }
                 else { current.microphone = action.targetMuted ? .muted : .listening }
-            }, activate: { _ in }))
+            }, activate: { _ in fatalError("Audio shortcuts must not activate Codex") }))
             try await audio.setAudio(action)
             precondition(action.isMuted(in: current) == action.targetMuted && sends == 1 && audio.connected)
             precondition(action.controlsSpeakers ? current.microphone == untouchedMicrophone : current.outputMuted == untouchedOutput,
@@ -29,23 +29,57 @@ import Foundation
             catch is CancellationError { }
         }
         for action in VoiceAudioAction.allCases {
-            let unknown = NativeVoice(transport: .init(snapshot: { state(input: true) },
+            var unknownState = state(input: true)
+            unknownState.endControlAvailable = true
+            let unknown = NativeVoice(transport: .init(snapshot: { unknownState },
                 send: { _, _ in fatalError("Unknown state must never send a toggle") }, activate: { _ in }))
             do { try await unknown.setAudio(action); fatalError("Unknown state was reported as success") }
             catch is BridgeError { }
-            var changing = state(.muted); changing.outputMuted = true
-            let ready = NativeVoice(transport: .init(snapshot: { changing },
-                send: { _, _ in fatalError("A manual action already achieved the desired state") },
-                activate: { _ in
+            var changing = state(action.targetMuted ? .listening : .muted); changing.outputMuted = !action.targetMuted
+            var reads = 0
+            let ready = NativeVoice(transport: .init(snapshot: {
+                reads += 1
+                if reads == 2 {
                     if action.controlsSpeakers { changing.outputMuted = action.targetMuted }
                     else { changing.microphone = action.targetMuted ? .muted : .listening }
-                }))
+                }
+                return changing
+            }, send: { _, _ in fatalError("A manual action already achieved the desired state") }, activate: { _ in fatalError("No activation") }))
             try await ready.setAudio(action)
+            precondition(reads == 2)
         }
+        for action in VoiceAudioAction.allCases {
+            var acknowledged = false
+            let inactive = NativeVoice(transport: .init(snapshot: { state(input: true) },
+                send: { _, _ in fatalError("Dictation without Voice must not receive an audio key") },
+                activate: { _ in fatalError("Inactive Voice must not activate Codex") },
+                launch: { fatalError("An audio command must not launch Codex") }))
+            let active = try await inactive.setAudio(action, onRecognized: { acknowledged = true })
+            precondition(!active && !acknowledged && !inactive.connected)
+        }
+        for action in VoiceAudioAction.allCases {
+            var time: TimeInterval = 0, sent = 0, postSendReads = 0
+            var delayed = state(action.targetMuted ? .listening : .muted); delayed.outputMuted = !action.targetMuted
+            let audio = NativeVoice(transport: .init(snapshot: {
+                if sent > 0 {
+                    postSendReads += 1
+                    if time >= 0.3 {
+                        if action.controlsSpeakers { delayed.outputMuted = action.targetMuted }
+                        else { delayed.microphone = action.targetMuted ? .muted : .listening }
+                    }
+                }
+                return delayed
+            }, send: { _, _ in sent += 1 }, activate: { _ in fatalError("Delayed confirmation must not activate Codex") },
+                now: { time }, wait: { time += $0 }))
+            try await audio.setAudio(action)
+            precondition(sent == 1 && postSendReads >= 4 && time < 0.5, "Wait only for the real state transition without resending")
+        }
+        var unconfirmedTime: TimeInterval = 0
         let unconfirmed = NativeVoice(transport: .init(snapshot: { state(.listening) },
-            send: { _, _ in }, activate: { _ in }))
+            send: { _, _ in }, activate: { _ in }, now: { unconfirmedTime }, wait: { unconfirmedTime += $0 }))
         do { try await unconfirmed.setAudio(.muteMicrophone); fatalError("Unchanged state cannot confirm mute") }
         catch is BridgeError { }
+        precondition(unconfirmedTime == 2, "Confirmation is bounded when native state never changes")
         var failedSends = 0
         let failed = NativeVoice(transport: .init(snapshot: { state(.listening) },
             send: { _, _ in failedSends += 1; throw BridgeError.message("Not applied") }, activate: { _ in }))

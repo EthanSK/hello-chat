@@ -6,6 +6,21 @@ import Foundation
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
         }
+        for text in ["unsilenced chat", "unsilense chad"] {
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1)
+            detector.update(text, at: 1)
+            detector.audio(level: 0, seconds: 0.59)
+            expect(!detector.poll(at: 1.59, phrase: "unsilence chat", similar: true, rejectNegated: true), "Spelling tolerance keeps the full pause")
+            detector.audio(level: 0, seconds: 0.01)
+            expect(detector.poll(at: 1.6, phrase: "unsilence chat", similar: true, rejectNegated: true), "Observed and one-edit variants activate after the pause")
+            expect(!detector.poll(at: 2, phrase: "unsilence chat", similar: true, rejectNegated: true), "A variant fires only once")
+        }
+        for text in ["do not unsilenced chat", "I said unsilenced chat", "the unsilenced chat command", "silenced chat", "unmute chat"] {
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1); detector.audio(level: 0, seconds: 0.6)
+            expect(!detector.poll(at: 1.6, phrase: "unsilence chat", similar: true, rejectNegated: true), "Variants preserve negation, mention and direction boundaries")
+        }
         func endCommand(_ detector: inout StandaloneWake, _ text: String, at time: Double = 1) -> Bool {
             detector.audio(level: 0.2, seconds: 0.1)
             detector.update(text, at: time)

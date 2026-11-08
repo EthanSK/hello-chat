@@ -16,10 +16,11 @@ enum PhraseHighlights {
         var priority: Int { kind == .exact ? 0 : (kind == .dictionary ? 1 : 2) }
     }
 
-    static func runs(in text: String, phrase: String, endPhrase: String = "", similar: Bool, limit: Int = 600,
+    static func runs(in text: String, phrase: String, endPhrase: String = "", similar: Bool, limit: Int? = nil,
                      controlPhrases: [String] = PhraseMatcher.controlPhrases) -> [Run] {
-        guard limit > 0, !text.isEmpty else { return [] }
-        let visibleStart = text.index(text.endIndex, offsetBy: -min(limit, text.count))
+        let visibleLimit = limit ?? text.count
+        guard !text.isEmpty, visibleLimit > 0 else { return [] }
+        let visibleStart = text.index(text.endIndex, offsetBy: -min(visibleLimit, text.count))
         var ranges: [Range<String.Index>] = []
         var tokens: [String] = []
         var cursor = text.startIndex

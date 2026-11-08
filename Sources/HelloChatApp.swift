@@ -400,7 +400,7 @@ struct MainView: View {
         GeometryReader { viewport in
             Form {
                 Section {
-                    TranscriptPane(text: model.transcript, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
+                    TranscriptPane(text: model.transcriptHistory.text, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
                                    similar: model.similarPhrases, enabled: model.enabled,
                                    viewportHeight: viewport.size.height, scale: zoom.scale,
                                    controlPhrases: model.controlPhrases)

@@ -4,10 +4,15 @@ import Foundation
     static func main() {
         var checks = 0
         func check(_ value: Bool, _ message: String) { precondition(value, message); checks += 1 }
-        func runs(_ text: String, _ phrase: String = "Hello Chat", _ similar: Bool = true, end: String = "", limit: Int = 600) -> [PhraseHighlights.Run] {
+        func runs(_ text: String, _ phrase: String = "Hello Chat", _ similar: Bool = true, end: String = "", limit: Int? = nil) -> [PhraseHighlights.Run] {
             PhraseHighlights.runs(in: text, phrase: phrase, endPhrase: end, similar: similar, limit: limit)
         }
         let original = "🎙️ Café: Hello, CHAT! As well chat. HelloChad — ordinary words."
+        let longTranscript = "Hello Chat. " + String(repeating: "Earlier speech. ", count: 100) + "Unsilenced Chat."
+        check(runs(longTranscript).map(\.text).joined() == longTranscript, "The live transcript never drops its earlier characters")
+        check(runs(longTranscript).first?.kind == .exact, "Earlier text remains highlighted beyond 600 characters")
+        check(runs("Unsilenced Chat. Unsilense Chad.").filter { $0.kind != nil }.map(\.kind) == [.dictionary, .dictionary], "Narrow one-edit audio spelling variants share dictionary orange")
+        check(runs("Unsilenced Chat", "Hello Chat", false).allSatisfy { $0.kind == nil }, "Exact-only mode does not accept added audio variants")
         let microphoneText = "Mute, CHAT! Silent Chat. Silence Chat. mute charts."
         let microphoneRuns = runs(microphoneText)
         check(microphoneRuns.map(\.text).joined() == microphoneText, "Microphone highlighting preserves the exact transcript")

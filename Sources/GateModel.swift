@@ -21,6 +21,7 @@ import SwiftUI
     @Published private(set) var microphone: MicrophoneState? = .muted
     let meter = AudioMeter()
     @Published private(set) var transcript = ""
+    @Published private(set) var transcriptHistory = TranscriptHistory()
     @Published private(set) var archiveError: String?
     @Published var saveTranscripts = UserDefaults.standard.object(forKey: "saveTranscripts") as? Bool ?? true {
         didSet {
@@ -184,6 +185,7 @@ import SwiftUI
             Diagnostics.shared.failure("voice.shortcuts.failed", error)
         }
         listener.onSession = { [weak self] in
+            self?.transcriptHistory.boundary()
             self?.archive.boundary(); self?.endPhrase.resetContext(); self?.standaloneWake.resetContext(); self?.resetAudioPhrases(); self?.detectionRunning = true
             // A context reset is not the end of the opening. Keep both the M5's
             // startup capture and the independent command detector resets.
@@ -503,7 +505,7 @@ import SwiftUI
             try await SpeechListener.authorize()
             guard generation == token, !quitting, playbackAllowed else { return }
             refreshPermissions(); updatePhrases(); endPhrase.reset()
-            transcript = ""; lastEvent = ""
+            transcript = ""; transcriptHistory = TranscriptHistory(); lastEvent = ""
             try await listener.start()
             guard generation == token, !quitting else { listener.stop(); return }
             enabled = true; detectionRunning = true
@@ -710,6 +712,7 @@ import SwiftUI
         if changed {
             transcript = text
         }
+        transcriptHistory.update(text)
         // Use the same phrase and mention rules while Agent Flow records. Its
         // microphone ownership must not pause H Chat's existing recognizer.
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
@@ -772,14 +775,14 @@ import SwiftUI
                 standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: phrase, similar: similarPhrases) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
             }
             busy = true
-            feedback.play(.microphoneDetected) // Neutral acknowledgement only; channel-specific success cues require a confirmed native state below.
             let token = generation
             voiceTask = Task {
                 defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
                 do {
                     for (action, _) in actions { // A delayed transcript can contain both channels or opposite commands; apply them in spoken order.
-                        try await voice.setAudio(action)
+                        let active = try await voice.setAudio(action, onRecognized: { self.feedback.play(.microphoneDetected) }) // Inactive Voice gets no sound or key.
                         guard generation == token else { return }
+                        guard active else { continue }
                         error = nil
                         if !action.controlsSpeakers { microphone = action.targetMuted ? .muted : .listening }
                         switch action {

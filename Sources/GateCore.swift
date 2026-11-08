@@ -205,7 +205,15 @@ struct PhraseMatcher {
             return !ordinaryEndPhrases.contains(actual) && (endVariants.contains(actual) || observedEndVariants.contains(actual))
         }
         if similar, controlPhrases.contains(expected.joined(separator: " ")) {
-            return audioDictionaryNames.contains { actual == expected[0] + $0 }
+            return audioDictionaryNames.contains { name in
+                guard actual.hasSuffix(name) else { return false }
+                let verb = String(actual.dropLast(name.count)), expectedVerb = expected[0]
+                // The archive recorded "unsilenced chat". Allow one spelling
+                // edit in the verb while preserving its directional prefix and
+                // the narrow Chat dictionary; mute can never become unmute.
+                return verb == expectedVerb || (verb.hasPrefix(expectedVerb.prefix(3))
+                    && oneEditApart(Array(verb), Array(expectedVerb)))
+            }
         }
         // Keep the address and the start of the name intact. A single spelling
         // edit can cover Chat/Chad/Chatt without accepting HR, Hey that or Hey cat.

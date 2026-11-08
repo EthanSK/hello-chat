@@ -1,5 +1,17 @@
 import Foundation
 
+// The Heard box retains this listening session across model-context rollovers.
+// Only the current segment is revised; completed speech stays scrollable.
+struct TranscriptHistory {
+    private var completed: [String] = []
+    private(set) var current = ""
+    var text: String { (completed + (current.isEmpty ? [] : [current])).joined(separator: "\n") }
+    mutating func update(_ text: String) { current = text }
+    mutating func boundary() {
+        if !current.isEmpty { completed.append(current); current = "" }
+    }
+}
+
 // Prefer audio timestamps. If a backend omits them, retain the first observed
 // time of unchanged words across revisions so appending "chat" cannot renew
 // an old "hello". Context resets discard this bounded transcript state.

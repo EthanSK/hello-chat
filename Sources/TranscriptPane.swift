@@ -52,7 +52,7 @@ struct TranscriptPane: View {
                 if followsLatest && readable { proxy.scrollTo("transcriptTail", anchor: .bottom) }
             }
             .onChange(of: followsLatest) { _, follows in
-                // Keep the existing bounded text stable while it is being read.
+                // Keep the complete text stable while it is selected or read.
                 heldText = follows ? nil : text
                 if follows && readable { proxy.scrollTo("transcriptTail", anchor: .bottom) }
             }

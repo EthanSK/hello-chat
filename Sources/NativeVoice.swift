@@ -270,21 +270,27 @@ import Foundation
     // Directional speech commands use the existing toggle shortcut only when
     // a fresh native state proves it is needed. Unknown state must never invert
     // the microphone or speakers; repeated commands are harmless no-ops.
-    func setAudio(_ action: VoiceAudioAction) async throws {
+    @discardableResult
+    func setAudio(_ action: VoiceAudioAction, onRecognized: (() -> Void)? = nil) async throws -> Bool {
         try checkStartAllowed()
         let fresh = await snapshot(output: action.controlsSpeakers)
         try checkStartAllowed()
+        guard fresh.pid != nil, fresh.microphone != nil || fresh.outputMuted != nil || fresh.endControlAvailable else {
+            diagnostics?.record("voice.audio.inactive", info: ["action": action.rawValue])
+            return false // Recognized words alone must never launch Voice or play an action sound.
+        }
         guard fresh.accessibilityAllowed, let pid = fresh.pid,
               let current = action.isMuted(in: fresh) else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
+        onRecognized?()
         if current == action.targetMuted {
             connected = true; lastError = nil
             diagnostics?.record("voice.audio.unchanged", info: ["action": action.rawValue])
-            return
+            return true
         }
-        try transport.activate(pid)
-        try checkStartAllowed()
+        // postToPid already addresses Codex; activating it stole Ethan's focus.
+        // Recheck state without raising its window before sending the same key.
         let ready = await snapshot(output: action.controlsSpeakers)
         try checkStartAllowed()
         guard ready.accessibilityAllowed, ready.pid == pid,
@@ -293,18 +299,29 @@ import Foundation
         }
         if readyMuted == action.targetMuted {
             connected = true; lastError = nil
-            return // A manual change during activation already achieved the requested state.
+            return true // A manual change during the fresh read already achieved the requested state.
         }
         let command = action.controlsSpeakers ? VoiceBridge.outputMuteCommand : VoiceBridge.muteCommand
         try await transport.send(command, pid)
         diagnostics?.record(action.controlsSpeakers ? "voice.output.shortcut_sent" : "voice.microphone.shortcut_sent", info: ["command": command, "action": action.rawValue])
         try checkAttached()
-        let confirmed = await snapshot(output: action.controlsSpeakers)
-        try checkAttached()
-        guard confirmed.pid == pid, action.isMuted(in: confirmed) == action.targetMuted else {
-            throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
-        }
-        connected = true; lastError = nil
+        // Native audio controls update asynchronously. Observe completion for at
+        // most two seconds, returning immediately when it arrives; never resend
+        // a toggle just because the first read still shows the previous state.
+        let deadline = transport.now() + 2
+        repeat {
+            let confirmed = await snapshot(output: action.controlsSpeakers)
+            try checkAttached()
+            guard confirmed.pid == pid else { break }
+            if action.isMuted(in: confirmed) == action.targetMuted {
+                connected = true; lastError = nil
+                return true
+            }
+            let remaining = deadline - transport.now()
+            guard remaining > 0 else { break }
+            try await transport.wait(min(0.1, remaining))
+        } while transport.now() <= deadline
+        throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
     }
 
     // Normal H Chat Quit stops our control work, not the Codex conversation.
