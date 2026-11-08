@@ -230,11 +230,13 @@ import CoreGraphics
         let setup = VoiceShortcutConfiguration(bindingsURL: setupURL)
         check(VoiceBridge.startCommand == "realtimeVoice", "Start is Voice chat hotkey, never Toggle voice chat")
         let added = try setup.ensureDefaults()
-        check(added == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fresh setup adds the required Start and End bindings")
+        check(added == VoiceShortcutConfiguration.defaults.map(\.command), "Fresh setup adds Start, End, microphone and Voice audio bindings")
         var configured = try setup.read()
-        check(configured.count == 2, "Setup adds only global Voice and dedicated End, never Toggle")
+        check(configured.count == 4, "Setup adds four distinct Voice actions, never the start/stop Toggle")
         check(configured[0]["key"] as? String == "Command+Control+Shift+V", "Global Start uses the approved chord without Option")
         check(configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "End uses Ethan's main Mac default")
+        check(configured[2]["key"] as? String == "Command+Control+Shift+M", "Microphone default is distinct from Start and End")
+        check(configured[3]["key"] as? String == "Command+Control+Shift+O", "Voice audio has its own output shortcut")
         let installed = try Data(contentsOf: setupURL)
         try check(try setup.ensureDefaults().isEmpty, "Repeated setup is a no-op")
         try check(try Data(contentsOf: setupURL) == installed, "Repeated setup preserves exact bytes")
@@ -283,13 +285,15 @@ import CoreGraphics
         }
         try writeSetup([["command": VoiceBridge.startCommand, "key": "Control+Shift+V", "custom": "kept"],
                         ["command": "composer.startVoiceMode", "key": "F19"]])
-        try check(try setup.ensureDefaults() == [VoiceBridge.endCommand], "Only the missing End binding is added")
+        try check(try setup.ensureDefaults() == [VoiceBridge.endCommand, VoiceBridge.muteCommand, VoiceBridge.outputMuteCommand], "Only missing Voice bindings are added")
         configured = try setup.read()
         check(configured[0]["key"] as? String == "Control+Shift+V" && configured[0]["custom"] as? String == "kept", "Preserve an existing Start choice and unknown fields")
         check(configured[1]["command"] as? String == "composer.startVoiceMode" && configured[1]["key"] as? String == "F19", "Preserve the separate user Toggle binding")
         try writeSetup([["command": "hotkeyWindow", "key": "Alt+Shift+Space"],
                         ["command": VoiceBridge.startCommand, "key": "Ctrl+Alt+Shift+T"],
-                        ["command": VoiceBridge.endCommand, "key": "Ctrl+Alt+Shift+V"]])
+                        ["command": VoiceBridge.endCommand, "key": "Ctrl+Alt+Shift+V"],
+                        ["command": VoiceBridge.muteCommand, "key": "Command+Control+Option+Shift+F20", "custom": "kept"],
+                        ["command": VoiceBridge.outputMuteCommand, "key": "Command+Control+Shift+P"]])
         let userSettings = try Data(contentsOf: setupURL)
         try check(try setup.ensureDefaults().isEmpty, "Upgrade keeps the user's actual Voice chat hotkey")
         try check(try Data(contentsOf: setupURL) == userSettings, "Upgrade does not re-add the reset Toggle binding or rewrite custom choices")
@@ -300,10 +304,10 @@ import CoreGraphics
         try check(try Data(contentsOf: setupURL) == occupiedToggle, "Other users' custom Toggle stays intact on collision")
         try writeSetup([["command": VoiceBridge.startCommand, "key": NSNull()],
                         ["command": VoiceBridge.endCommand, "key": ""]])
-        try check(try setup.ensureDefaults() == [VoiceBridge.startCommand, VoiceBridge.endCommand], "Fill both null and blank required shortcuts")
+        try check(try setup.ensureDefaults() == VoiceShortcutConfiguration.defaults.map(\.command), "Fill null/blank keys and missing microphone/output shortcuts")
         configured = try setup.read()
-        check(configured.count == 2 && configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "Filling an unset key does not append a duplicate command")
-        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V", "Shift+Control+Command+V", "Super+Ctrl+Shift+V", "Meta+Control+Shift+V"] {
+        check(configured.count == 4 && configured[1]["key"] as? String == "Ctrl+Alt+Shift+V", "Filling an unset key does not append a duplicate command")
+        for conflictingKey in ["Shift+Option+Control+V", "Ctrl+Alt+Shift+V", "Shift+Control+Command+V", "Super+Ctrl+Shift+V", "Meta+Control+Shift+V", "Ctrl+Cmd+Shift+M", "Shift+Meta+Control+O"] {
             try writeSetup([["command": "other.command", "key": conflictingKey]])
             let beforeSetup = try Data(contentsOf: setupURL)
             do { try setup.ensureDefaults(); fatalError("Must reject a default collision") } catch is BridgeError { checks += 1 }

@@ -188,7 +188,7 @@ rm ~/Library/LaunchAgents/com.ethansk.hello-chat.plist
 - HelloChat identifies Codex by the bundle identifier `com.openai.codex` and checks that the running executable belongs to that bundle. It doesn't depend on one install path.
 - **Start** sends the **Voice chat hotkey** (`realtimeVoice`) through macOS’s global shortcut path. The default is Command-Control-Shift-V. **Toggle voice chat** (`composer.startVoiceMode`) is separate and is never configured or sent by HelloChat. Custom letters, digits, punctuation (including grave/tilde), F1–F20 and navigation keys are preserved, including their modifiers. Unsupported keys or multi-step sequences produce a setup error.
 - If Codex is closed, HelloChat launches the registered Codex app, waits for its native window to be ready, then sends Start once. Opening/reopening gets a five-second minimum and up to ten seconds for interactive readiness; an explicitly unready window never becomes ready just because time passes. A replacement process gets one fresh bounded window. An already-open call is reused without the launch delay.
-- An existing muted call is unmuted through its freshly checked native microphone control, without adding a third shortcut.
+- An existing muted call is unmuted through its configured microphone shortcut after checking its current state.
 - Start requires an unlocked, active macOS desktop. A wake heard while locked is not queued for later. After unlocking, say the wake phrase again; old recognition and pending opening state are cleared without ending an existing call.
 - **End** sends the dedicated `realtimeVoice.endCall` shortcut after a fresh Voice-control check. A retry presses the exact End control itself. If closure cannot be confirmed, HelloChat says the status is unknown instead of claiming the End action failed.
 - Shortcut writes are marked as saved, not proof of live registration. If HelloChat adds bindings while Codex is running, it shows a restart message. Voice confirmation still depends on the actual call controls.
@@ -239,3 +239,7 @@ The static GitHub Pages site lives in `docs/`. After changing its CSS, JavaScrip
 ## License
 
 Source-available under [Apache License 2.0 with Commons Clause v1.0](LICENSE). You may use and modify the covered software, including internally at work, and redistribute it under these terms. Commons Clause restricts selling products or services whose value derives entirely or substantially from the software's functionality; it does not prohibit every commercial use. Earlier licenses and third-party rights remain in force. See [scope and release policy](LICENSING.md).
+
+### Microphone and Voice audio shortcuts
+
+Missing microphone and Voice audio bindings use Command–Control–Shift–M and Command–Control–Shift–O, respectively. Existing custom bindings are preserved. The three microphone phrases use the microphone shortcut; they do not toggle Voice audio. Shortcuts saved while Codex is running may still need applying in its native Keyboard shortcuts settings or a later restart. A saved key alone does not confirm live registration.

@@ -24,6 +24,7 @@ struct VoiceBridge {
                                   reportedExecutable: app.executableURL?.path, actualExecutable: executable(pid))
     }
     static let muteCommand = "realtimeVoice.toggleMicrophoneMute"
+    static let outputMuteCommand = "realtimeVoice.toggleOutputMute"
     // Ethan's "Voice chat hotkey" is the OS-global action. The separate
     // composer.startVoiceMode is labelled "Toggle voice chat"; leave its reset
     // and any custom binding alone rather than assigning our start key to it.
@@ -125,29 +126,16 @@ struct VoiceBridge {
         voiceControls(pid).microphone
     }
 
-    // Wake an existing muted conversation through its fresh native microphone
-    // action. New users need no third shortcut, and no Toggle command is sent.
-    static func pressUnmute(pid: pid_t) throws {
+    // Waking an existing muted call uses the same native microphone shortcut
+    // as the explicit mute phrases. AXPress did not work in the live desktop.
+    static func pressUnmute(pid: pid_t, record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws {
         guard codexProcess(pid) else { throw BridgeError.message("Codex closed while opening chat.") }
         let controls = voiceControls(pid)
         if controls.microphone == .listening { return }
-        guard controls.microphone == .muted, let button = controls.microphoneButton,
-              usableMicrophone(button, pid: pid),
-              AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
+        guard controls.microphone == .muted else {
             throw BridgeError.message("Couldn't unmute chat. Use the microphone in Codex.")
         }
-    }
-
-    // Re-read the native button immediately before pressing: an intervening
-    // manual mute must not turn the requested toggle into its opposite.
-    static func pressMicrophone(pid: pid_t, expected: MicrophoneState) throws {
-        guard codexProcess(pid) else { throw BridgeError.message("Couldn't identify the active Codex window.") }
-        let controls = voiceControls(pid)
-        guard controls.microphone == expected, let button = controls.microphoneButton,
-              usableMicrophone(button, pid: pid),
-              AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
-            throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
-        }
+        try post(command: muteCommand, pid: pid, record: record)
     }
 
     // Exact native end actions from the installed Codex Voice presentations.
@@ -589,9 +577,13 @@ enum BridgeError: LocalizedError {
 // temporary mute reservation. Keep custom shortcuts and extra fields, filling
 // only unset keys. Reuse its compare-before-atomic-write pattern to preserve edits.
 struct VoiceShortcutConfiguration {
+    // Input and Voice audio have separate commands; preserve any existing key
+    // (including the M5's F20 microphone binding) instead of assigning over it.
     static let defaults: [(command: String, key: String)] = [
         (VoiceBridge.startCommand, "Command+Control+Shift+V"),
-        (VoiceBridge.endCommand, "Ctrl+Alt+Shift+V")
+        (VoiceBridge.endCommand, "Ctrl+Alt+Shift+V"),
+        (VoiceBridge.muteCommand, "Command+Control+Shift+M"),
+        (VoiceBridge.outputMuteCommand, "Command+Control+Shift+O")
     ]
     var bindingsURL: URL = VoiceBridge.bindingsURL
 

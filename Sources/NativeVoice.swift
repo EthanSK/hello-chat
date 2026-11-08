@@ -24,7 +24,6 @@ import Foundation
         var retryEnd: ((Int32) async throws -> Void)? = nil
         var launch: (() async throws -> Void)? = nil
         var unmute: ((Int32) async throws -> Void)? = nil
-        var toggleMicrophone: ((Int32, MicrophoneState) async throws -> Void)? = nil
         var startSession: () -> DesktopSessionState = { .interactive }
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
@@ -60,9 +59,11 @@ import Foundation
                         try VoiceBridge.pressEnd(pid: pid)
                     }.value
                  }, launch: { try await VoiceBridge.launchCodex() }, unmute: { pid in
-                    try await Task.detached(priority: .userInitiated) { try VoiceBridge.pressUnmute(pid: pid) }.value
-                 }, toggleMicrophone: { pid, expected in
-                    try await Task.detached(priority: .userInitiated) { try VoiceBridge.pressMicrophone(pid: pid, expected: expected) }.value
+                    try await Task.detached(priority: .userInitiated) {
+                        try VoiceBridge.pressUnmute(pid: pid, record: { event, numbers, info in
+                            Diagnostics.shared.record(event, numbers: numbers, info: info)
+                        })
+                    }.value
                  }, startSession: { .current })
         }
     }
@@ -270,14 +271,21 @@ import Foundation
         try checkStartAllowed()
         let fresh = await snapshot()
         try checkStartAllowed()
-        guard fresh.accessibilityAllowed, let pid = fresh.pid, let current = fresh.microphone,
-              let toggle = transport.toggleMicrophone else {
+        guard fresh.accessibilityAllowed, let pid = fresh.pid, let current = fresh.microphone else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
         let target: MicrophoneState = current == .listening ? .muted : .listening
         try transport.activate(pid)
         try checkStartAllowed()
-        try await toggle(pid, current)
+        // Recheck after activation, then use the same configured-key transport
+        // as Start/End. AXPress did not change the microphone in Ethan's live test.
+        let ready = await snapshot()
+        try checkStartAllowed()
+        guard ready.pid == pid, ready.microphone == current else {
+            throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
+        }
+        try await transport.send(VoiceBridge.muteCommand, pid)
+        diagnostics?.record("voice.microphone.shortcut_sent", info: ["command": VoiceBridge.muteCommand])
         try checkAttached()
         let confirmed = await snapshot()
         try checkAttached()

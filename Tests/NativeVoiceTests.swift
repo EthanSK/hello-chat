@@ -8,13 +8,12 @@ import Foundation
         }
         var toggledState = state(.listening), toggles: [MicrophoneState] = []
         let toggledVoice = NativeVoice(transport: .init(snapshot: { toggledState },
-            send: { _, _ in fatalError("Microphone phrases must never send Start or End") },
-            activate: { pid in precondition(pid == 123) },
-            toggleMicrophone: { pid, expected in
-                precondition(pid == 123 && expected == toggledState.microphone)
-                toggles.append(expected)
-                toggledState = state(expected == .listening ? .muted : .listening)
-            }))
+            send: { command, pid in
+                precondition(command == VoiceBridge.muteCommand && pid == 123, "Microphone phrases send only the microphone shortcut")
+                guard let current = toggledState.microphone else { preconditionFailure("Fixture requires an active microphone") }
+                toggles.append(current)
+                toggledState = state(current == .listening ? .muted : .listening)
+            }, activate: { pid in precondition(pid == 123) }))
         let muted = try await toggledVoice.toggleMicrophone()
         precondition(muted == .muted && toggledVoice.connected, "Adopt an externally started call and mute without ending it")
         let unmuted = try await toggledVoice.toggleMicrophone()
@@ -31,10 +30,26 @@ import Foundation
         catch is CancellationError { }
         precondition(toggles.count == 2, "Quit preserves the active microphone")
         let unconfirmedToggle = NativeVoice(transport: .init(snapshot: { state(.listening) },
-            send: { _, _ in fatalError("No shortcut fallback for an unconfirmed microphone toggle") },
-            activate: { _ in }, toggleMicrophone: { _, _ in }))
+            send: { command, _ in precondition(command == VoiceBridge.muteCommand) },
+            activate: { _ in }))
         do { _ = try await unconfirmedToggle.toggleMicrophone(); fatalError("Unchanged controls were reported as muted") }
         catch is BridgeError { }
+
+        var changedMicrophone = state(.listening)
+        let changedBeforeDelivery = NativeVoice(transport: .init(snapshot: { changedMicrophone },
+            send: { _, _ in fatalError("A manual microphone change during activation must cancel the shortcut") },
+            activate: { _ in changedMicrophone = state(.muted) }))
+        do { _ = try await changedBeforeDelivery.toggleMicrophone(); fatalError("Stale microphone state accepted") }
+        catch is BridgeError { }
+        var failedSends = 0
+        let failedMicrophone = NativeVoice(transport: .init(snapshot: { state(.listening) },
+            send: { command, _ in
+                precondition(command == VoiceBridge.muteCommand); failedSends += 1
+                throw BridgeError.message("Voice shortcuts saved. Restart Codex to apply them.")
+            }, activate: { _ in }))
+        do { _ = try await failedMicrophone.toggleMicrophone(); fatalError("Pending shortcut must remain an error") }
+        catch is BridgeError { }
+        precondition(failedSends == 1, "An unregistered shortcut must not retry or fall back to AXPress")
 
         var mailboxState = state(), mailboxEvents: [String] = []
         let mailboxContext = VoiceStartContext()
