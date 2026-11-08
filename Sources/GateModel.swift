@@ -94,6 +94,7 @@ import SwiftUI
     private let listener = SpeechListener()
     private var matcher = PhraseMatcher()
     private var standaloneWake = StandaloneWake()
+    private var microphonePhrase = StandaloneWake() // Same mention/timing rules, independent of wake/end settings.
     private lazy var archive = TranscriptArchive(onError: { [weak self] error in
         Diagnostics.shared.failure("transcript.write.failed", error)
         Task { @MainActor [weak self] in self?.archiveError = "Could not save transcript: \(error.localizedDescription)" }
@@ -130,7 +131,7 @@ import SwiftUI
             guard let self else { return }
             // A lock or session switch cannot carry a queued wake into the
             // next desktop. Preserve any late call and require a fresh phrase.
-            self.matcher.reset(); self.standaloneWake.reset()
+            self.matcher.reset(); self.standaloneWake.reset(); self.microphonePhrase.reset()
             self.listener.discardPendingRecognition()
             self.finishStartupSpeech(preserveRequested: true)
             if let opening = self.voiceStartContext {
@@ -154,7 +155,7 @@ import SwiftUI
             Diagnostics.shared.failure("voice.shortcuts.failed", error)
         }
         listener.onSession = { [weak self] in
-            self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.detectionRunning = true
+            self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.microphonePhrase.resetContext(); self?.detectionRunning = true
             guard let self else { return }
             if self.startupSpeech?.voiceOpened == true {
                 self.finishStartupSpeech(preserveRequested: true)
@@ -166,9 +167,10 @@ import SwiftUI
             self.startupSpeech = capture
             if complete { self.finishStartupSpeech(preserveRequested: true) }
         }
-        listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.detectionRunning = false }
+        listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.microphonePhrase.reset(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds in
             self?.standaloneWake.audio(level: level, seconds: seconds)
+            self?.microphonePhrase.audio(level: level, seconds: seconds)
             // Raw speech can resume before its first text hypothesis arrives.
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
         }
@@ -380,9 +382,10 @@ import SwiftUI
         restartMicrophone(settle: true)
     }
     private func updatePhrases() {
-        listener.contextualPhrases = [wakePhrase, sleepPhrase]
+        listener.contextualPhrases = [wakePhrase, sleepPhrase] + StandaloneWake.microphonePhrases
         matcher.reset()
         standaloneWake.reset()
+        microphonePhrase.reset()
         if status == "Listening" || status == "Off" { showListening() }
         phraseUpdateTask?.cancel()
         if speechModel == .appleLocal, enabled {
@@ -665,6 +668,7 @@ import SwiftUI
         // Use the same phrase and mention rules while Agent Flow records. Its
         // microphone ownership must not pause H Chat's existing recognizer.
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
+        microphonePhrase.update(text, at: Diagnostics.now, timings: timings)
         let ending = !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
             && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
             && matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases, timings: timings) == .sleep
@@ -675,6 +679,7 @@ import SwiftUI
             }
             return
         }
+        _ = microphonePhrase.pollMicrophone(at: Diagnostics.now) // An explicit End wins over mute in the same transcript.
         cancelStartupSpeech()
         standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: sleepPhrase, similar: similarPhrases)
         Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
@@ -688,6 +693,33 @@ import SwiftUI
         }
     }
     private func checkStandaloneWake() {
+        if enabled, detectionRunning,
+           microphonePhrase.pollMicrophone(at: Diagnostics.now) {
+            // Reserve synchronously, as beginVoice does. Consume busy commands
+            // rather than replaying a surprise mute when an opening/End finishes.
+            guard !busy, !quitting else { return }
+            for phrase in StandaloneWake.microphonePhrases {
+                standaloneWake.cancelPending(phrase: wakePhrase, endPhrase: phrase, similar: similarPhrases) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
+            }
+            busy = true
+            let token = generation
+            voiceTask = Task {
+                defer { if generation == token { busy = false; voiceTask = nil } }
+                do {
+                    let state = try await voice.toggleMicrophone()
+                    guard generation == token else { return }
+                    microphone = state; error = nil
+                    showListening()
+                    lastEvent = "Chat is \(state.rawValue)"
+                    Diagnostics.shared.record("voice.microphone.toggled", info: ["microphone": state.rawValue])
+                } catch {
+                    guard generation == token else { return }
+                    self.error = error.localizedDescription
+                    Diagnostics.shared.failure("voice.microphone.failed", error)
+                }
+            }
+            return
+        }
         guard enabled, detectionRunning,
               standaloneWake.poll(at: Diagnostics.now, phrase: wakePhrase, similar: similarPhrases, onDecision: { decision, quiet, stable in
                   Diagnostics.shared.record("phrase.wake.evaluated", numbers: ["quiet_s": quiet, "stable_s": stable], info: ["decision": decision])

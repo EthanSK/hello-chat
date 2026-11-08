@@ -138,6 +138,18 @@ struct VoiceBridge {
         }
     }
 
+    // Re-read the native button immediately before pressing: an intervening
+    // manual mute must not turn the requested toggle into its opposite.
+    static func pressMicrophone(pid: pid_t, expected: MicrophoneState) throws {
+        guard codexProcess(pid) else { throw BridgeError.message("Couldn't identify the active Codex window.") }
+        let controls = voiceControls(pid)
+        guard controls.microphone == expected, let button = controls.microphoneButton,
+              usableMicrophone(button, pid: pid),
+              AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
+            throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
+        }
+    }
+
     // Exact native end actions from the installed Codex Voice presentations.
     // An explicit End action is idempotent; a start/toggle shortcut is not.
     static func isEndVoiceLabel(_ label: String) -> Bool {

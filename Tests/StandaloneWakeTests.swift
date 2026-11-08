@@ -6,6 +6,41 @@ import Foundation
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
         }
+        func muteCommand(_ detector: inout StandaloneWake, _ text: String, at time: Double = 1) -> Bool {
+            detector.audio(level: 0.2, seconds: 0.1)
+            detector.update(text, at: time)
+            return detector.pollMicrophone(at: time)
+        }
+        for phrase in ["mute chat", "silent chat", "silence chat", "MUTE CHAT!", "okay, silence chat"] {
+            var detector = StandaloneWake()
+            expect(muteCommand(&detector, phrase), "Mute command: \(phrase)")
+            expect(!muteCommand(&detector, phrase, at: 2), "One toggle per occurrence")
+        }
+        for mention in ["when I say mute chat", "the silent chat command", "silence chat is the phrase",
+                        "please don't mute chat", "do not silence chat", "unmute chat", "mute", "chat"] {
+            var detector = StandaloneWake()
+            expect(!muteCommand(&detector, mention), "Do not toggle for mention or incomplete command: \(mention)")
+        }
+        var revisedMute = StandaloneWake()
+        expect(muteCommand(&revisedMute, "mute chat"), "First command toggles")
+        expect(!muteCommand(&revisedMute, "silent chat", at: 2), "A revised alias must not toggle again")
+        expect(muteCommand(&revisedMute, "silent chat. silence chat", at: 3), "A later new command toggles again")
+        revisedMute.resetContext()
+        expect(muteCommand(&revisedMute, "mute chat", at: 4), "New recognition context accepts a new command")
+        var precedingWake = StandaloneWake()
+        precedingWake.audio(level: 0.2, seconds: 0.1)
+        precedingWake.update("hello chad mute chat", at: 1)
+        for phrase in StandaloneWake.microphonePhrases {
+            precedingWake.cancelPending(phrase: "Hello Chat", endPhrase: phrase, similar: true)
+        }
+        expect(!precedingWake.poll(at: 1, phrase: "Hello Chat", similar: true),
+               "A fuzzy wake before mute cannot unmute again on the following frame")
+        precedingWake.update("hello chad mute chat. Hello Chat", at: 2)
+        expect(precedingWake.poll(at: 2, phrase: "Hello Chat", similar: true), "A later fresh wake still works")
+        var separatedMute = StandaloneWake()
+        separatedMute.audio(level: 0.2, seconds: 0.1)
+        separatedMute.update("mute chat", at: 20, timings: [("mute", 0, 0.2), ("chat", 19, 19.3)])
+        expect(!separatedMute.poll(at: 20, phrase: "mute chat", similar: false), "Old separated words cannot toggle")
         var timed = StandaloneWake()
         timed.audio(level: 0.2, seconds: 0.1)
         timed.update("hello", at: 1, timings: [("hello", 0, 0.3)])

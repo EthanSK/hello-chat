@@ -16,6 +16,7 @@ HelloChat is a native macOS app that listens for both phrases with a local speec
 | Say | What happens |
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
+| **Mute Chat**, **Silent Chat**, **Silence Chat** | Toggles the active Voice call’s microphone between muted and unmuted. The call stays open; these phrases never start a new call. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 
 Speech recognition runs on your Mac with a bundled Parakeet model through Core ML, using CPU and Neural Engine with GPU off. HelloChat then drives Codex through its own Voice shortcut and End Voice control. There's no Agent Flow, proxy, server, account or API key involved in detection.

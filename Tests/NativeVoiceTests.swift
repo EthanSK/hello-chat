@@ -6,6 +6,36 @@ import Foundation
             VoiceSnapshot(pid: 123, inputRunning: input || mic != nil, recorderRunning: false,
                           microphone: mic, accessibilityAllowed: allowed)
         }
+        var toggledState = state(.listening), toggles: [MicrophoneState] = []
+        let toggledVoice = NativeVoice(transport: .init(snapshot: { toggledState },
+            send: { _, _ in fatalError("Microphone phrases must never send Start or End") },
+            activate: { pid in precondition(pid == 123) },
+            toggleMicrophone: { pid, expected in
+                precondition(pid == 123 && expected == toggledState.microphone)
+                toggles.append(expected)
+                toggledState = state(expected == .listening ? .muted : .listening)
+            }))
+        let muted = try await toggledVoice.toggleMicrophone()
+        precondition(muted == .muted && toggledVoice.connected, "Adopt an externally started call and mute without ending it")
+        let unmuted = try await toggledVoice.toggleMicrophone()
+        precondition(unmuted == .listening && toggles == [.listening, .muted], "Second command unmutes exactly once")
+        for unavailable in [state(), state(input: true), state(.muted, allowed: false)] {
+            toggledState = unavailable
+            do { _ = try await toggledVoice.toggleMicrophone(); fatalError("Unknown/off/denied Voice accepted toggle") }
+            catch is BridgeError { }
+        }
+        precondition(toggles.count == 2, "Unavailable controls never send a toggle or start a call")
+        toggledState = state(.listening)
+        toggledVoice.detachForQuit()
+        do { _ = try await toggledVoice.toggleMicrophone(); fatalError("Detached helper accepted toggle") }
+        catch is CancellationError { }
+        precondition(toggles.count == 2, "Quit preserves the active microphone")
+        let unconfirmedToggle = NativeVoice(transport: .init(snapshot: { state(.listening) },
+            send: { _, _ in fatalError("No shortcut fallback for an unconfirmed microphone toggle") },
+            activate: { _ in }, toggleMicrophone: { _, _ in }))
+        do { _ = try await unconfirmedToggle.toggleMicrophone(); fatalError("Unchanged controls were reported as muted") }
+        catch is BridgeError { }
+
         var mailboxState = state(), mailboxEvents: [String] = []
         let mailboxContext = VoiceStartContext()
         mailboxContext.prepareNewCall = { mailboxEvents.append("mailbox") }

@@ -10,6 +10,12 @@ import Foundation
 struct StandaloneWake {
     // Parakeet's end-of-utterance debounce. It no longer gates waking.
     static let endSilenceSeconds = 0.6
+    static let microphonePhrases = ["mute chat", "silent chat", "silence chat"]
+
+    mutating func pollMicrophone(at time: Double) -> Bool {
+        poll(at: time, phrase: Self.microphonePhrases[0], similar: false,
+             alternatives: Array(Self.microphonePhrases.dropFirst()), rejectNegated: true)
+    }
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     private var context: [String] = []
     private var wordTimings: [(word: String, start: Double, end: Double)]?
@@ -55,15 +61,21 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool,
+    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
-        let key = "\(phrase)|\(similar)"
+        let key = "\(phrase)|\(similar)|\(alternatives)|\(rejectNegated)"
         if configuration != key { configuration = key; checkedRevision = -1 }
         guard heardSpeech, checkedRevision != revision else { return false }
-        let candidates = matches(phrase: phrase, similar: similar)
+        // Alternative command wording shares one occurrence count, so a revised
+        // hypothesis from "mute chat" to "silent chat" cannot toggle twice.
+        var candidates: [(start: Int, end: Int)] = []
+        for candidatePhrase in [phrase] + alternatives {
+            candidates.append(contentsOf: matches(phrase: candidatePhrase, similar: similar))
+        }
+        candidates.sort { left, right in left.start == right.start ? left.end < right.end : left.start < right.start }
         let accepted = candidates.enumerated().first { index, match in
             index + 1 > consumed
-                && !isMention(start: match.start, end: match.end)
+                && !isMention(start: match.start, end: match.end, rejectNegated: rejectNegated)
                 && !(similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
                      && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                      && sentenceStarts.contains { $0 > match.start && $0 < match.end })
@@ -92,11 +104,14 @@ struct StandaloneWake {
         PhraseMatcher.matches(in: context, phrase: phrase, similar: similar, ending: allowEndAddressEdit, timings: wordTimings)
     }
 
-    private func isMention(start: Int, end: Int) -> Bool {
+    private func isMention(start: Int, end: Int, rejectNegated: Bool) -> Bool {
         let sentenceStart = sentenceStarts.last(where: { $0 <= start }) ?? 0
         let sentenceEnd = sentenceStarts.first(where: { $0 >= end }) ?? context.count
         let left = Array(context[max(min(audioBoundary, start), sentenceStart)..<start].suffix(3))
         let right = Array(context[end..<sentenceEnd].prefix(3))
+        // Mute requests are reversible toggles, so "don't mute chat" is not a
+        // command. Leave the already-tuned wake behavior unchanged.
+        if rejectNegated, left.contains(where: { ["not", "never", "don", "dont", "don’t", "stop"].contains($0) }) { return true }
         let referenceWords: Set<String> = ["say", "says", "said", "saying", "mention", "mentions", "mentioned",
             "mentioning", "called", "named", "phrase", "word", "words", "spell", "spelling", "spelled",
             "detect", "detects", "detected", "detecting", "recognize", "recognise", "recognizing", "recognising",
