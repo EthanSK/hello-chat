@@ -72,7 +72,7 @@ import SwiftUI
         didSet { UserDefaults.standard.set(sleepPhrase, forKey: "sleepPhrase"); updatePhrases() }
     }
     @Published var similarPhrases = UserDefaults.standard.object(forKey: "similarPhrases") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); matcher.reset() }
+        didSet { UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); endPhrase.reset() }
     }
     @Published private(set) var error: String?
     // Shortcut activation is independent of microphone/model preparation, which
@@ -92,7 +92,7 @@ import SwiftUI
     private let desktopSession = DesktopSessionMonitor()
     private let feedback = FeedbackSounds()
     private let listener = SpeechListener()
-    private var matcher = PhraseMatcher()
+    private var endPhrase = StandaloneWake() // End shares the direct-address filter; discussion must not hang up.
     private var standaloneWake = StandaloneWake()
     private var microphonePhrase = StandaloneWake() // Same mention/timing rules, independent of wake/end settings.
     private lazy var archive = TranscriptArchive(onError: { [weak self] error in
@@ -131,7 +131,7 @@ import SwiftUI
             guard let self else { return }
             // A lock or session switch cannot carry a queued wake into the
             // next desktop. Preserve any late call and require a fresh phrase.
-            self.matcher.reset(); self.standaloneWake.reset(); self.microphonePhrase.reset()
+            self.endPhrase.reset(); self.standaloneWake.reset(); self.microphonePhrase.reset()
             self.listener.discardPendingRecognition()
             self.finishStartupSpeech(preserveRequested: true)
             if let opening = self.voiceStartContext {
@@ -155,7 +155,7 @@ import SwiftUI
             Diagnostics.shared.failure("voice.shortcuts.failed", error)
         }
         listener.onSession = { [weak self] in
-            self?.archive.boundary(); self?.matcher.reset(); self?.standaloneWake.resetContext(); self?.microphonePhrase.resetContext(); self?.detectionRunning = true
+            self?.archive.boundary(); self?.endPhrase.resetContext(); self?.standaloneWake.resetContext(); self?.microphonePhrase.resetContext(); self?.detectionRunning = true
             guard let self else { return }
             if self.startupSpeech?.voiceOpened == true {
                 self.finishStartupSpeech(preserveRequested: true)
@@ -171,6 +171,7 @@ import SwiftUI
         listener.onAudioActivity = { [weak self] level, seconds in
             self?.standaloneWake.audio(level: level, seconds: seconds)
             self?.microphonePhrase.audio(level: level, seconds: seconds)
+            self?.endPhrase.audio(level: level, seconds: seconds)
             // Raw speech can resume before its first text hypothesis arrives.
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
         }
@@ -302,7 +303,7 @@ import SwiftUI
         phraseUpdateTask?.cancel()
         listener.model = speechModel
         updateComputeLabel()
-        transcript = ""; matcher.reset(); error = nil
+        transcript = ""; endPhrase.reset(); error = nil
         if enabled, !checkingSpeech {
             speechRecovery = SpeechRecovery()
             changingModel = true
@@ -337,7 +338,7 @@ import SwiftUI
                     listener.stop(); detectionRunning = false; error = nil
                     try await listener.start()
                     guard inputGeneration == token, enabled else { return }
-                    transcript = ""; matcher.reset()
+                    transcript = ""; endPhrase.reset()
                     detectionRunning = true
                     status = "Listening"
                     detail = voice.connected ? (microphone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end chat.") : "Say \(wakePhrase) to start chat."
@@ -383,7 +384,7 @@ import SwiftUI
     }
     private func updatePhrases() {
         listener.contextualPhrases = [wakePhrase, sleepPhrase] + StandaloneWake.microphonePhrases
-        matcher.reset()
+        endPhrase.reset()
         standaloneWake.reset()
         microphonePhrase.reset()
         if status == "Listening" || status == "Off" { showListening() }
@@ -460,7 +461,7 @@ import SwiftUI
             }
             try await SpeechListener.authorize()
             guard generation == token, !quitting, playbackAllowed else { return }
-            refreshPermissions(); updatePhrases(); matcher.reset()
+            refreshPermissions(); updatePhrases(); endPhrase.reset()
             transcript = ""; lastEvent = ""
             try await listener.start()
             guard generation == token, !quitting else { listener.stop(); return }
@@ -669,9 +670,10 @@ import SwiftUI
         // microphone ownership must not pause H Chat's existing recognizer.
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
         microphonePhrase.update(text, at: Diagnostics.now, timings: timings)
+        endPhrase.update(text, at: Diagnostics.now, timings: timings)
         let ending = !PhraseMatcher.words(wakePhrase).isEmpty && !PhraseMatcher.words(sleepPhrase).isEmpty
             && PhraseMatcher.words(wakePhrase) != PhraseMatcher.words(sleepPhrase)
-            && matcher.consume(text, wake: "", sleep: sleepPhrase, similar: similarPhrases, timings: timings) == .sleep
+            && endPhrase.pollEnd(at: Diagnostics.now, phrase: sleepPhrase, similar: similarPhrases)
         if !ending {
             if var capture = startupSpeech {
                 capture.observe(text); startupSpeech = capture

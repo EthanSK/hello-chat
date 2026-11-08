@@ -45,6 +45,9 @@ import Foundation
         check(runs("Start Lantern. End Lantern. Hello Chat. Bye Chat.", "Start Lantern", end: "End Lantern").filter { $0.kind != nil }.map(\.text) == ["Start Lantern", "End Lantern"], "Both saved custom phrases replace defaults")
         check(runs("Bye Chat", end: "Different phrase").allSatisfy { $0.kind == nil }, "Changing the saved end phrase removes its old highlight")
         check(runs("Bye Chat", end: "Bye Chat", limit: 5).allSatisfy { $0.kind == nil }, "A clipped end phrase is never highlighted as complete")
+        for text in ["UI Chat", "UIChat", "U I C H A T", "B Chat", "BChat", "be chat", "bee chat", "H Chat"] {
+            check(runs(text, end: "Bye Chat").allSatisfy { $0.kind == nil }, "Safe discussion aliases stay unhighlighted")
+        }
         let overlap = runs("Bye Chat", "Bye Chatt", end: "Bye Chat")
         check(overlap.map(\.text).joined() == "Bye Chat" && overlap.count == 1 && overlap.first?.kind == .exact, "Exact end wins an overlapping fuzzy wake without duplicating text")
         check(runs("Hello Chat", end: "Hello Chat").filter { $0.kind != nil }.count == 1, "Identical temporary field values highlight once")

@@ -41,9 +41,17 @@ import CoreGraphics
             var endMatcher = PhraseMatcher()
             check(endMatcher.consume(phrase, wake: "Hey Chat", sleep: "Bye Chat", similar: true) == nil, "End homophone support keeps wake and name boundaries: \(phrase)")
         }
+        for phrase in ["UI Chat", "UIChat", "U-I Chat", "U I C H A T", "B Chat", "BChat", "B. Chat", "bee chat", "be chat", "H Chat",
+                       "the existing Notion UI chat", "refer to the end command as B Chat"] {
+            var safe = PhraseMatcher()
+            check(safe.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil,
+                  "Discussion names never trigger either default command")
+            check(!PhraseMatcher.isStandaloneEnd(phrase, phrase: "Bye Chat", similar: true),
+                  "Discussion names are not standalone End commands")
+        }
         check(!PhraseMatcher.equivalent("Byte Chat", to: "Bye Chat", similar: false, allowEndAddressEdit: true), "Exact mode still excludes homophones")
         check(!PhraseMatcher.equivalent("Byte Chat", to: "Bye Chat", similar: true), "End homophones must not broaden wake matching")
-        for phrase in ["UI Chat", "UIChat", "U-I Chat", "U I C H A T", "by chad", "bye chaz",
+        for phrase in ["by chad", "bye chaz",
                        "buy chatt", "bai charts", "bi chat", "boy chat", "good bye chat", "goodbye chad",
                        "good buy charts", "B Y E C H A T", "Bye bye Chat", "byee chat"] {
             var end = PhraseMatcher()

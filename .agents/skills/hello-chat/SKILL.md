@@ -15,7 +15,9 @@ Tell the user this project skill is active and why, unless they explicitly reque
 
 ## Names and scope
 
-Refer to it as **H Chat** so it doesn't trigger, in discussions and speech. Keep the actual HelloChat product, repository, bundle and UI names unchanged. This is Ethan's requested conversational name, not a product rename.
+Refer to the helper as **H Chat** so it doesn't trigger, in discussions and speech. Refer to its End command as **B Chat**. Ethan wants to discuss these safely without accidentally starting or ending Voice. Never say or quote the actual spoken End phrase or its former unsafe alias in voice-facing output, including speech reminders. Keep actual internal identifiers and configured phrases where implementation requires them; this is conversational naming, not a product rename. B Chat is not a new trigger. User-requested — 2026-11-08.
+
+The shared matcher excludes the former unsafe alias and B/Be/Bee discussion spellings. End detection uses the same direct-address, mention, negation, timing and occurrence rules as the other commands. Test genuine End acceptance with injected/recorded inputs; never say the trigger aloud or end a live call just to test it.
 
 Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the actual source and dirty/staged state before editing; preserve other work. The private preference link, if present beside this skill, is separate from this tracked workflow and is not shipped.
 

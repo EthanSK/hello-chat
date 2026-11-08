@@ -40,8 +40,8 @@ struct PhraseMatcher {
         }
         return .fuzzy
     }
-    // Shared, local dictionary for Ethan's Hello Chat / Bye Chat commands.
-    // "UI Chat", "ByteChat" and "by charts" all refer to his Bye Chat command.
+    // Shared local command dictionary. Ethan calls the helper H Chat and
+    // discusses the End command as B Chat; those names must stay inert.
     // Normalize spacing first so joined words and spelled-out letters work too.
     // Ethan now says "Hey Chat" when talking about the app, so Hey/Hay/Hei
     // addresses are deliberately absent; "Hey Chat" must never wake (1 Nov).
@@ -61,9 +61,9 @@ struct PhraseMatcher {
         "ullo", "ulow", "ulo", "ullow", "erlo", "arlo", "orlo", "arlow", "aloe", "ellough"
     ]
     private static let byeAddresses: Set<String> = [
-        "bye", "by", "buy", "byte", "bi", "bai", "bhai", "boy", "boi", "be", "bee",
+        "bye", "by", "buy", "byte", "bi", "bai", "bhai", "boy", "boi",
         "byebye", "byby", "buybuy", "goodbye", "goodby", "goodbuy", "goodbi", "goodbai",
-        "ui", "uai", "byeey", "byee", "byeee", "byy", "baye", "bay", "bey", "bie",
+        "byeey", "byee", "byeee", "byy", "baye", "bay", "bey", "bie",
         "bei", "baye", "baai", "baay", "bahye", "beye", "bhy", "bii", "buyy",
         "beye", "bigh", "bite", "bight", "bhye", "bhaiy", "baii", "boey",
         "pie", "pye", "pai", "pi", "y", "vai", "vie", "vy",
@@ -95,8 +95,13 @@ struct PhraseMatcher {
         // other generated component splits (hellc + hat) can produce them too.
         helloAddresses.union(oneEdits("hello").filter { $0.hasPrefix("h") && $0 != "hell" }), expandedNames)
         .union(observedWakeVariants)
+    // B Chat includes the likely "be" / "bee" recognition spellings. The old
+    // UI alias also matched ordinary references to a user-interface chat.
+    // Subtract after expansion so generated edits cannot reintroduce either.
+    private static let safeDiscussionVariants = combinations(["b", "be", "bee", "ui", "uai"], expandedNames)
     private static let endVariants = combinations(
         byeAddresses.union(oneEdits("bye").filter { $0.hasPrefix("b") && $0.count >= 2 }), expandedNames)
+        .subtracting(safeDiscussionVariants)
     // "as well chat" is Ethan's screenshot/log example. Opus's phonetic
     // suggestion favours Hello, not Bye; a closing alias would interrupt
     // ordinary "do that as well, Chat" requests. Keep this wake-only.

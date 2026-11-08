@@ -16,6 +16,11 @@ struct StandaloneWake {
         poll(at: time, phrase: Self.microphonePhrases[0], similar: false,
              alternatives: Array(Self.microphonePhrases.dropFirst()), rejectNegated: true)
     }
+    // End uses the same direct-address filter as wake and mute. B Chat is
+    // only a safe discussion name, never an extra command alias.
+    mutating func pollEnd(at time: Double, phrase: String, similar: Bool) -> Bool {
+        poll(at: time, phrase: phrase, similar: similar, rejectNegated: true, ending: true)
+    }
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     private var context: [String] = []
     private var wordTimings: [(word: String, start: Double, end: Double)]?
@@ -61,22 +66,22 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false,
+    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
-        let key = "\(phrase)|\(similar)|\(alternatives)|\(rejectNegated)"
+        let key = "\(phrase)|\(similar)|\(alternatives)|\(rejectNegated)|\(ending)"
         if configuration != key { configuration = key; checkedRevision = -1 }
         guard heardSpeech, checkedRevision != revision else { return false }
         // Alternative command wording shares one occurrence count, so a revised
         // hypothesis from "mute chat" to "silent chat" cannot toggle twice.
         var candidates: [(start: Int, end: Int)] = []
         for candidatePhrase in [phrase] + alternatives {
-            candidates.append(contentsOf: matches(phrase: candidatePhrase, similar: similar))
+            candidates.append(contentsOf: matches(phrase: candidatePhrase, similar: similar, allowEndAddressEdit: ending))
         }
         candidates.sort { left, right in left.start == right.start ? left.end < right.end : left.start < right.start }
         let accepted = candidates.enumerated().first { index, match in
             index + 1 > consumed
                 && !isMention(start: match.start, end: match.end, rejectNegated: rejectNegated)
-                && !(similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
+                && !(!ending && similar && PhraseMatcher.words(phrase) == ["hello", "chat"]
                      && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                      && sentenceStarts.contains { $0 > match.start && $0 < match.end })
         }

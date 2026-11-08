@@ -50,14 +50,26 @@ import Darwin
             let mentionIgnored = !context.poll(at: 2, phrase: "Hello Chat", similar: true)
             let ordinarySpeechIgnored = PhraseMatcher.matches(in: PhraseMatcher.words("it's too high at low speed"),
                 phrase: "Hello Chat", similar: true).isEmpty
+            let safeNamesIgnored = ["B Chat", "be chat", "bee chat", "H Chat", "UI Chat", "U I C H A T"].allSatisfy { text in
+                var matcher = PhraseMatcher()
+                return matcher.consume(text, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil
+            }
+            var endContext = StandaloneWake()
+            endContext.audio(level: 0.2, seconds: 0.1)
+            endContext.update("I said bye chat", at: 1)
+            let endMentionIgnored = !endContext.pollEnd(at: 1, phrase: "Bye Chat", similar: true)
+            endContext.resetContext()
+            endContext.update("Bye Chat", at: 2)
+            let directEndAccepted = endContext.pollEnd(at: 2, phrase: "Bye Chat", similar: true)
             let variants = PhraseMatcher.defaultVariantCounts
             let report: [String: Any] = ["wakeSpellings": variants.wake, "endSpellings": variants.end,
                 "weakWakeSpellings": variants.weakWake, "screenshotWakes": wakes,
                 "screenshotCannotEnd": safeEnd, "mentionIgnored": mentionIgnored,
-                "ordinarySpeechIgnored": ordinarySpeechIgnored]
+                "ordinarySpeechIgnored": ordinarySpeechIgnored, "safeNamesIgnored": safeNamesIgnored,
+                "endMentionIgnored": endMentionIgnored, "directEndAccepted": directEndAccepted]
             let data = try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
             print(String(decoding: data, as: UTF8.self))
-            exit(wakes && safeEnd && mentionIgnored && ordinarySpeechIgnored ? 0 : 1)
+            exit(wakes && safeEnd && mentionIgnored && ordinarySpeechIgnored && safeNamesIgnored && endMentionIgnored && directEndAccepted ? 0 : 1)
         }
         let selectedModel: SpeechModel
         if let index = CommandLine.arguments.firstIndex(of: "--model") {

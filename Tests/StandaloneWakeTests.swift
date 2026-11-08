@@ -6,6 +6,26 @@ import Foundation
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
         }
+        func endCommand(_ detector: inout StandaloneWake, _ text: String, at time: Double = 1) -> Bool {
+            detector.audio(level: 0.2, seconds: 0.1)
+            detector.update(text, at: time)
+            return detector.pollEnd(at: time, phrase: "Bye Chat", similar: true)
+        }
+        for text in ["B Chat", "bee chat", "be chat", "H Chat", "the existing Notion UI chat",
+                     "I said bye chat", "the bye chat command", "do not bye chat", "don't bye chat",
+                     "bye chat is the phrase", "when I say bye chat"] {
+            var detector = StandaloneWake()
+            expect(!endCommand(&detector, text), "End discussion or negation must stay inert")
+        }
+        for text in ["Bye Chat", "by chat", "okay, bye chat", "thanks for your help. Bye Chat!"] {
+            var detector = StandaloneWake()
+            expect(endCommand(&detector, text), "Direct End remains immediate")
+            expect(!endCommand(&detector, text, at: 2), "End does not replay")
+        }
+        var endRevision = StandaloneWake()
+        expect(!endCommand(&endRevision, "I said bye chat"), "Reject a mentioned End")
+        expect(!endCommand(&endRevision, "bye chat", at: 2), "A revised mention does not replay")
+        expect(endCommand(&endRevision, "bye chat. Bye Chat", at: 3), "A later direct End remains available")
         func muteCommand(_ detector: inout StandaloneWake, _ text: String, at time: Double = 1) -> Bool {
             detector.audio(level: 0.2, seconds: 0.1)
             detector.update(text, at: time)
@@ -150,7 +170,7 @@ import Foundation
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("Helo Chatt U I Chat", 1)
         detector.cancelPending(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true)
-        expect(!poll(2), "Spelled UI end cancels the fuzzy pending wake")
+        expect(poll(2), "Removed discussion alias must not cancel a genuine wake")
         detector.reset(); detector.audio(level: 0.2, seconds: 0.1)
         update("as well chat", 1)
         expect(poll(1.6), "The screenshot phrase wakes once")

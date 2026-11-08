@@ -7,6 +7,8 @@ description: Read H Chat's pending startup speech only when a new actual local V
 
 H Chat owns this skill and installs it from its bundled `VoiceStartup.md`. Keep that file as the single source of truth. Preserve useful corrections in the H Chat project for a future app update; do not edit this installed copy or change unrelated personal skills. Follow the host's skill-use announcement rules.
 
+Use **H Chat** for the helper and **B Chat** when discussing its End command. B Chat is a safe conversational name, not a spoken command. Never say or quote the actual spoken End phrase or its former unsafe alias in voice-facing output or reminders: ordinary discussion must not hang up the user's call. Keep any necessary actual identifiers inside implementation only. User-requested — 2026-11-08.
+
 Use this only at the startup of an actual new local Codex Voice coordinator, after its normal self-pinning. Do not consume this mailbox from an ordinary text chat, a subagent, a maintenance task, or an already-running unrelated call.
 
 This runs on the Voice agent's first tool-capable handoff. It does not force the frontend to delegate a turn merely because the audio connection opened; if Codex supplies no handoff, the file remains unread until it does.
