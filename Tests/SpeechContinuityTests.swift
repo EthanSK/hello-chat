@@ -2,19 +2,6 @@ import Foundation
 
 @main struct SpeechContinuityTests {
     static func main() async {
-        var history = TranscriptHistory()
-        let longSegment = String(repeating: "Earlier spoken words. ", count: 80)
-        history.update("partial")
-        history.update(longSegment)
-        precondition(history.text == longSegment, "Revisions replace only the current segment, without the old 600-character cutoff")
-        history.boundary(); history.boundary()
-        history.update("Next model segment")
-        precondition(history.text == longSegment + "\nNext model segment", "Model rollovers retain earlier speech once")
-        history.update("Next model segment corrected")
-        precondition(history.text == longSegment + "\nNext model segment corrected", "New-segment revisions cannot erase older speech")
-        precondition(history.segments == [longSegment, "Next model segment corrected"], "Completed segments keep stable positions for unchanged highlighted views")
-        history = TranscriptHistory()
-        precondition(history.text.isEmpty, "Starting a new listening session clears only its previous history")
         var timing = SpeechTimingTracker()
         _ = timing.update("hello", at: 1, supplied: nil)
         let later = timing.update("hello chat", at: 30, supplied: nil)

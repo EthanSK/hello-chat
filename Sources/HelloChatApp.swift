@@ -400,10 +400,11 @@ struct MainView: View {
         GeometryReader { viewport in
             Form {
                 Section {
-                    TranscriptPane(segments: model.transcriptHistory.segments, phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
+                    TranscriptPane(segments: model.transcript.isEmpty ? [] : [model.transcript], phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
                                    similar: model.similarPhrases, enabled: model.enabled,
                                    viewportHeight: viewport.size.height, scale: zoom.scale,
                                    controlPhrases: model.controlPhrases, patterns: model.phrasePatterns)
+                        .id(model.transcriptBatchID) // A new recognition batch releases held text and selection from the previous batch.
                 } header: {
                     HStack {
                         Text("Heard (local model)")

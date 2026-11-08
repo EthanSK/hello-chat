@@ -1,10 +1,14 @@
-// Check retained transcript styling without a window, microphone or Voice keys.
+// Check current-batch transcript styling without a window, microphone or Voice keys.
 import SwiftUI
 
 @main enum TranscriptRenderingTests {
     static func main() {
         let cache = HeardTranscript.HighlightCache()
         let configuration = HeardTranscript.HighlightCache.Configuration(phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true, controlPhrases: PhraseMatcher.controlPhrases)
+        let longBatch = "CURRENT BATCH " + String(repeating: "recognised words stay scrollable ", count: 100)
+        precondition(String(cache.render([longBatch], configuration: configuration).characters) == longBatch, "A long current batch must not be cut back to the old 600-character suffix")
+        let nextBatch = "NEXT BATCH ONLY"
+        precondition(String(cache.render([nextBatch], configuration: configuration).characters) == nextBatch, "A new batch replaces the earlier batch without accumulating it")
         let separate = cache.render(["Hello", "Chat"], configuration: configuration)
         precondition(String(separate.characters) == "Hello\nChat")
         precondition(separate.runs.allSatisfy { $0.foregroundColor == nil }, "Separate contexts must not invent a highlighted command")

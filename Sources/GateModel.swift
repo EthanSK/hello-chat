@@ -21,7 +21,7 @@ import SwiftUI
     @Published private(set) var microphone: MicrophoneState? = .muted
     let meter = AudioMeter()
     @Published private(set) var transcript = ""
-    @Published private(set) var transcriptHistory = TranscriptHistory()
+    @Published private(set) var transcriptBatchID = UUID() // Reset the reader at the recognizer’s existing batch boundary; scrolling must not retain earlier batches.
     @Published private(set) var archiveError: String?
     @Published var saveTranscripts = UserDefaults.standard.object(forKey: "saveTranscripts") as? Bool ?? true {
         didSet {
@@ -220,7 +220,7 @@ import SwiftUI
             Diagnostics.shared.failure("voice.shortcuts.failed", error)
         }
         listener.onSession = { [weak self] in
-            self?.transcriptHistory.boundary()
+            self?.transcriptBatchID = UUID()
             self?.archive.boundary(); self?.endPhrase.resetContext(); self?.standaloneWake.resetContext(); self?.resetAudioPhrases(); self?.detectionRunning = true
             // A context reset is not the end of the opening. Keep both the M5's
             // startup capture and the independent command detector resets.
@@ -557,9 +557,9 @@ import SwiftUI
             try await SpeechListener.authorize()
             guard generation == token, !quitting, playbackAllowed else { return }
             refreshPermissions(); updatePhrases(); endPhrase.reset()
-            transcript = ""; lastEvent = ""
-            if preservingTranscript { transcriptHistory.boundary() } // A resumed recognizer must not replace the words heard before its diagnostic.
-            else { transcriptHistory = TranscriptHistory() }
+            if !preservingTranscript { transcript = "" } // A diagnostic can keep the current batch visible until fresh recognition replaces it, without accumulating older batches.
+            transcriptBatchID = UUID()
+            lastEvent = ""
             try await listener.start()
             guard generation == token, !quitting else { listener.stop(); return }
             enabled = true; detectionRunning = true
@@ -776,7 +776,6 @@ import SwiftUI
         if changed {
             transcript = text
         }
-        transcriptHistory.update(text)
         // Use the same phrase and mention rules while Agent Flow records. Its
         // microphone ownership must not pause H Chat's existing recognizer.
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
