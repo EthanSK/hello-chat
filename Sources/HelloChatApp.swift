@@ -447,6 +447,9 @@ struct MainView: View {
                         .disabled(model.busy && !preparing && !model.enabled)
                         .accessibilityIdentifier("listeningToggle")
                     PhraseFields(model: model)
+                    // Ethan wants to change the microphone from the home page.
+                    // Reuse Settings' observed inputs and saved selection.
+                    MicrophoneSettings(inputs: model.inputs)
                     Picker("Speech model", selection: $model.speechModel) {
                         ForEach(SpeechModel.allCases) { choice in
                             Text(choice.title).tag(choice)

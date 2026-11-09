@@ -54,6 +54,22 @@ import Foundation
             received.append(value)
         }
         precondition(received == [1, 2] && resets == 1)
+        // Reproduce the live failure: resetting takes long enough for more
+        // input to overflow. Those queued gaps belong to the same recovery.
+        var slowReset = SpeechContinuity()
+        precondition(!slowReset.hasGap(sequence: 0))
+        precondition(slowReset.hasGap(sequence: 15))
+        slowReset.resetCompleted(at: 3)
+        for capturedAt in [1.0, 1.5, 2.9] {
+            precondition(!slowReset.accepts(capturedAt: capturedAt), "Do not decode stale recovery backlog")
+        }
+        precondition(slowReset.accepts(capturedAt: 3))
+        precondition(!slowReset.hasGap(sequence: 42), "First fresh frame must not trigger another reset")
+        precondition(!slowReset.hasGap(sequence: 43))
+        precondition(slowReset.hasGap(sequence: 47), "A later independent drop must still reset recognition")
+        slowReset.resetCompleted(at: 5)
+        precondition(!slowReset.accepts(capturedAt: 4.9) && slowReset.accepts(capturedAt: 5.1))
+        precondition(!slowReset.hasGap(sequence: 60) && !slowReset.hasGap(sequence: 61))
         var throttle = CaptureRestartThrottle()
         for time in [0.0, 0.5, 1.0] {
             precondition(throttle.delay(at: time) == 0)

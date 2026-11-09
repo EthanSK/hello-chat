@@ -86,9 +86,19 @@ struct AudioProgressWatchdog {
 // busy. Reset recognition across that gap rather than combining unrelated
 // pieces of speech or permanently disabling the detector.
 struct SpeechContinuity {
-    private var next: UInt64 = 0
+    private var next: UInt64? = 0
+    private var discardBefore = -Double.infinity
+    func accepts(capturedAt time: Double) -> Bool { time >= discardBefore }
+    mutating func resetCompleted(at time: Double) {
+        // A slow model reset can itself overflow the bounded input queue.
+        // Discard that backlog and rebase on the first fresh frame, rather
+        // than repeatedly resetting for audio lost during the same recovery.
+        discardBefore = time
+        next = nil
+    }
     mutating func hasGap(sequence: UInt64) -> Bool {
         defer { next = sequence &+ 1 }
+        guard let next else { return false }
         return sequence != next
     }
 }

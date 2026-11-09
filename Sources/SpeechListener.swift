@@ -184,6 +184,7 @@ import CoreAudio
                     try Task.checkCancellation()
                     guard let self, self.session == token else { break }
                     guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
+                    guard continuity.accepts(capturedAt: frame.capturedAt) else { continue }
                     let gap = continuity.hasGap(sequence: frame.sequence)
                     let boundaryReset = self.contextBoundary.takeReset()
                     if boundaryReset || gap {
@@ -199,6 +200,12 @@ import CoreAudio
                         timing = SpeechTimingTracker()
                         if !boundaryReset { self.onRecovery?() }
                         self.diagnostics?.record(boundaryReset ? "speech.context.discarded" : "speech.recovered", numbers: ["ms": (Diagnostics.now - resetting) * 1000])
+                        if gap {
+                            // A reset may take longer than the queue's capacity.
+                            // Resume from live audio without a reset cascade.
+                            continuity.resetCompleted(at: Diagnostics.now)
+                            continue
+                        }
                     }
                     let consuming = Diagnostics.now
                     let queuedMS = (consuming - frame.capturedAt) * 1000
