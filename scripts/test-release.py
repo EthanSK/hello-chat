@@ -54,6 +54,18 @@ class Releases(unittest.TestCase):
         self.assertEqual(versions.release_version("1.0.0", []), "1.0.0")
         self.assertEqual(versions.release_version("1.0.0", [{"tag_name": "v1.0.0"}]), "1.0.1")
 
+    def test_public_update_exceeds_installed_preview_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            info = root / 'Info.plist'; releases = root / 'releases.json'; output = root / 'manifest.json'
+            info.write_bytes(plistlib.dumps({'CFBundleShortVersionString': '1.0.0', 'CFBundleVersion': '1026'}))
+            releases.write_text('[]')
+            arguments = ['prepare-release', '--releases', str(releases), '--plist', str(info),
+                         '--run-number', '14', '--commit', 'a' * 40, '--output', str(output)]
+            with patch.object(sys, 'argv', arguments), contextlib.redirect_stdout(io.StringIO()):
+                versions.main()
+            self.assertEqual(json.loads(output.read_text())['build'], 1027)
+
     def test_numeric_order_and_new_source_baseline(self):
         releases = [{"tag_name": "v1.0.9"}, {"tag_name": "v1.0.10"}]
         self.assertEqual(versions.release_version("1.0.0", releases), "1.0.11")

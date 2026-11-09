@@ -25,7 +25,7 @@ An offline runner, locked keychain, missing public key or rejected notarisation 
 
 ## Version ownership
 
-`Info.plist` owns the requested major/minor version baseline. The serialized release job selects the next public patch above existing releases, starting with `1.0.0`. It assigns a build above both the workflow counter offset and the last published build. The generated `release-manifest.json` records the source commit, version and build; it is an immutable receipt, not another editable configuration file.
+`Info.plist` owns the requested major/minor version baseline and installed preview build floor. The serialized release job selects the next public patch above existing releases, starting with `1.0.0`. It assigns a build above the source floor, workflow counter offset and last published build. The generated `release-manifest.json` records the source commit, version and build; it is an immutable receipt, not another editable configuration file.
 
 Do not bump a second version file or commit generated release metadata back to main. Do not replace published tags/assets. A retry or later push must still produce a build newer than the one offered to installed clients.
 

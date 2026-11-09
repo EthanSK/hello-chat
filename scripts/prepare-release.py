@@ -59,9 +59,9 @@ def main() -> None:
         with urllib.request.urlopen(url, timeout=30) as response:
             receipt = json.load(response)
         previous_build = int(receipt["build"])
-    build = max(1000 + args.run_number, previous_build + 1)
-    if build <= int(info["CFBundleVersion"]):
-        parser.error("CI build must exceed the source build")
+    # Local signed previews can be ahead of the latest public release. Keep
+    # the source's installed-build floor so their next update is offered too.
+    build = max(1000 + args.run_number, previous_build + 1, int(info["CFBundleVersion"]) + 1)
     info.update(CFBundleShortVersionString=version, CFBundleVersion=str(build))
     args.plist.write_bytes(plistlib.dumps(info, sort_keys=False))
     args.output.write_text(json.dumps({"version": version, "build": build,
