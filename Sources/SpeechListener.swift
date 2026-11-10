@@ -47,7 +47,7 @@ import CoreAudio
 
     static func authorize() async throws {
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
-            throw BridgeError.message("Allow Microphone for HelloChat in System Settings.")
+            throw BridgeError.message("Allow Microphone for Hello Chat in System Settings.")
         }
     }
     func start(recording: URL? = nil, channels: Int = 20, recoverBeforeAudio: Bool = false) async throws {
@@ -76,7 +76,7 @@ import CoreAudio
         let token = UUID(); session = token
         await cleanup?.value
         guard session == token else { throw CancellationError() }
-        guard let directory = selectedModel.directory else { throw BridgeError.message("Local speech model is missing. Reinstall HelloChat.") }
+        guard let directory = selectedModel.directory else { throw BridgeError.message("Local speech model is missing. Reinstall Hello Chat.") }
         let worker: any SpeechBackend
         if selectedModel == .appleLocal {
             if #available(macOS 26.0, *) { worker = AppleLocalSpeech(phrases: contextualPhrases) }

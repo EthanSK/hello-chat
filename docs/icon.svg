@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <title>HelloChat</title>
+  <title>Hello Chat</title>
   <!-- Same geometry and colours as scripts/make-icon.swift, with the y axis flipped for SVG. -->
   <rect x="28" y="28" width="968" height="968" rx="210" fill="#122633"/>
   <rect x="170" y="234" width="684" height="550" rx="155" fill="#42D4AB"/>

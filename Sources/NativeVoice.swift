@@ -118,7 +118,7 @@ import Foundation
             try checkStartAllowed()
         }
         guard state.accessibilityAllowed else {
-            throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
+            throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
         }
         let waitForApplication = state.pid == nil || state.applicationLaunching || !state.applicationHasWindow
             || (!state.applicationReady && state.controlsComplete)
@@ -172,7 +172,7 @@ import Foundation
             throw BridgeError.message("Couldn't identify the active Codex window.")
         }
         guard state.accessibilityAllowed else {
-            throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.")
+            throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
         }
         if let microphone = state.microphone { connected = true; clearPendingOpening(); return microphone }
         if state.endControlAvailable {
@@ -278,7 +278,7 @@ import Foundation
             fresh = await snapshot(output: action.controlsSpeakers) // Retry an incomplete AX view, never a proven absent call or a sent key.
             try checkStartAllowed()
         }
-        guard fresh.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
+        guard fresh.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for Hello Chat, then try again.") }
         if fresh.applicationAbsent { return false }
         guard fresh.pid != nil, fresh.microphone != nil || fresh.outputMuted != nil || fresh.endControlAvailable else {
             let absent = fresh.controlsComplete && (fresh.applicationReady || !fresh.inputRunning) // A complete native shell with active input still cannot prove Voice is absent.
@@ -415,7 +415,7 @@ import Foundation
         guard !detachedForQuit else { return false }
         if transport.requestEnd != nil, pendingUntil == nil { return try await end(explicit: true) }
         let state = await snapshot()
-        guard state.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for HelloChat in System Settings.") }
+        guard state.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.") }
         if state.microphone != nil || state.endControlAvailable { connected = true }
         guard connected || pendingUntil != nil else {
             guard !state.inputRunning else { throw BridgeError.message("Couldn't confirm Codex Voice. Finish dictation or check Voice in Codex.") }

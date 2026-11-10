@@ -71,12 +71,13 @@ jobs:
           # workflow edits; the existing Keychain login has workflow permission.
           unset GH_TOKEN GITHUB_TOKEN
           test "$(gh api --hostname github.com user --jq .login)" = EthanSK
+          display_name=$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$HELLOCHAT_BUILD_DIR/HelloChat.app/Contents/Info.plist")
           gh release create "$HELLOCHAT_RELEASE_TAG" \
             "$HELLOCHAT_BUILD_DIR/HelloChat-macOS-arm64.zip" \
             "$HELLOCHAT_BUILD_DIR/SHA256SUMS" \
             "$HELLOCHAT_BUILD_DIR/appcast.xml" \
             "$RUNNER_TEMP/release-manifest.json" \
-            --target "$GITHUB_SHA" --title "HelloChat ${HELLOCHAT_RELEASE_TAG#v}" \
+            --target "$GITHUB_SHA" --title "$display_name ${HELLOCHAT_RELEASE_TAG#v}" \
             --generate-notes --notes 'Signed and notarized for Apple Silicon Macs running macOS 15 or later. Existing installations can use Check for Updates.'
       - name: Verify published bytes
         shell: bash

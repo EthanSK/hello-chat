@@ -35,7 +35,7 @@ def main():
         return
     # Validate all paths and configurations before changing either startup job.
     if not executable.is_file():
-        raise SystemExit("Installed HelloChat executable is missing")
+        raise SystemExit("Installed Hello Chat executable is missing")
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(executable.parents[2])], check=True)
     agents = Path.home() / "Library/LaunchAgents"
     target = agents / "com.ethansk.hello-chat.plist"
@@ -47,7 +47,7 @@ def main():
     if loaded.returncode != 0:
         running = subprocess.run(["pgrep", "-fx", str(executable)], capture_output=True)
         if running.returncode == 0:
-            raise SystemExit("HelloChat is already running outside launchd; finish the safe update before registering startup")
+            raise SystemExit("Hello Chat is already running outside launchd; finish the safe update before registering startup")
     # Previously com.ethansk.hey-chat. Preserve its plist; never quit an app here.
     legacy = agents / "com.ethansk.hey-chat.plist"
     if legacy.exists():
@@ -56,7 +56,7 @@ def main():
         if old.get("Label") != "com.ethansk.hey-chat" or old.get("ProgramArguments") != [expected]:
             raise SystemExit("Legacy startup configuration differs; inspect before replacing")
         if subprocess.run(["pgrep", "-fx", expected], capture_output=True).returncode == 0:
-            raise SystemExit("Quit Hey Chat before installing HelloChat startup")
+            raise SystemExit("Quit Hey Chat before installing Hello Chat startup")
     registrar = Path("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
     subprocess.run([str(registrar), "-f", str(executable.parents[2])], check=True)
     if legacy.exists():

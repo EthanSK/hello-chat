@@ -3,9 +3,12 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>HelloChat</string>
+	<string>Hello Chat</string>
+	<!-- Finder matches this base value to the on-disk bundle before localizing it. -->
 	<key>CFBundleDisplayName</key>
 	<string>HelloChat</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.ethansk.HeyChat</string>
 	<key>CFBundleExecutable</key>

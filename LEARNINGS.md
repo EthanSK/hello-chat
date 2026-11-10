@@ -1,4 +1,6 @@
-# HelloChat engineering notes
+# Hello Chat engineering notes
+
+- The public display name is **Hello Chat**. The build derives the localized macOS names, and the release and Sparkle feed titles, from `CFBundleName`. Finder requires the base `CFBundleDisplayName` to match the on-disk `HelloChat.app` basename before it applies the localization. Keep that path, executable, signing identifier and data paths because the startup job, updater and speech handoff already use them.
 
 - A slow discontinuity reset can overflow the newest-audio queue again while resetting. Coalesce that episode: discard frames captured before reset completion and rebase sequence tracking on the first fresh frame. Later independent gaps must still reset normally. The 9 November logs showed repeated resets within seconds; the regression covers stale queued frames, fresh continuation and a later separate drop. This does not change queue capacity, phrase timing, model choice or the microphone route.
 - Home and Settings share `MicrophoneSettings` and the same observed `MicrophoneInputs`. Do not introduce a second saved selection or change the macOS system default when adding another selection surface.

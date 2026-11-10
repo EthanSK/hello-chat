@@ -1,4 +1,4 @@
-// Previously HeyChatApp.swift / Hey Chat. Product name: HelloChat; spoken wake phrase: Hello Chat.
+// Previously HeyChatApp.swift / Hey Chat. Product name: Hello Chat; spoken wake phrase: Hello Chat.
 import AppKit
 import ApplicationServices
 import Combine
@@ -285,7 +285,7 @@ struct HelloChatApp: App {
     @StateObject private var zoom = InterfaceZoom()
     @StateObject private var updater = AppUpdater()
     var body: some Scene {
-        Window("HelloChat · \(AppVersion.display)", id: "main") {
+        Window("Hello Chat · \(AppVersion.display)", id: "main") {
             MainView(model: model, zoom: zoom, updater: updater)
                 .background(InitialWindowPlacement())
                 .onAppear {
@@ -304,7 +304,7 @@ struct HelloChatApp: App {
                 OpenSettingsButton().keyboardShortcut(",", modifiers: .command)
             }
             CommandGroup(replacing: .appTermination) {
-                Button("Quit HelloChat") { model.quit() }.keyboardShortcut("q")
+                Button("Quit Hello Chat") { model.quit() }.keyboardShortcut("q")
             }
             CommandGroup(after: .toolbar) {
                 Divider()
@@ -315,13 +315,13 @@ struct HelloChatApp: App {
                 Button("Actual Size") { zoom.reset() }.keyboardShortcut("0", modifiers: .command)
             }
         }
-        Window("HelloChat Settings", id: "settings") {
+        Window("Hello Chat Settings", id: "settings") {
             SettingsView(model: model, zoom: zoom, updater: updater)
                 .background(InitialWindowPlacement())
         }
         .defaultSize(width: 560, height: 660)
         .windowResizability(.contentMinSize)
-        MenuBarExtra("HelloChat", systemImage: model.enabled ? "waveform.circle.fill" : "waveform.circle") {
+        MenuBarExtra("Hello Chat", systemImage: model.enabled ? "waveform.circle.fill" : "waveform.circle") {
             MenuView(model: model)
         }
     }
@@ -483,7 +483,7 @@ struct MainView: View {
 
 struct PhraseHighlightPreviewApp: App {
     var body: some Scene {
-        Window("HelloChat · \(AppVersion.display)", id: "phrase-preview") {
+        Window("Hello Chat · \(AppVersion.display)", id: "phrase-preview") {
             Form {
                 Section("Heard (local model)") {
                     HeardTranscript(text: "Hello chat. Mute chat. Silent chat. Silence chat. Bye chat. By chat. Hello chance.",
@@ -863,9 +863,9 @@ struct MenuView: View {
         Button("Refresh chat status") { model.refreshVoice() }
             .disabled(model.busy)
         Divider()
-        Button("HelloChat") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        Button("Hello Chat") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Button("Settings…") { openWindow(id: "settings"); NSApp.activate(ignoringOtherApps: true) }
-        Button("Quit HelloChat") { model.quit() }
+        Button("Quit Hello Chat") { model.quit() }
     }
 }
 

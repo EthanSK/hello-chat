@@ -50,6 +50,14 @@ fi
 mkdir -p "$app/Contents/Resources/Sounds"
 cp Resources/Sounds/*.wav "$app/Contents/Resources/Sounds/"
 cp Info.plist "$app/Contents/Info.plist"
+# Finder localizes the on-disk name through InfoPlist.strings. Derive the
+# English display name from the same bundle name used for public releases.
+display_name=$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$app/Contents/Info.plist")
+localized_info="$app/Contents/Resources/en.lproj/InfoPlist.strings"
+mkdir -p "${localized_info:h}"
+plutil -create xml1 "$localized_info"
+plutil -insert CFBundleName -string "$display_name" "$localized_info"
+plutil -insert CFBundleDisplayName -string "$display_name" "$localized_info"
 identity="${HELLOCHAT_SIGNING_IDENTITY:-}"
 if [[ -z "$identity" ]]; then
   identity="$(security find-identity -v -p codesigning | awk '/"Developer ID Application:/{print $2; exit}')"

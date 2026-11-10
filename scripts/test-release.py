@@ -77,7 +77,8 @@ class Releases(unittest.TestCase):
             {"tag_name": "archive-before-rename"}]), "1.0.0")
 
     def test_feed_uses_archive_bytes_and_signed_bundle_identity(self):
-        info = {"CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "1002",
+        info = {"CFBundleName": "Hello Chat", "CFBundleDisplayName": "HelloChat",
+                "CFBundleShortVersionString": "1.0.1", "CFBundleVersion": "1002",
                 "SUPublicEDKey": base64.b64encode(bytes(32)).decode(), "LSMinimumSystemVersion": "15.0"}
         signature = base64.b64encode(bytes(64)).decode()
         with tempfile.TemporaryDirectory() as temp:
@@ -85,6 +86,8 @@ class Releases(unittest.TestCase):
             archive.write_bytes(b"signed archive fixture")
             root = ET.fromstring(feeds.create_feed(info, archive, signature,
                 "https://github.com/EthanSK/hello-chat/releases/download/v1.0.1/HelloChat-macOS-arm64.zip"))
+            self.assertEqual(root.findtext("channel/title"), "Hello Chat updates")
+            self.assertEqual(root.findtext("channel/item/title"), "Hello Chat 1.0.1")
             enclosure = root.find("channel/item/enclosure")
             self.assertEqual(enclosure.attrib["length"], str(archive.stat().st_size))
             self.assertEqual(enclosure.attrib["{" + feeds.SPARKLE + "}version"], "1002")

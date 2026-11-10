@@ -512,7 +512,7 @@ import SwiftUI
             do {
                 guard let url = Bundle.main.url(forResource: "SpeechCheck", withExtension: "wav"),
                       let negativeURL = Bundle.main.url(forResource: "SpeechNegative", withExtension: "wav") else {
-                    throw BridgeError.message("The speech sample is missing. Reinstall HelloChat.")
+                    throw BridgeError.message("The speech sample is missing. Reinstall Hello Chat.")
                 }
                 let normalized = await SpeechCheck().run(url: url, channels: 20, similar: similarPhrases, model: speechModel)
                 let negative = await SpeechCheck().run(url: negativeURL, channels: 20, similar: similarPhrases, model: speechModel)

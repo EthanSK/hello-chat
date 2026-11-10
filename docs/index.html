@@ -3,36 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>HelloChat</title>
+  <title>Hello Chat</title>
   <meta name="description" content="Say Hello Chat to start Codex Voice, and Bye Chat to end it. A native Mac app that hears both phrases with a local speech model.">
   <meta name="theme-color" content="#eef4f1">
   <meta name="color-scheme" content="light">
   <meta property="og:type" content="website">
-  <meta property="og:site_name" content="HelloChat">
-  <meta property="og:title" content="HelloChat">
+  <meta property="og:site_name" content="Hello Chat">
+  <meta property="og:title" content="Hello Chat">
   <meta property="og:description" content="Say Hello Chat to start Codex Voice, and Bye Chat to end it. A native Mac app that hears both phrases with a local speech model.">
   <meta property="og:url" content="https://ethansk.github.io/hello-chat/">
   <meta property="og:locale" content="en_GB">
-  <meta property="og:image" content="https://ethansk.github.io/hello-chat/og.png?v=78daacd94cc2">
+  <meta property="og:image" content="https://ethansk.github.io/hello-chat/og.png?v=f82df76bec82">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="HelloChat: Say Hello Chat to start Codex Voice, and Bye Chat to end it.">
+  <meta property="og:image:alt" content="Hello Chat: Say Hello Chat to start Codex Voice, and Bye Chat to end it.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="HelloChat">
+  <meta name="twitter:title" content="Hello Chat">
   <meta name="twitter:description" content="Say Hello Chat to start Codex Voice, and Bye Chat to end it. A native Mac app that hears both phrases with a local speech model.">
-  <meta name="twitter:image" content="https://ethansk.github.io/hello-chat/og.png?v=78daacd94cc2">
+  <meta name="twitter:image" content="https://ethansk.github.io/hello-chat/og.png?v=f82df76bec82">
   <link rel="canonical" href="https://ethansk.github.io/hello-chat/">
-  <link rel="icon" href="./icon.svg?v=867038e3444c" type="image/svg+xml">
+  <link rel="icon" href="./icon.svg?v=bdb5a0d73768" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./app-icon.png?v=4ee93a67d736">
-  <link rel="manifest" href="./site.webmanifest?v=1650bd0f6e83">
+  <link rel="manifest" href="./site.webmanifest?v=d0fa666601e5">
   <link rel="stylesheet" href="./styles.css?v=b9b71f8778ef">
-  <script src="./script.js?v=6d49235a9191" defer></script>
+  <script src="./script.js?v=69897d88d788" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
   <header class="topbar">
-    <a class="brand" href="./"><img src="./icon.svg?v=867038e3444c" width="30" height="30" alt="">HelloChat</a>
+    <a class="brand" href="./"><img src="./icon.svg?v=bdb5a0d73768" width="30" height="30" alt="">Hello Chat</a>
     <nav class="topnav" aria-label="Sections">
       <a href="#setup">Setup</a>
       <a href="#phrases">Phrases</a>
@@ -46,7 +46,7 @@
     <section class="hero" aria-labelledby="title">
       <div class="hero-head">
         <h1 id="title">Say <span class="phrase">Hello Chat</span> to start Codex Voice, and <span class="phrase">Bye Chat</span> to end it.</h1>
-        <p class="lead">HelloChat is a native Mac app that listens for both phrases with a local speech model, then opens or ends Voice in the Codex desktop app.</p>
+        <p class="lead">Hello Chat is a native Mac app that listens for both phrases with a local speech model, then opens or ends Voice in the Codex desktop app.</p>
         <div class="hero-actions">
           <p class="actions">
             <a class="button" href="#build">Build from source</a>
@@ -109,23 +109,23 @@
     <section class="section" id="setup" aria-labelledby="setup-title">
       <div class="section-head">
         <h2 id="setup-title">Setup</h2>
-        <p class="section-lead">Check Codex Voice works on its own first, then let HelloChat open and end it.</p>
+        <p class="section-lead">Check Codex Voice works on its own first, then let Hello Chat open and end it.</p>
       </div>
       <ol class="steps">
         <li>
           <span class="step-num">1</span>
           <p class="step-title">Start Voice in Codex yourself</p>
-          <p class="step-text">Sign in to the Codex desktop app and check Voice works. HelloChat can only open Voice that Codex already offers you.</p>
+          <p class="step-text">Sign in to the Codex desktop app and check Voice works. Hello Chat can only open Voice that Codex already offers you.</p>
         </li>
         <li>
           <span class="step-num">2</span>
-          <p class="step-title">Build HelloChat</p>
+          <p class="step-title">Build Hello Chat</p>
           <p class="step-text"><a href="#build">Build from source</a>, then copy <code>HelloChat.app</code> to Applications.</p>
         </li>
         <li>
           <span class="step-num">3</span>
           <p class="step-title">Allow Microphone and Accessibility</p>
-          <p class="step-text">Microphone is for local listening. Accessibility lets HelloChat use Codex’s Voice shortcut and End Voice control.</p>
+          <p class="step-text">Microphone is for local listening. Accessibility lets Hello Chat use Codex’s Voice shortcut and End Voice control.</p>
         </li>
         <li>
           <span class="step-num">4</span>
@@ -135,7 +135,7 @@
         <li>
           <span class="step-num">5</span>
           <p class="step-title">Turn on Listen for wake phrase</p>
-          <p class="step-text">HelloChat prepares the local model, then shows Listening.</p>
+          <p class="step-text">Hello Chat prepares the local model, then shows Listening.</p>
         </li>
         <li>
           <span class="step-num">6</span>
@@ -169,7 +169,7 @@
             <li>Cancels Voice while it’s still opening.</li>
             <li>Ends a Voice call you started yourself in Codex too.</li>
             <li>Plays the End sound when the command is recognised.</li>
-            <li>If Voice is already off, HelloChat says so and does nothing else.</li>
+            <li>If Voice is already off, Hello Chat says so and does nothing else.</li>
           </ul>
         </div>
       </div>
@@ -218,9 +218,9 @@
             <dt>Parakeet EOU · 160 ms</dt>
             <dd>Lower latency. It missed more words in earlier recorded checks.</dd>
             <dt>Apple Speech · local</dt>
-            <dd>macOS 26 only, using English speech assets already installed on your Mac. Apple doesn’t expose where it runs, so Neural Engine use is unverified. If the assets are missing, HelloChat shows an error instead of downloading them.</dd>
+            <dd>macOS 26 only, using English speech assets already installed on your Mac. Apple doesn’t expose where it runs, so Neural Engine use is unverified. If the assets are missing, Hello Chat shows an error instead of downloading them.</dd>
           </dl>
-          <p class="fine">The Core ML models need a Neural Engine. Before listening, HelloChat checks that Core ML’s compute plan puts most of the encoder there. That’s an estimate, not measured use, and the CPU still does part of the work.</p>
+          <p class="fine">The Core ML models need a Neural Engine. Before listening, Hello Chat checks that Core ML’s compute plan puts most of the encoder there. That’s an estimate, not measured use, and the CPU still does part of the work.</p>
         </div>
       </details>
     </section>
@@ -253,7 +253,7 @@ zsh scripts/test.sh
 ditto .build.noindex/HelloChat.app /Applications/HelloChat.app
 open /Applications/HelloChat.app</code></pre>
           </div>
-          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. Release builds update through Check for Updates in the app menu or Settings. When replacing a source build manually, quit HelloChat and move the old copy to the Bin before copying the new one.</p>
+          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. Release builds update through Check for Updates in the app menu or Settings. When replacing a source build manually, quit Hello Chat and move the old copy to the Bin before copying the new one.</p>
         </div>
       </div>
 
@@ -267,7 +267,7 @@ open /Applications/HelloChat.app</code></pre>
       <details class="more">
         <summary>Start at Login</summary>
         <div class="more-body">
-          <p>Quit HelloChat, then run <code>python3 scripts/install-startup.py</code>. It adds a LaunchAgent that opens <code>/Applications/HelloChat.app</code> at login and reopens it after a crash. Quit still quits.</p>
+          <p>Quit Hello Chat, then run <code>python3 scripts/install-startup.py</code>. It adds a LaunchAgent that opens <code>/Applications/HelloChat.app</code> at login and reopens it after a crash. Quit still quits.</p>
         </div>
       </details>
       <details class="more">
@@ -296,9 +296,9 @@ open /Applications/HelloChat.app</code></pre>
       <ul class="limit-list">
         <li>It isn’t speaker-locked: anyone the microphone can hear, including a video, can wake or end Voice.</li>
         <li>Matching leans towards waking, so it can hear a phrase nobody said, or miss one.</li>
-        <li>It works through Codex’s Voice shortcut and End Voice control, not an official wake-word API. A Codex update can change them, and HelloChat then shows an error instead of guessing.</li>
+        <li>It works through Codex’s Voice shortcut and End Voice control, not an official wake-word API. A Codex update can change them, and Hello Chat then shows an error instead of guessing.</li>
         <li>Codex’s Voice shortcut is Control-Shift-V by default. A custom one needs to end in V, F16, F17, F19 or F20.</li>
-        <li>Listening always uses some CPU, because Core ML shares the work between CPU and Neural Engine. Settings → Resources shows HelloChat’s own CPU and memory.</li>
+        <li>Listening always uses some CPU, because Core ML shares the work between CPU and Neural Engine. Settings → Resources shows Hello Chat’s own CPU and memory.</li>
         <li>Detection is local, but it isn’t an offline assistant: Codex Voice needs internet.</li>
         <li>Listening pauses while a Bose Flex 2 SoundLink is the selected playback output. That’s a rule for Ethan’s own speaker.</li>
         <li>So far it’s been used on Ethan’s own Mac, not tested across a range of fresh setups.</li>
@@ -314,7 +314,7 @@ open /Applications/HelloChat.app</code></pre>
         <a href="https://ethansk.github.io/AgentFlow/">Agent Flow <span aria-hidden="true">↗</span></a>
         <a href="https://github.com/EthanSK/hello-chat">GitHub <span aria-hidden="true">↗</span></a>
       </p>
-      <p>HelloChat by Ethan SK · Apache 2.0 + Commons Clause v1.0 · FluidAudio and the speech models keep their own licences · Not affiliated with OpenAI</p>
+      <p>Hello Chat by Ethan SK · Apache 2.0 + Commons Clause v1.0 · FluidAudio and the speech models keep their own licences · Not affiliated with OpenAI</p>
       <p>Source: <a href="https://github.com/EthanSK/hello-chat/blob/main/LICENSE">Apache 2.0 + Commons Clause v1.0</a>. Earlier releases and third-party material keep their own licenses.</p>
       <p class="disclaimer">All the wording on this website is AI generated, so sorry if it’s cringe.</p>
     </div>

@@ -23,9 +23,10 @@ def create_feed(info: dict, archive: Path, signature: str, url: str) -> bytes:
         raise ValueError("Missing Sparkle public key")
     rss = ET.Element("rss", version="2.0")
     channel = ET.SubElement(rss, "channel")
-    ET.SubElement(channel, "title").text = "HelloChat updates"
+    display_name = info["CFBundleName"]
+    ET.SubElement(channel, "title").text = f"{display_name} updates"
     item = ET.SubElement(channel, "item")
-    ET.SubElement(item, "title").text = "HelloChat " + info["CFBundleShortVersionString"]
+    ET.SubElement(item, "title").text = f'{display_name} {info["CFBundleShortVersionString"]}'
     ET.SubElement(item, "pubDate").text = format_datetime(datetime.now(timezone.utc))
     ET.SubElement(item, "{" + SPARKLE + "}minimumSystemVersion").text = info["LSMinimumSystemVersion"]
     ET.SubElement(item, "enclosure", {"url": url, "length": str(archive.stat().st_size),

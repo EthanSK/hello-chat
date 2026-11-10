@@ -15,7 +15,7 @@ NSImage(contentsOf: iconURL)!.draw(in: NSRect(x: 68, y: 432, width: 112, height:
 let ink = NSColor(calibratedRed: 0.07, green: 0.15, blue: 0.20, alpha: 1)
 let titleFont = NSFont.systemFont(ofSize: 74, weight: .heavy)
 let bodyFont = NSFont.systemFont(ofSize: 50, weight: .bold)
-("HelloChat" as NSString).draw(at: NSPoint(x: 208, y: 450), withAttributes: [.font: titleFont, .foregroundColor: ink])
+("Hello Chat" as NSString).draw(at: NSPoint(x: 208, y: 450), withAttributes: [.font: titleFont, .foregroundColor: ink])
 ("Say Hello Chat to start Codex Voice,\nand Bye Chat to end it." as NSString).draw(
     in: NSRect(x: 72, y: 170, width: 1060, height: 180),
     withAttributes: [.font: bodyFont, .foregroundColor: ink])

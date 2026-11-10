@@ -155,7 +155,7 @@ struct VoiceBridge {
     // AXPress can acknowledge without invoking Electron's button handler.
     // Send the dedicated End shortcut only after revalidating an active control.
     static func requestActiveEnd(record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws -> pid_t? {
-        guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
+        guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for Hello Chat, then try again.") }
         let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
             .filter { !$0.isTerminated && codexProcess($0.processIdentifier) }
         guard !apps.isEmpty else { return nil }
@@ -357,7 +357,7 @@ struct VoiceBridge {
 
     static func post(command: String, pid: pid_t, deliveryKey: String? = nil,
                      record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws {
-        guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for HelloChat, then try again.") }
+        guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for Hello Chat, then try again.") }
         guard codexProcess(pid) else { throw BridgeError.message("ChatGPT changed or closed. Check Voice again.") }
         if command == startCommand {
             let session = DesktopSessionState.current
@@ -638,7 +638,7 @@ struct VoiceShortcutConfiguration {
                 guard let key = entry["key"] as? String else { return false }
                 return Self.normalizedKey(key) == Self.normalizedKey(setting.key)
             }) else {
-                throw BridgeError.message("HelloChat shortcut is already used. Change that shortcut in ChatGPT first.")
+                throw BridgeError.message("Hello Chat shortcut is already used. Change that shortcut in ChatGPT first.")
             }
             if let index = indices.first {
                 guard indices.count == 1 else { throw BridgeError.message("Set a Voice shortcut in Codex settings, then try again.") }
@@ -691,7 +691,7 @@ final class ShortcutLease {
         var bindings = try JSONSerialization.jsonObject(with: original) as? [[String: Any]] ?? []
         let mute = bindings.filter { $0["command"] as? String == VoiceBridge.muteCommand }
         bindings.removeAll { $0["command"] as? String == VoiceBridge.muteCommand }
-        guard !bindings.contains(where: { $0["key"] as? String == VoiceBridge.privateMuteKey }) else { throw BridgeError.message("HelloChat shortcut is already used. Change that shortcut in ChatGPT first.") }
+        guard !bindings.contains(where: { $0["key"] as? String == VoiceBridge.privateMuteKey }) else { throw BridgeError.message("Hello Chat shortcut is already used. Change that shortcut in ChatGPT first.") }
         let installed: [String: Any] = ["command": VoiceBridge.muteCommand, "key": VoiceBridge.privateMuteKey]
         bindings.append(installed)
         try FileManager.default.createDirectory(at: recoveryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
