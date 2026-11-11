@@ -95,7 +95,7 @@ A new local Voice coordinator can read and clear the file through that skill, th
 
 Words within either command must be close together: no gap over 1.5 seconds, and a two-word phrase must fit within 3 seconds. Longer custom phrases have a proportionally larger total window. The app uses local model audio timestamps where available, with first-observed word times as a fallback. This does not limit the length of a Voice conversation or add a delay after a valid command.
 
-By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Temporary playback pauses do not erase that choice. Automatic Listening is optional; existing saved docking preferences are preserved.
+By default, the listening toggle controls listening without requiring power or an external display. Its On/Off choice is remembered when the app restarts. Automatic Listening is optional; existing saved docking preferences are preserved.
 
 Wake and end phrases keep working while Agent Flow is recording, using the same phrase-matching rules as normal listening.
 
@@ -217,7 +217,6 @@ The app's shortcut editor can also look different between presentations. The sav
 - Matching leans towards waking, so it can hear a phrase nobody said, or miss one.
 - Listening always uses some CPU. Resources in Settings shows Hello Chat's share; Neural Engine use isn't measured.
 - Detection is local, but Hello Chat isn't an offline assistant: Codex Voice needs internet.
-- Listening pauses while a Bose Flex 2 SoundLink is the selected playback output. That's a rule for Ethan's own speaker.
 - So far it's been used on Ethan's own Mac, not tested across a range of fresh setups.
 
 ## Upgrading From Hey Chat

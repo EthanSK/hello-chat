@@ -2,8 +2,8 @@ import AppKit
 import Combine
 import IOKit.ps
 
-// Keep the user's listening-toggle choice separate from live capture. Playback
-// pauses, input errors and quitting must not save those temporary stops as Off.
+// Keep the user's listening-toggle choice separate from live capture. Input
+// errors and quitting must not save those temporary stops as Off.
 // Docking remains opt-in; existing users keep their saved automatic setting.
 struct ListeningPreferences {
     private let defaults: UserDefaults

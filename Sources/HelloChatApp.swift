@@ -6,7 +6,6 @@ import SwiftUI
 import CoreML
 import FluidAudio
 import AVFoundation
-import CoreAudio
 import Darwin
 
 @main enum Main {
@@ -289,7 +288,8 @@ struct HelloChatApp: App {
             MainView(model: model, zoom: zoom, updater: updater)
                 .background(InitialWindowPlacement())
                 .onAppear {
-                    delegate.model = model; delegate.refreshPlayback()
+                    delegate.model = model
+                    model.initializeListening()
                     updater.start(model: model, prepareToQuit: { await delegate.prepareForUpdate() },
                                   restoreAfterAbort: { await delegate.restoreAfterFailedUpdate() })
                 }
@@ -331,8 +331,6 @@ struct HelloChatApp: App {
     weak var model: GateModel?
     private var terminating = false
     private var readyToTerminate = false
-    private var outputListener: AudioObjectPropertyListenerBlock?
-    private var playbackMonitoringReady = false
     // Sparkle's first termination request must be accepted. Finish the same
     // call-preserving cleanup used by Quit before invoking its install handler.
     func prepareForUpdate() async -> Bool {
@@ -347,28 +345,6 @@ struct HelloChatApp: App {
     func restoreAfterFailedUpdate() async {
         readyToTerminate = false; terminating = false
         await model?.restoreAfterFailedUpdate()
-    }
-    func refreshPlayback() {
-        guard playbackMonitoringReady else { return }
-        model?.playbackChanged(allowed: outputListener != nil && BosePlayback.isSelected == false)
-    }
-
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        let listener: AudioObjectPropertyListenerBlock = { _, _ in
-            Task { @MainActor [weak self] in self?.refreshPlayback() }
-        }
-        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener) == noErr {
-            outputListener = listener
-        }
-        playbackMonitoringReady = true
-        refreshPlayback() // Keep the app alive even when route observation fails.
-    }
-    deinit {
-        if let outputListener {
-            var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, outputListener)
-        }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if readyToTerminate { return .terminateNow }
