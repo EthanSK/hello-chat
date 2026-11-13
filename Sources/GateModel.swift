@@ -816,12 +816,16 @@ import SwiftUI
         do {
             // Refresh native state on each explicit wake, including after a
             // call was closed in Codex, rather than trusting our cached state.
+            let spotifyCall = spotifyVolume.callEpoch
             let openedMicrophone = try await voice.start(context: context)
             try Task.checkCancellation()
             guard enabled, generation == token else { return }
             if let openedMicrophone, openedMicrophone != .listening { try await voice.setMicrophone(.listening) }
             try Task.checkCancellation()
             guard enabled, generation == token else { return }
+            if openedMicrophone != nil, !context.requestedNewCall {
+                spotifyVolume.confirmMicrophoneMute(false, in: spotifyCall)
+            }
             microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Chat is on"; status = "Chat on"
             detail = openedMicrophone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(sleepPhrase) to end chat."; lastEvent = trigger
         } catch {
@@ -962,11 +966,15 @@ import SwiftUI
                 do {
                     for (action, _, slot) in actions { // A delayed transcript can contain both channels or opposite commands; apply them in spoken order.
                         Diagnostics.shared.record("voice.audio.requested", info: ["action": action.rawValue, "phrase_slot": slot.rawValue])
+                        let spotifyCall = spotifyVolume.callEpoch
                         let active = try await voice.setAudio(action, onRecognized: { self.feedback.play(.microphoneDetected) }) // Inactive Voice gets no sound or key.
                         guard generation == token else { return }
                         guard active else { continue }
                         error = nil
-                        if !action.controlsSpeakers { microphone = action.targetMuted ? .muted : .listening }
+                        if !action.controlsSpeakers {
+                            microphone = action.targetMuted ? .muted : .listening
+                            spotifyVolume.confirmMicrophoneMute(action.targetMuted, in: spotifyCall)
+                        }
                         feedback.play(slot.cue) // Only after the requested state is confirmed.
                         showListening()
                         lastEvent = action.controlsSpeakers ? "Chat audio is \(action.targetMuted ? "muted" : "on")" : "Chat is \(action.targetMuted ? "muted" : "listening")"

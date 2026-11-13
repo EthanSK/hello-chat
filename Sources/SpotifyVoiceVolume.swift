@@ -84,6 +84,8 @@ enum SpotifyVolumeControl {
     private var enabled = false
     private var presence: VoiceCallPresence = .unknown
     private var callIdentifier: String?
+    private var microphoneMuted: Bool?
+    private(set) var callEpoch = 0
     private var generation = 0
     private var spotifyLaunchObserver: NSObjectProtocol?
 
@@ -95,15 +97,34 @@ enum SpotifyVolumeControl {
     }
 
     func observe(_ state: VoiceCallObservation) {
-        guard enabled, state.presence != presence || state.callIdentifier != callIdentifier else { return }
-        presence = state.presence; callIdentifier = state.callIdentifier; reconcile()
+        guard enabled else { return }
+        let nextIdentifier = state.presence == .inactive ? nil : state.callIdentifier ?? callIdentifier
+        guard state.presence != presence || nextIdentifier != callIdentifier else { return }
+        if state.presence == .inactive || (callIdentifier != nil && nextIdentifier != callIdentifier) {
+            microphoneMuted = nil
+            callEpoch += 1
+        }
+        presence = state.presence
+        callIdentifier = nextIdentifier
+        reconcile()
+    }
+
+    // Only H Chat's confirmed microphone commands control this override.
+    // Agent Flow recording and speaker silence can change native audio state
+    // independently, so generic accessibility reads never set it.
+    func confirmMicrophoneMute(_ muted: Bool, in epoch: Int) {
+        guard enabled, epoch == callEpoch else { return }
+        microphoneMuted = muted
+        if presence == .active { reconcile() }
+        else { monitor.refresh() }
     }
 
     func setEnabled(_ value: Bool) {
         observeSpotifyLaunch()
-        enabled = value; generation += 1
+        enabled = value; generation += 1; callEpoch += 1
         presence = value ? .unknown : .inactive
         callIdentifier = nil
+        microphoneMuted = nil
         if !value { reconcile() }
     }
 
@@ -134,12 +155,17 @@ enum SpotifyVolumeControl {
     private func reconcile() {
         let state = enabled ? presence : .inactive
         let callIdentifier = self.callIdentifier
+        let microphoneMuted = self.microphoneMuted
+        generation += 1
         let generation = self.generation
         let session = self.session
         queue.async { [weak self] in
             do {
-                let result = try session.reconcile(state, callIdentifier: callIdentifier)
-                Diagnostics.shared.record("spotify.volume.reconciled", info: ["result": result.rawValue, "call": state.rawValue])
+                let result = try session.reconcile(state, callIdentifier: callIdentifier, microphoneMuted: microphoneMuted)
+                Diagnostics.shared.record("spotify.volume.reconciled", info: [
+                    "result": result.rawValue, "call": state.rawValue,
+                    "confirmed_mic_command": microphoneMuted.map { $0 ? "mute" : "unmute" } ?? "none"
+                ])
                 Task { @MainActor [weak self] in
                     guard let self, self.generation == generation else { return }
                     self.permissionRequired = false
@@ -166,7 +192,7 @@ enum SpotifyVolumeControl {
     }
 
     func shutdown(preservingVolume: Bool) async {
-        generation += 1
+        generation += 1; callEpoch += 1
         if let spotifyLaunchObserver { NSWorkspace.shared.notificationCenter.removeObserver(spotifyLaunchObserver) }
         spotifyLaunchObserver = nil
         let session = self.session

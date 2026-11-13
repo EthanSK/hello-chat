@@ -12,6 +12,7 @@ import Foundation
         var events: [String] = []
         var failSave = false
         var failConfirmedSave = false
+        var failRestoredSave = false
         var failWrite = false
         var changeBeforeWrite: Int?
         func session() -> SpotifyVolumeSession {
@@ -25,7 +26,10 @@ import Foundation
                 return value
             }, load: { self.receipt }, save: { value in
                 self.events.append("save:\(value?.original.description ?? "nil")")
-                if self.failSave || (self.failConfirmedSave && value?.confirmed == true) { throw CocoaError(.fileWriteUnknown) }
+                if self.failSave || (self.failConfirmedSave && value?.confirmed == true) ||
+                    (self.failRestoredSave && value?.mutePhase == .restored) {
+                    throw CocoaError(.fileWriteUnknown)
+                }
                 self.receipt = value
             }))
         }
@@ -45,6 +49,7 @@ import Foundation
         precondition(f.volume == 80 && f.receipt == nil && f.writes == [50, 80])
         _ = try s.reconcile(.inactive)
         precondition(f.writes.count == 2, "Duplicate End does nothing")
+        try microphonePhraseVolume()
 
         let quiet = Fixture(); quiet.volume = 45
         let quietSession = quiet.session()
@@ -225,5 +230,71 @@ import Foundation
         precondition(permissions == 0o600)
         try receipt.save(nil); check(try receipt.load() == nil)
         print("Spotify volume ownership, recovery and call-decision checks passed")
+    }
+
+    static func microphonePhraseVolume() throws {
+        let f = Fixture(), session = f.session()
+        check(try session.reconcile(.active, callIdentifier: "A") == .lowered)
+        check(try session.reconcile(.active, callIdentifier: "A", microphoneMuted: true) == .restored)
+        check(try session.reconcile(.active, callIdentifier: "A", microphoneMuted: true) == .unchanged)
+        check(try session.reconcile(.unknown) == .uncertain)
+        check(try session.reconcile(.active, callIdentifier: "A") == .unchanged)
+        precondition(f.writes == [50, 80] && f.receipt?.mutePhase == .restored)
+        let restarted = f.session()
+        check(try restarted.reconcile(.active, callIdentifier: "A") == .unchanged)
+        check(try restarted.reconcile(.active, callIdentifier: "A", microphoneMuted: false) == .lowered)
+        check(try restarted.reconcile(.active, callIdentifier: "A", microphoneMuted: false) == .unchanged)
+        check(try restarted.reconcile(.active, callIdentifier: "A", microphoneMuted: true) == .restored)
+        check(try restarted.reconcile(.inactive) == .unchanged)
+        precondition(f.writes == [50, 80, 50, 80] && f.receipt == nil)
+
+        let quiet = Fixture(), quietSession = quiet.session()
+        quiet.volume = 35
+        _ = try quietSession.reconcile(.active, microphoneMuted: true)
+        _ = try quietSession.reconcile(.active, microphoneMuted: false)
+        _ = try quietSession.reconcile(.inactive)
+        precondition(quiet.volume == 35 && quiet.writes.isEmpty)
+
+        let manual = Fixture(), manualSession = manual.session()
+        _ = try manualSession.reconcile(.active)
+        _ = try manualSession.reconcile(.active, microphoneMuted: true)
+        manual.volume = 60 // A user adjustment while Spotify is at its listening level wins.
+        check(try manualSession.reconcile(.active, microphoneMuted: false) == .manualChange)
+        manual.volume = 50 // Returning to our old cap does not reacquire ownership.
+        check(try manual.session().reconcile(.inactive) == .manualChange)
+        precondition(manual.volume == 50 && manual.writes == [50, 80])
+
+        let manualLowered = Fixture(), manualLoweredSession = manualLowered.session()
+        _ = try manualLoweredSession.reconcile(.active)
+        manualLowered.volume = 30
+        check(try manualLoweredSession.reconcile(.active, microphoneMuted: true) == .manualChange)
+        check(try manualLoweredSession.reconcile(.active, microphoneMuted: false) == .manualChange)
+        precondition(manualLowered.volume == 30 && manualLowered.writes == [50])
+
+        let replacement = Fixture(), replacementSession = replacement.session()
+        _ = try replacementSession.reconcile(.active, microphoneMuted: true)
+        _ = try replacementSession.reconcile(.active, callIdentifier: "A")
+        check(try replacement.session().reconcile(.active, callIdentifier: "B") == .lowered)
+        precondition(replacement.writes == [50] && replacement.receipt?.callIdentifier == "B")
+
+        let failed = Fixture(), failedSession = failed.session()
+        _ = try failedSession.reconcile(.active)
+        failed.failWrite = true
+        do {
+            _ = try failedSession.reconcile(.active, microphoneMuted: true)
+            fatalError("Restore failure accepted")
+        } catch { }
+        precondition(failed.volume == 50 && failed.receipt?.mutePhase == .restoring)
+        failed.failWrite = false
+        failed.failRestoredSave = true
+        do {
+            _ = try failedSession.reconcile(.active, microphoneMuted: true)
+            fatalError("Receipt failure accepted")
+        } catch { }
+        precondition(failed.volume == 80 && failed.receipt?.mutePhase == .restoring)
+        failed.failRestoredSave = false
+        check(try failed.session().reconcile(.active) == .unchanged)
+        check(try failed.session().reconcile(.active, microphoneMuted: false) == .lowered)
+        precondition(failed.writes == [50, 80, 50] && failed.receipt?.mutePhase == nil)
     }
 }

@@ -128,6 +128,8 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 Enable **Settings → Spotify → Lower volume during chat** to cap Spotify's own slider at 50% while a native call is on. A quieter setting stays quieter. **Allow Spotify control** requests macOS Automation permission; Spotify must already be open. This never starts playback or changes the Mac's output volume.
 
+Use the configured microphone mute phrase to restore your previous Spotify volume. The microphone unmute phrase reapplies the cap. Spotify keeps any manual slider adjustment H Chat detects during the call.
+
 The original slider value is saved privately before it changes and restored after confirmed call end. If you change the slider yourself, that value wins for that call. Saved call identifiers keep a previous call's override from following you into a fresh call, including when End and Start happen between checks. Normal Hello Chat Quit restores immediately without ending the Codex call; an updater carries the saved value into the replacement app. After a crash, the next launch uses that receipt to recover. A helper that is no longer running cannot restore at a later call end.
 
 Detection uses native Accessibility notifications and fresh call controls, including calls started or stopped directly in Codex and temporary chats. Saved call-boundary metadata is supplementary evidence during reconnects; Hello Chat does not subscribe to Codex's private server, read transcripts, or write its database. Incomplete control reads remain unknown. The private metadata format and UI can change across Codex versions; live manual-end and temporary-chat acceptance must be checked against the installed version.
