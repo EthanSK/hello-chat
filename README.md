@@ -20,6 +20,9 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Silent Chat**, **Silence Chat** / **Unsilence Chat** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 | **Pause video** / **Play video** | Controls one Chrome video through [Agent Flow Bridge](https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install). Works with YouTube and standard web video players. |
+| **Switch app Chrome** | Brings an already running app forward. Accepts common names and clear mishearings such as “BS Code” for VS Code. |
+| **Open Safari** / **Open app Safari** | Opens an installed app. Say the full app name when two apps sound similar. |
+| **Zoom in** / **Zoom out** | Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does. |
 
 For safe conversation about the app, call the helper **H Chat** and its End command **B Chat**. These are discussion names, not extra voice commands. The default dictionary no longer accepts the old UI-name alias or B/Be/Bee spellings as End. End commands use the same mention and negation filter as the other controls, so discussing a command is not treated as issuing it. Matching and transcript highlighting share the dictionary.
 
@@ -84,7 +87,9 @@ These checks use fixed recordings and text. They don't show how well Hello Chat 
 The main window has two sections:
 
 - **Heard (local model)** comes first, with **Start chat** / **End chat**, Refresh and the local transcript. Its height stays bounded while the current recognition batch remains available to scroll back through. New batches replace old text using the existing recognition reset and quiet-period rules; the Heard panel does not accumulate the entire listening session. The panel follows new words while you are at the bottom and lets you scroll back without being pulled down. Exact matches are green and alternate spellings are orange. Highlighting identifies matching text, not proof an action ran.
-- **Listening** comes below it, with the listening toggle, all seven editable phrase fields, **Speech model** and the microphone level. The same phrase fields appear in Settings and save immediately. Mute and Unmute control the microphone; Silent/Silence and Unsilence control Voice audio. Every action is directional and repeating it leaves the requested state unchanged.
+- **Listening** comes below it, with the listening toggle, editable Voice, browser and desktop phrases, **Speech model** and the microphone level. The same phrase fields appear in Settings and save immediately. Mute and Unmute control the microphone, and Silent, Silence and Unsilence control Voice audio. Repeating an audio command keeps its requested state.
+
+Switch and Open wait for a brief speech pause so the model can finish the app name. Switch searches running apps. Open searches the standard Applications folders. The short **Open** form needs an exact name or a known alias. The full **Open app** form also accepts clear mishearings. Zoom works in the front app on an unlocked desktop with Accessibility access.
 
 For the current trial, commands run as soon as the complete phrase is recognised, without a deliberate post-phrase pause. The earlier 600 ms mode remains covered by tests for a requested reversal. Recognition and native shortcut delivery still take time. Mention and negation filters still apply. Recognition errors or delayed results can still affect detection; this is not a guarantee of intent. Default audio phrases allow a single verb spelling edit, such as the observed “unsilenced chat”, while retaining the directional prefix and the narrow Chat, Chad or Chatt name dictionary. Custom phrases match their exact saved wording, with normal capitalization, spacing and punctuation handling. Alternate spellings apply only to the seven default phrases. The info icon beside each default phrase on Home and in Settings opens its searchable dictionary. Edit or import a UTF-8 text file with one full spelling per line, then Save to replace that default’s built-in alternatives. The default phrase itself always works; an empty dictionary uses only that phrase. A spelling cannot reuse another command’s default phrase, except for Silent and Silence, which share one action. Restore built-in returns to the shipped dictionary. Editing a phrase disables its dictionary controls and keeps any saved dictionary dormant until you restore that default phrase.
 
@@ -108,7 +113,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | --- | --- |
 | Microphone | **System default** or a named input, which stays selected by device. If it's disconnected, listening stops with an error instead of switching microphones. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
-| Phrases | The seven wake, end and audio phrase fields; **Alternate spellings for default phrases** (on by default), their dictionary editors and **Check speech recognition**. |
+| Phrases | Wake, end, Voice audio, browser and desktop phrases, plus **Alternate spellings for default phrases**, dictionary editors and **Check speech recognition**. |
 | Resources | Hello Chat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |
 | Spotify | **Lower volume during chat**, off by default. Requires permission to control Spotify. |

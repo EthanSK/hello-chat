@@ -1,5 +1,7 @@
 # Hello Chat engineering notes
 
+- App names settle on the audio timeline before Switch or Open can act. Punctuation in a partial transcript is not a speech boundary. Look up Open targets under normal Applications directories, skip staging and rollback paths, and use the system's registered copy only when it is already in the catalog. Keep results ambiguous when two candidates remain close. Recheck cancellation and desktop availability after the asynchronous lookup before opening.
+
 - Pause video and Play video reach the browser only through Agent Flow Bridge (`VideoBridge.swift`, notifications `com.ethansk.hellochat.video.request` / `.reply`). They share the mention, negation and occurrence rules, are consumed whether or not the bridge is available, and never call `beginVoice` or set `busy`. Availability comes only from a compatible reply; replies are matched by request id, and an older reply never overwrites newer availability. Commands are never retried. The reply observer uses `.deliverImmediately` because AppKit suspends distributed delivery while the app is inactive.
 
 - The public display name is **Hello Chat**. The build derives the localized macOS names, and the release and Sparkle feed titles, from `CFBundleName`. Finder requires the base `CFBundleDisplayName` to match the on-disk `HelloChat.app` basename before it applies the localization. Keep that path, executable, signing identifier and data paths because the startup job, updater and speech handoff already use them.

@@ -93,6 +93,32 @@ import SwiftUI
     @Published var playVideoPhrase = PhraseSlot.playVideoPhrase.savedValue() {
         didSet { UserDefaults.standard.set(playVideoPhrase, forKey: "playVideoPhrase"); updatePhrases() }
     }
+    @Published var switchAppPhrase = PhraseSlot.switchAppPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(switchAppPhrase, forKey: "switchAppPhrase"); updatePhrases() }
+    }
+    @Published var openAppPhrase = PhraseSlot.openAppPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(openAppPhrase, forKey: "openAppPhrase"); updatePhrases() }
+    }
+    @Published var zoomInPhrase = PhraseSlot.zoomInPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(zoomInPhrase, forKey: "zoomInPhrase"); updatePhrases() }
+    }
+    @Published var zoomOutPhrase = PhraseSlot.zoomOutPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(zoomOutPhrase, forKey: "zoomOutPhrase"); updatePhrases() }
+    }
+    // Mac app and zoom commands don't depend on a connected Voice call.
+    private let desktopCommands = DesktopCommands()
+    private var zoomPhraseDetectors = CommandPhraseDetectors<ZoomDirection>()
+    private var appCommandDetector = AppCommandDetector()
+    private var desktopTask: Task<Void, Never>?
+    private var pendingAppCommands: [AppCommandCandidate] = []
+    private var desktopCommandGeneration = UUID()
+    @Published private(set) var desktopCommandStatus: String?
+    private var desktopPhrases: [String] {
+        PhraseSlot.desktopSlots.map { self[keyPath: phraseKeyPath(for: $0)] }.filter { !PhraseMatcher.words($0).isEmpty }
+    }
+    private var zoomPatterns: [ZoomDirection: PhrasePattern] {
+        Dictionary(uniqueKeysWithValues: ZoomDirection.allCases.map { ($0, pattern(for: $0.slot)) })
+    }
     // Browser video control through Agent Flow Bridge. Independent of Codex Voice.
     let videoBridge = VideoBridge()
     private var videoPhraseDetectors = VideoPhraseDetectors()
@@ -134,6 +160,10 @@ import SwiftUI
         case .unsilencePhrase: return \.unsilencePhrase
         case .pauseVideoPhrase: return \.pauseVideoPhrase
         case .playVideoPhrase: return \.playVideoPhrase
+        case .switchAppPhrase: return \.switchAppPhrase
+        case .openAppPhrase: return \.openAppPhrase
+        case .zoomInPhrase: return \.zoomInPhrase
+        case .zoomOutPhrase: return \.zoomOutPhrase
         }
     }
     var controlPhrases: [String] { VoiceAudioAction.allCases.flatMap { phrases(for: $0) } }
@@ -208,6 +238,7 @@ import SwiftUI
             // A lock or session switch cannot carry a queued wake into the
             // next desktop. Preserve any late call and require a fresh phrase.
             self.endPhrase.reset(); self.standaloneWake.reset(); self.resetAudioPhrases()
+            self.cancelAppCommands()
             self.listener.discardPendingRecognition()
             self.finishStartupSpeech(preserveRequested: true)
             if let opening = self.voiceStartContext {
@@ -248,6 +279,8 @@ import SwiftUI
             self?.standaloneWake.audio(level: level, seconds: seconds, at: audioTime)
             for action in VoiceAudioAction.allCases { self?.audioPhraseDetectors[action, default: StandaloneWake()].audio(level: level, seconds: seconds, at: audioTime) }
             self?.videoPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
+            self?.zoomPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
+            self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
             // Raw speech can resume before its first text hypothesis arrives.
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
@@ -320,6 +353,36 @@ import SwiftUI
         }
     }
     func refreshVideoBridge() { if !quitting { videoBridge.refresh() } }
+    // One shortcut pair to the frontmost app. Reports dispatch, not whether the app zoomed.
+    private func requestZoom(_ direction: ZoomDirection) {
+        guard !quitting else { return }
+        let result = desktopCommands.zoom(direction)
+        Diagnostics.shared.record("desktop.zoom", info: ["direction": direction.rawValue, "outcome": result.diagnostic])
+        if let message = result.message { desktopCommandStatus = message }
+    }
+    // App commands run one after another in spoken order; each heard occurrence acts once.
+    private func performAppCommands(_ candidates: [AppCommandCandidate]) {
+        pendingAppCommands.append(contentsOf: candidates.prefix(max(0, 8 - pendingAppCommands.count)))
+        guard desktopTask == nil else { return }
+        let token = desktopCommandGeneration
+        desktopTask = Task { [weak self] in
+            while !Task.isCancelled, let self, self.desktopCommandGeneration == token,
+                  let candidate = self.pendingAppCommands.first {
+                self.pendingAppCommands.removeFirst()
+                let result = await self.desktopCommands.perform(candidate)
+                guard !Task.isCancelled, self.desktopCommandGeneration == token else { return }
+                Diagnostics.shared.record("desktop.app", info: ["kind": candidate.kind.rawValue, "bare": String(candidate.bare), "outcome": result.diagnostic])
+                if let message = result.message { self.desktopCommandStatus = message }
+            }
+            if self?.desktopCommandGeneration == token { self?.desktopTask = nil }
+        }
+    }
+    private func cancelAppCommands() {
+        pendingAppCommands.removeAll()
+        desktopCommandGeneration = UUID()
+        desktopTask?.cancel()
+        desktopTask = nil
+    }
     func initializeListening() {
         refreshVideoBridge()
         guard !listeningInitialized else { return }
@@ -471,9 +534,12 @@ import SwiftUI
     private func resetAudioPhrases() {
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
         videoPhraseDetectors.reset()
+        zoomPhraseDetectors.reset()
+        appCommandDetector.reset()
     }
     private func updatePhrases() {
-        listener.contextualPhrases = [wakePhrase, sleepPhrase] + controlPhrases + videoPhrases
+        cancelAppCommands()
+        listener.contextualPhrases = [wakePhrase, sleepPhrase] + controlPhrases + videoPhrases + desktopPhrases
         endPhrase.reset()
         standaloneWake.reset()
         resetAudioPhrases()
@@ -595,6 +661,7 @@ import SwiftUI
         if !voice.connected { microphone = .muted }
     }
     private func stopLocal(preservingCall: Bool = false) {
+        cancelAppCommands()
         finishStartupSpeech(preserveRequested: preservingCall || quitting)
         if !preservingCall, !quitting { cancelStartupSpeech() }
         // Undocking stops local capture while preserving the conversation.
@@ -794,6 +861,8 @@ import SwiftUI
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action, default: StandaloneWake()].update(text, at: Diagnostics.now, timings: timings) }
         videoPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
+        zoomPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
+        appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
         // Keep collecting while a keyword waits for its audio pause. An accepted
         // End below cancels the startup file before dispatching the native command.
@@ -826,6 +895,8 @@ import SwiftUI
                 if !values.isEmpty { audioPhraseDetectors[action, default: StandaloneWake()].cancelPending(patterns: patterns(for: action), endPattern: endPattern) }
             } // An explicit End wins over audio commands in the same transcript.
             videoPhraseDetectors.cancelPending(patterns: videoPatterns, endPattern: endPattern) // ...and over video commands.
+            zoomPhraseDetectors.cancelPending(patterns: zoomPatterns, endPattern: endPattern) // ...and desktop commands.
+            appCommandDetector.consumeAll(switchPrefix: pattern(for: .switchAppPhrase), openPrefix: pattern(for: .openAppPhrase))
             cancelStartupSpeech()
             standaloneWake.cancelPending(patterns: [wakePattern], endPattern: endPattern)
             Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
@@ -848,6 +919,17 @@ import SwiftUI
             }
             if !quitting { requestVideo(command) }
         }
+        // Zoom and app commands: same consumption rules, never busy-gated and never routed to
+        // beginVoice. While an opening is being captured for Voice, its words belong to Voice.
+        let zooms = zoomPhraseDetectors.poll(at: Diagnostics.now, patterns: zoomPatterns, directOnly: true)
+        if !zooms.isEmpty {
+            for accepted in zooms {
+                standaloneWake.cancelPending(patterns: [wakePattern], endPattern: pattern(for: accepted.command.slot))
+            }
+            if !quitting, !capturingStartupSpeech { for accepted in zooms { requestZoom(accepted.command) } }
+        }
+        let appCommands = appCommandDetector.poll(switchPrefix: pattern(for: .switchAppPhrase), openPrefix: pattern(for: .openAppPhrase))
+        if !appCommands.isEmpty, !quitting, !capturingStartupSpeech { performAppCommands(appCommands) }
         let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int)? in
             let values = phrases(for: action)
             guard let first = values.first,
@@ -859,7 +941,8 @@ import SwiftUI
             // Reserve synchronously, as beginVoice does. Consume busy commands
             // rather than replaying a surprise mute when an opening/End finishes.
             guard !busy, !quitting else { return }
-            for pattern in phrasePatterns.dropFirst(2) {
+            for slot in PhraseSlot.allCases.dropFirst(2) where !slot.controlsDesktop {
+                let pattern = pattern(for: slot)
                 standaloneWake.cancelPending(patterns: [wakePattern], endPattern: pattern) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
             }
             busy = true

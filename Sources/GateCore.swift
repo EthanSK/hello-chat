@@ -49,6 +49,7 @@ struct MicrophoneOwnership {
 enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
     case pauseVideoPhrase, playVideoPhrase
+    case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -61,6 +62,18 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return "Unsilence phrase"
         case .pauseVideoPhrase: return "Pause video phrase"
         case .playVideoPhrase: return "Play video phrase"
+        case .switchAppPhrase: return "Switch app prefix"
+        case .openAppPhrase: return "Open app prefix"
+        case .zoomInPhrase: return "Zoom in phrase"
+        case .zoomOutPhrase: return "Zoom out phrase"
+        }
+    }
+    // Shown under the field. App prefixes are followed by an app name.
+    var example: String? {
+        switch self {
+        case .switchAppPhrase: return "Say “Switch app Chrome” to bring an open app forward."
+        case .openAppPhrase: return "Say “Open app Safari”, or just “Open Safari”."
+        default: return nil
         }
     }
     var defaultText: String {
@@ -74,12 +87,19 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return "Unsilence Chat"
         case .pauseVideoPhrase: return "Pause video"
         case .playVideoPhrase: return "Play video"
+        case .switchAppPhrase: return "Switch app"
+        case .openAppPhrase: return "Open app"
+        case .zoomInPhrase: return "Zoom in"
+        case .zoomOutPhrase: return "Zoom out"
         }
     }
     // Browser-video phrases go through Agent Flow Bridge and never reach Codex Voice.
     var controlsVideo: Bool { self == .pauseVideoPhrase || self == .playVideoPhrase }
-    static let voiceSlots = allCases.filter { !$0.controlsVideo }
+    // Desktop phrases act on Mac apps and never reach Codex Voice either.
+    var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase].contains(self) }
+    static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsDesktop }
     static let videoSlots = allCases.filter(\.controlsVideo)
+    static let desktopSlots = allCases.filter(\.controlsDesktop)
     var ending: Bool { self == .sleepPhrase }
     var identifier: String { self == .sleepPhrase ? "endPhrase" : rawValue }
     func isDefault(_ text: String) -> Bool { PhraseMatcher.words(text) == PhraseMatcher.words(defaultText) }
@@ -227,7 +247,9 @@ struct PhraseMatcher {
                           ending: Bool = false, dictionaries: PhraseDictionaries = .init()) -> MatchKind? {
         guard equivalent(candidate, to: phrase, similar: similar, allowEndAddressEdit: ending, dictionaries: dictionaries) else { return nil }
         let expected = words(phrase)
-        if words(candidate).joined() == expected.joined() { return .exact }
+        let actual = words(candidate).joined(), compact = expected.joined()
+        if actual == compact { return .exact }
+        if similar && dictionaries.contains(actual, for: compact) { return .dictionary }
         if (!ending && expected == ["hello", "chat"]) || (ending && expected == ["bye", "chat"])
             || controlPhrases.contains(expected.joined(separator: " "))
             || videoVariants[expected.joined(separator: " ")] != nil {

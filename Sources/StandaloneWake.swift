@@ -1,5 +1,36 @@
 import Foundation
 
+// Fixed-phrase commands outside Voice (browser video, zoom) share these rules: one occurrence
+// counter per command, mention/negation rejection, and consumption independent of the action.
+struct CommandPhraseDetectors<Command: CaseIterable & Hashable> {
+    private var detectors = Dictionary(uniqueKeysWithValues: Command.allCases.map { ($0, StandaloneWake()) })
+    mutating func reset() { for command in Command.allCases { detectors[command] = StandaloneWake() } }
+    mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
+        for command in Command.allCases { detectors[command, default: StandaloneWake()].audio(level: level, seconds: seconds, at: time) }
+    }
+    mutating func update(_ text: String, at time: Double, timings: [(word: String, start: Double, end: Double)]? = nil) {
+        for command in Command.allCases { detectors[command, default: StandaloneWake()].update(text, at: time, timings: timings) }
+    }
+    // End wins over these commands in the same transcript, as it does over audio commands.
+    mutating func cancelPending(patterns: [Command: PhrasePattern], endPattern: PhrasePattern) {
+        for (command, pattern) in patterns where !PhraseMatcher.words(pattern.text).isEmpty {
+            detectors[command, default: StandaloneWake()].cancelPending(patterns: [pattern], endPattern: endPattern)
+        }
+    }
+    // Accepted commands in spoken order. Each occurrence is consumed once.
+    mutating func poll(at time: Double, patterns: [Command: PhrasePattern], directOnly: Bool = false) -> [(command: Command, range: Range<Int>)] {
+        Command.allCases.compactMap { command -> (command: Command, range: Range<Int>)? in
+            guard let pattern = patterns[command], !PhraseMatcher.words(pattern.text).isEmpty,
+                  detectors[command, default: StandaloneWake()].poll(at: time, phrase: pattern.text, similar: pattern.similar,
+                      rejectNegated: true, ending: pattern.ending, patterns: [pattern], directOnly: directOnly),
+                  let range = detectors[command]?.acceptedRange else { return nil }
+            return (command, range)
+        }.sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+    // Directional commands are idempotent, so the last one spoken decides the final state.
+    static func admitted(_ accepted: [(command: Command, range: Range<Int>)]) -> Command? { accepted.last?.command }
+}
+
 // Ethan temporarily disabled the command pause on 8 November 2026 to try
 // immediate recognition. Keep the former timing path available for a requested
 // reversal, without changing the model's own utterance/reset timing.
@@ -74,7 +105,7 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil,
+    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil, directOnly: Bool = false,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
         let patterns = patterns ?? ([phrase] + alternatives).map { PhrasePattern(text: $0, similar: similar, ending: ending, dictionaries: dictionaries) }
         if configuration != patterns || rejectsNegated != rejectNegated {
@@ -106,7 +137,8 @@ struct StandaloneWake {
                 && $0.dictionaries[PhraseMatcher.words($0.text).joined()] == nil }
                 && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                 && sentenceStarts.contains { $0 > match.start && $0 < match.end }
-            if isMention(start: match.start, end: match.end, rejectNegated: rejectNegated) || weakSplit {
+            if (directOnly && !isDirectCommand(start: match.start, end: match.end)) ||
+                isMention(start: match.start, end: match.end, rejectNegated: rejectNegated) || weakSplit {
                 consumed = index + 1
                 rememberConsumed(audioRanges[index])
                 continue
@@ -204,5 +236,14 @@ struct StandaloneWake {
             "is", "isn", "isnt", "was", "wasn", "does", "doesn", "doesnt"].contains(first) { return true }
         if right.first == "should", right.dropFirst().first == "work" { return true }
         return false
+    }
+
+    private func isDirectCommand(start: Int, end: Int) -> Bool {
+        let sentenceStart = sentenceStarts.last(where: { $0 <= start }) ?? 0
+        let sentenceEnd = sentenceStarts.first(where: { $0 >= end }) ?? context.count
+        let left = context[max(min(audioBoundary, start), sentenceStart)..<start]
+        let right = context[end..<sentenceEnd]
+        let politeOpeners: Set<String> = ["please", "can", "could", "would", "you", "okay", "ok", "now", "and", "then"]
+        return left.allSatisfy(politeOpeners.contains) && right.allSatisfy { $0 == "please" || $0 == "now" }
     }
 }

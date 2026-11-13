@@ -424,6 +424,10 @@ struct MainView: View {
                         .accessibilityIdentifier("listeningToggle")
                     PhraseFields(model: model)
                     VideoControls(model: model, bridge: model.videoBridge)
+                    PhraseFields(model: model, slots: PhraseSlot.desktopSlots)
+                    if let status = model.desktopCommandStatus {
+                        Text(status).foregroundStyle(.secondary).accessibilityIdentifier("desktopCommandStatus")
+                    }
                     // Ethan wants to change the microphone from the home page.
                     // Reuse Settings' observed inputs and saved selection.
                     MicrophoneSettings(inputs: model.inputs)
@@ -496,6 +500,9 @@ private struct PhraseFields: View {
                 set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }), similar: model.similarPhrases,
                 dictionary: Binding(get: { model.phraseDictionaries[slot.rawValue] },
                     set: { model.phraseDictionaries[slot.rawValue] = $0 }))
+            if let example = slot.example {
+                Text(example).foregroundStyle(.secondary).accessibilityIdentifier("\(slot.rawValue)Example")
+            }
         }
     }
 }
@@ -703,7 +710,8 @@ struct SettingsView: View {
             Section("Phrases") {
                 PhraseFields(model: model)
                 VideoControls(model: model, bridge: model.videoBridge)
-                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Pause video and Play video control the browser video through Agent Flow Bridge. Repeating a command keeps its requested state.")
+                PhraseFields(model: model, slots: PhraseSlot.desktopSlots)
+                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Pause video and Play video control the browser video through Agent Flow Bridge. Repeating a command keeps its requested state. Say an app name after Switch app (open apps only) or Open app. Zoom in and Zoom out send the standard zoom shortcut to the front app.")
                     .foregroundStyle(.secondary)
                 Toggle("Alternate spellings for default phrases", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")

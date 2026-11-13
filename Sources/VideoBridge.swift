@@ -211,31 +211,4 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
 
 // Spoken video commands share H Chat's phrase, mention, negation and occurrence rules. Matching
 // and consumption never depend on bridge availability, and nothing here can open Voice.
-struct VideoPhraseDetectors {
-    private var detectors = Dictionary(uniqueKeysWithValues: VideoCommand.allCases.map { ($0, StandaloneWake()) })
-    mutating func reset() { for command in VideoCommand.allCases { detectors[command] = StandaloneWake() } }
-    mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
-        for command in VideoCommand.allCases { detectors[command, default: StandaloneWake()].audio(level: level, seconds: seconds, at: time) }
-    }
-    mutating func update(_ text: String, at time: Double, timings: [(word: String, start: Double, end: Double)]? = nil) {
-        for command in VideoCommand.allCases { detectors[command, default: StandaloneWake()].update(text, at: time, timings: timings) }
-    }
-    // End wins over video commands in the same transcript, as it does over audio commands.
-    mutating func cancelPending(patterns: [VideoCommand: PhrasePattern], endPattern: PhrasePattern) {
-        for (command, pattern) in patterns where !PhraseMatcher.words(pattern.text).isEmpty {
-            detectors[command, default: StandaloneWake()].cancelPending(patterns: [pattern], endPattern: endPattern)
-        }
-    }
-    // Accepted commands in spoken order. Each occurrence is consumed once.
-    mutating func poll(at time: Double, patterns: [VideoCommand: PhrasePattern]) -> [(command: VideoCommand, range: Range<Int>)] {
-        VideoCommand.allCases.compactMap { command -> (command: VideoCommand, range: Range<Int>)? in
-            guard let pattern = patterns[command], !PhraseMatcher.words(pattern.text).isEmpty,
-                  detectors[command, default: StandaloneWake()].poll(at: time, phrase: pattern.text, similar: pattern.similar,
-                      rejectNegated: true, ending: pattern.ending, patterns: [pattern]),
-                  let range = detectors[command]?.acceptedRange else { return nil }
-            return (command, range)
-        }.sorted { $0.range.lowerBound < $1.range.lowerBound }
-    }
-    // Directional commands are idempotent, so the last one spoken decides the final state.
-    static func admitted(_ accepted: [(command: VideoCommand, range: Range<Int>)]) -> VideoCommand? { accepted.last?.command }
-}
+typealias VideoPhraseDetectors = CommandPhraseDetectors<VideoCommand>
