@@ -192,6 +192,11 @@ enum AppResolver {
         let target = key(spoken)
         guard !target.isEmpty else { return .none }
         let preferred = aliases[target] ?? []
+        // “Chrome” names the real browser even when a local Automator wrapper has that display name.
+        if target == "chrome", let browser = preferred.first {
+            let matches = candidates.filter { $0.id == browser }
+            if !matches.isEmpty { return uniqueAlias(matches) }
+        }
         let exact = candidates.filter { $0.names.contains { key($0) == target } }
         if exact.count == 1 { return .match(exact[0], .exact) }
         if exact.count > 1 {
@@ -360,11 +365,15 @@ struct InstalledAppCatalog {
     // ordinary folder is never followed into.
     static func listDirectory(_ url: URL) -> [URL] {
         guard url.pathExtension.lowercased() != "app" else { return [] }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey, .isHiddenKey]
         guard let entries = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { return [] }
+            options: [.skipsPackageDescendants]) else { return [] }
         return entries.filter { entry in
+            // Safari's supported /Applications link can carry Finder's hidden flag.
+            // The catalog still excludes dotfiles and staging/rollback names.
+            guard !entry.lastPathComponent.hasPrefix(".") else { return false }
             let values = try? entry.resourceValues(forKeys: Set(keys))
+            guard values?.isHidden != true || entry.path == "/Applications/Safari.app" else { return false }
             if entry.pathExtension.lowercased() == "app" { return values?.isDirectory == true || values?.isSymbolicLink == true }
             return values?.isDirectory == true && values?.isSymbolicLink != true && values?.isPackage != true
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }

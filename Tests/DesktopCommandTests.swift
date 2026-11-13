@@ -125,6 +125,8 @@ private final class Probe {
         let code = AppCandidate(id: "com.microsoft.VSCode", names: ["Code", "Visual Studio Code"], pid: 14)
         let running = [chrome, chatGPT, codex, code]
         check(AppCommandPlanner.decideSwitch("chrome", running: running) == .activate(chrome), "Chrome alias")
+        let chromeWrapper = AppCandidate(id: "example.workflow", names: ["Chrome"], pid: 20)
+        check(AppCommandPlanner.decideSwitch("chrome", running: [chromeWrapper, chrome]) == .activate(chrome), "Chrome alias selects the browser over a named wrapper")
         check(AppCommandPlanner.decideSwitch("chorme", running: running) == .activate(chrome), "Close spelling of a known alias")
         check(AppCommandPlanner.decideSwitch("chat gpt", running: running) == .activate(chatGPT), "Chat GPT is ChatGPT when it is open")
         check(AppCommandPlanner.decideSwitch("chat gpt", running: [chrome, codex]) == .activate(codex), "Chat GPT falls back to Codex")
