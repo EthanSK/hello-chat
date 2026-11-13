@@ -84,6 +84,8 @@ jobs:
               --title "$display_name ${HELLOCHAT_RELEASE_TAG#v}" --generate-notes \
               --notes 'Signed and notarized for Apple Silicon Macs running macOS 15 or later. Existing installations can use Check for Updates.'
           fi
+          release_id=$(gh release view "$HELLOCHAT_RELEASE_TAG" --json databaseId --jq .databaseId)
+          asset_api="repos/$GITHUB_REPOSITORY/releases/$release_id/assets"
           # GitHub exposes a digest for each fully accepted asset. After a
           # failed network response, read back before deciding to retry.
           for file in "$HELLOCHAT_BUILD_DIR/HelloChat-macOS-arm64.zip" \
@@ -92,14 +94,22 @@ jobs:
             name=${file##*/}
             digest="sha256:$(shasum -a 256 "$file" | awk '{print $1}')"
             for attempt in 1 2 3; do
-              asset=$(gh release view "$HELLOCHAT_RELEASE_TAG" --json assets | jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest // "unverified"')
+              assets=$(gh api "$asset_api")
+              asset=$(jq -r --arg name "$name" '.[] | select(.name == $name and .state == "uploaded") | .digest // "unverified"' <<< "$assets")
               if [[ "$asset" == "$digest" ]]; then break; fi
               [[ -z "$asset" ]] || exit 1
+              # GitHub can leave an uncommitted starter record after a failed
+              # upload. Clear only that exact placeholder on our verified draft.
+              starter=$(jq -r --arg name "$name" '.[] | select(.name == $name and .state == "starter") | .id' <<< "$assets")
+              if [[ -n "$starter" ]]; then
+                [[ "$starter" =~ ^[0-9]+$ ]]
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$starter"
+              fi
               if gh release upload "$HELLOCHAT_RELEASE_TAG" "$file"; then break; fi
               [[ "$attempt" == 3 ]] || sleep 15
             done
-            gh release view "$HELLOCHAT_RELEASE_TAG" --json assets | jq -e --arg name "$name" --arg digest "$digest" \
-              '.assets | any(.name == $name and .digest == $digest)' >/dev/null
+            gh api "$asset_api" | jq -e --arg name "$name" --arg digest "$digest" \
+              'any(.name == $name and .state == "uploaded" and .digest == $digest)' >/dev/null
           done
           gh release edit "$HELLOCHAT_RELEASE_TAG" --draft=false
       - name: Verify published bytes
