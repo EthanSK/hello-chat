@@ -12,7 +12,9 @@ private final class StartupEventLog: @unchecked Sendable {
 
 @main enum StartupSpeechTests {
     static func main() async throws {
-        func expect(_ value: Bool, _ message: String = "Startup speech check failed") { precondition(value, message) }
+        func expect(_ value: Bool, _ message: String = "Startup speech check failed", line: UInt = #line) {
+            precondition(value, message, line: line)
+        }
         guard CommandLine.arguments.count == 2 else { fatalError("Pass a task-owned fixture directory") }
         let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
         expect(root.path.contains(".noindex"))
@@ -20,7 +22,7 @@ private final class StartupEventLog: @unchecked Sendable {
         let fixture = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: fixture) }
         let store = StartupSpeechFile(directory: fixture)
-        let now = Date(), consumer = UUID()
+        let consumer = UUID()
 
         let skills = root.appendingPathComponent("skills-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: skills) }
@@ -251,6 +253,9 @@ private final class StartupEventLog: @unchecked Sendable {
         expect(resetting.openSeconds == 0, "Invalid frame durations are ignored")
         print("Startup boundaries: post-open pause, short pauses, launch quiet, 30 s limit, unaligned revisions and context resets passed")
 
+        // The mailbox expires old captures. Start the shared timestamp after
+        // the installer/recognition fixtures so slow CI setup doesn't age them.
+        let now = Date()
         let first = UUID()
         expect(await store.begin(id: first, text: "", truncated: false, at: now))
         let emptyOpening = try store.consume(voiceCreatedAt: now, threadID: consumer)

@@ -58,7 +58,12 @@ jobs:
           tag=$(python3 scripts/prepare-release.py --releases "$RUNNER_TEMP/releases.json" --plist Info.plist --run-number "$GITHUB_RUN_NUMBER" --commit "$GITHUB_SHA" --output "$RUNNER_TEMP/release-manifest.json")
           echo "HELLOCHAT_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
       - name: Run tests
-        run: zsh scripts/test.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=$(mktemp -d "$RUNNER_TEMP/HelloChatTests.noindex.XXXXXXXX")
+          trap 'rm -rf -- "$tests"' EXIT
+          HELLOCHAT_BUILD_DIR="$tests" zsh scripts/test.sh
       - name: Build signed Apple Silicon app
         run: zsh scripts/build.sh
       - name: Notarize and sign update
@@ -72,13 +77,31 @@ jobs:
           unset GH_TOKEN GITHUB_TOKEN
           test "$(gh api --hostname github.com user --jq .login)" = EthanSK
           display_name=$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$HELLOCHAT_BUILD_DIR/HelloChat.app/Contents/Info.plist")
-          gh release create "$HELLOCHAT_RELEASE_TAG" \
-            "$HELLOCHAT_BUILD_DIR/HelloChat-macOS-arm64.zip" \
-            "$HELLOCHAT_BUILD_DIR/SHA256SUMS" \
-            "$HELLOCHAT_BUILD_DIR/appcast.xml" \
-            "$RUNNER_TEMP/release-manifest.json" \
-            --target "$GITHUB_SHA" --title "$display_name ${HELLOCHAT_RELEASE_TAG#v}" \
-            --generate-notes --notes 'Signed and notarized for Apple Silicon Macs running macOS 15 or later. Existing installations can use Check for Updates.'
+          if release=$(gh release view "$HELLOCHAT_RELEASE_TAG" --json isDraft,targetCommitish); then
+            jq -e --arg commit "$GITHUB_SHA" '.isDraft and .targetCommitish == $commit' <<< "$release" >/dev/null
+          else
+            gh release create "$HELLOCHAT_RELEASE_TAG" --draft --target "$GITHUB_SHA" \
+              --title "$display_name ${HELLOCHAT_RELEASE_TAG#v}" --generate-notes \
+              --notes 'Signed and notarized for Apple Silicon Macs running macOS 15 or later. Existing installations can use Check for Updates.'
+          fi
+          # GitHub exposes a digest for each fully accepted asset. After a
+          # failed network response, read back before deciding to retry.
+          for file in "$HELLOCHAT_BUILD_DIR/HelloChat-macOS-arm64.zip" \
+                      "$HELLOCHAT_BUILD_DIR/SHA256SUMS" "$HELLOCHAT_BUILD_DIR/appcast.xml" \
+                      "$RUNNER_TEMP/release-manifest.json"; do
+            name=${file##*/}
+            digest="sha256:$(shasum -a 256 "$file" | awk '{print $1}')"
+            for attempt in 1 2 3; do
+              asset=$(gh release view "$HELLOCHAT_RELEASE_TAG" --json assets | jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest // "unverified"')
+              if [[ "$asset" == "$digest" ]]; then break; fi
+              [[ -z "$asset" ]] || exit 1
+              if gh release upload "$HELLOCHAT_RELEASE_TAG" "$file"; then break; fi
+              [[ "$attempt" == 3 ]] || sleep 15
+            done
+            gh release view "$HELLOCHAT_RELEASE_TAG" --json assets | jq -e --arg name "$name" --arg digest "$digest" \
+              '.assets | any(.name == $name and .digest == $digest)' >/dev/null
+          done
+          gh release edit "$HELLOCHAT_RELEASE_TAG" --draft=false
       - name: Verify published bytes
         shell: bash
         run: |
