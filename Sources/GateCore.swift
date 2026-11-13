@@ -27,6 +27,15 @@ enum VoiceAudioAction: String, CaseIterable, Hashable {
         case .silenceSpeakers, .unsilenceSpeakers: return true
         }
     }
+    // The phrase fields that request this action, in detection order.
+    var slots: [PhraseSlot] {
+        switch self {
+        case .muteMicrophone: return [.mutePhrase]
+        case .unmuteMicrophone: return [.unmutePhrase]
+        case .silenceSpeakers: return [.silentPhrase, .silencePhrase]
+        case .unsilenceSpeakers: return [.unsilencePhrase]
+        }
+    }
     func isMuted(in snapshot: VoiceSnapshot) -> Bool? {
         if controlsSpeakers { return snapshot.outputMuted }
         return snapshot.microphone.map { $0 == .muted }

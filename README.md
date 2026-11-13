@@ -24,6 +24,8 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Open Safari** / **Open app Safari** | Opens an installed app. Say the full app name when two apps sound similar. |
 | **Zoom in** / **Zoom out** | Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does. |
 
+Each phrase has its own short sound. Wake and End play at detection. Voice audio commands play a short detection tone when the controls are available, followed by their phrase sound when the requested state is confirmed. Video, app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
+
 For safe conversation about the app, call the helper **H Chat** and its End command **B Chat**. These are discussion names, not extra voice commands. The default dictionary no longer accepts the old UI-name alias or B/Be/Bee spellings as End. End commands use the same mention and negation filter as the other controls, so discussing a command is not treated as issuing it. Matching and transcript highlighting share the dictionary.
 
 Speech recognition runs on your Mac with a bundled Parakeet model through Core ML, using CPU and Neural Engine with GPU off. Hello Chat then drives Codex through its own Voice shortcut and End Voice control. There's no Agent Flow, proxy, server, account or API key involved in detection.
@@ -115,7 +117,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
 | Phrases | Wake, end, Voice audio, browser and desktop phrases, plus **Alternate spellings for default phrases**, dictionary editors and **Check speech recognition**. |
 | Resources | Hello Chat's own CPU and memory, and Core ML's estimated encoder placement. |
-| Sounds | **Sound effects** (on by default), with **Wake sound** and **End sound** previews. |
+| Sounds | **Sound effects** (on by default). Every phrase has its own short sound, with a preview button for each. |
 | Spotify | **Lower volume during chat**, off by default. Requires permission to control Spotify. |
 | Transcript Archive | **Save transcripts** (on by default), the archive location, and this Mac’s optional backup configuration. |
 | Updates | **Check for Updates…**, automatic checking and automatic downloads on release-configured builds. |

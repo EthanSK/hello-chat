@@ -11,6 +11,12 @@ enum ZoomDirection: String, CaseIterable, Hashable {
 
 enum AppCommandKind: String, Equatable {
     case switchApp, openApp
+    var slot: PhraseSlot {
+        switch self {
+        case .switchApp: return .switchAppPhrase
+        case .openApp: return .openAppPhrase
+        }
+    }
 }
 
 struct AppCommandCandidate: Equatable {

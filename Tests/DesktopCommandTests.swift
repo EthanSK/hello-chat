@@ -338,6 +338,63 @@ private final class Probe {
         check(interruptedResult.diagnostic == "session-locked" && probe.opened == openedBeforeLock, "A lock during catalog lookup prevents opening")
         check(commands.zoom(.zoomIn) == DesktopCommandResult(message: "Sent zoom in to Safari", diagnostic: "sent"), "Zoom reports dispatch")
 
+        // Command sounds: `dispatched` runs once when macOS accepts the request, before front-app
+        // confirmation, and never for ignored, unresolved, failed, locked or cancelled work.
+        final class Timeline { var events: [String] = [] }
+        let timeline = Timeline()
+        probe.session = .interactive; probe.verifies = true
+        var slow = environment
+        slow.activate = { _ in timeline.events.append("activate"); return true }
+        slow.open = { _ in timeline.events.append("open"); return true }
+        slow.isFrontmost = { _ in false }
+        slow.sleep = { _ in timeline.events.append("sleep") }
+        let pending = DesktopCommands(environment: slow)
+        result = await pending.perform(command(.switchApp, "chrome")) { timeline.events.append("sound") }
+        check(Array(timeline.events.prefix(2)) == ["activate", "sound"] && timeline.events.filter { $0 == "sound" }.count == 1
+              && result.diagnostic == "dispatched", "Switch sounds once at dispatch, without waiting for the app to come forward")
+        timeline.events.removeAll()
+        result = await pending.perform(command(.openApp, "safari", bare: true)) { timeline.events.append("sound") }
+        check(Array(timeline.events.prefix(2)) == ["open", "sound"] && timeline.events.filter { $0 == "sound" }.count == 1
+              && result.diagnostic == "dispatched", "Open sounds once when the open request is accepted")
+        var sounds = 0
+        for name in ["chrome", "codex"] {
+            _ = await commands.perform(command(.switchApp, name)) { sounds += 1 }
+        }
+        check(sounds == 2, "The spoken app name doesn't change whether the command sounds")
+        sounds = 0
+        _ = await commands.perform(command(.openApp, "door", bare: true)) { sounds += 1 }
+        _ = await commands.perform(command(.switchApp, "safari")) { sounds += 1 }
+        probe.verifies = false
+        _ = await commands.perform(command(.openApp, "safari", bare: true)) { sounds += 1 }
+        probe.verifies = true
+        var refusing = environment
+        refusing.activate = { _ in false }
+        refusing.open = { _ in false }
+        _ = await DesktopCommands(environment: refusing).perform(command(.switchApp, "chrome")) { sounds += 1 }
+        _ = await DesktopCommands(environment: refusing).perform(command(.openApp, "safari", bare: true)) { sounds += 1 }
+        probe.session = .locked
+        _ = await commands.perform(command(.switchApp, "chrome")) { sounds += 1 }
+        probe.session = .interactive
+        _ = await DesktopCommands(environment: interrupted).perform(command(.openApp, "safari")) { sounds += 1 }
+        probe.session = .interactive
+        var locksAfterOpening = environment
+        locksAfterOpening.open = { _ in probe.session = .locked; return true }
+        let lateOpen = await DesktopCommands(environment: locksAfterOpening).perform(command(.openApp, "safari")) { sounds += 1 }
+        check(lateOpen.diagnostic == "session-locked", "A lock while macOS opens an app suppresses the pending cue")
+        probe.session = .interactive
+        let cancelled = Task { await commands.perform(command(.switchApp, "chrome")) { timeline.events.append("cancelled sound") } }
+        cancelled.cancel()
+        check(await cancelled.value.diagnostic == "cancelled", "A cancelled command does nothing")
+        check(sounds == 0 && !timeline.events.contains("cancelled sound"),
+              "Ordinary speech, unknown apps, vanished bundles, refusals, locks and cancellations stay silent")
+        _ = commands.zoom(.zoomOut) { sounds += 1 }
+        var blocked = environment
+        blocked.zoom = shortcut(KeyRecorder(), trusted: false)
+        _ = DesktopCommands(environment: blocked).zoom(.zoomIn) { sounds += 1 }
+        blocked.zoom = shortcut(KeyRecorder(), session: .locked)
+        _ = DesktopCommands(environment: blocked).zoom(.zoomIn) { sounds += 1 }
+        check(sounds == 1, "Zoom sounds only when its keys are sent")
+
         print("Passed \(checks) desktop command checks")
     }
 }

@@ -739,17 +739,12 @@ struct SettingsView: View {
             }
             Section("Sounds") {
                 Toggle("Sound effects", isOn: $model.soundEffects).accessibilityIdentifier("soundEffects")
-                HStack {
-                    Button("Wake sound") { model.previewSound(.wake) }
-                    Button("End sound") { model.previewSound(.ended) }
-                }.disabled(!model.soundEffects)
-                HStack {
-                    Button("Mute sound") { model.previewSound(.microphoneMuted) }
-                    Button("Unmute sound") { model.previewSound(.microphoneUnmuted) }
-                }.disabled(!model.soundEffects)
-                HStack {
-                    Button("Silence sound") { model.previewSound(.speakersMuted) }
-                    Button("Unsilence sound") { model.previewSound(.speakersUnmuted) }
+                // Every phrase has its own sound; preview them to learn which is which.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading) {
+                    ForEach(PhraseSlot.allCases) { slot in
+                        Button("\(slot.soundTitle) sound") { model.previewSound(slot.cue) }
+                            .accessibilityIdentifier("previewSound\(slot.cue.rawValue)")
+                    }
                 }.disabled(!model.soundEffects)
             }
             Section("Spotify") {

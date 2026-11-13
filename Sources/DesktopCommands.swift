@@ -79,20 +79,24 @@ struct DesktopCommandResult: Equatable {
 
     init(environment: Environment = Environment()) { self.environment = environment }
 
-    func perform(_ candidate: AppCommandCandidate) async -> DesktopCommandResult {
+    // `dispatched` runs once, when macOS accepts the switch/open request or the zoom keys are sent:
+    // before front-app confirmation, and never for ignored, unresolved, blocked or cancelled work.
+    func perform(_ candidate: AppCommandCandidate, dispatched: () -> Void = {}) async -> DesktopCommandResult {
         if let unavailable = unavailable() { return unavailable }
         switch candidate.kind {
         case .switchApp:
-            return await carry(AppCommandPlanner.decideSwitch(candidate.name, running: environment.running()))
+            return await carry(AppCommandPlanner.decideSwitch(candidate.name, running: environment.running()), dispatched: dispatched)
         case .openApp:
-            return await carry(AppCommandPlanner.decideOpen(candidate, installed: await installedApps()))
+            return await carry(AppCommandPlanner.decideOpen(candidate, installed: await installedApps()), dispatched: dispatched)
         }
     }
 
-    func zoom(_ direction: ZoomDirection) -> DesktopCommandResult {
+    func zoom(_ direction: ZoomDirection, dispatched: () -> Void = {}) -> DesktopCommandResult {
         let target = environment.frontmostName() ?? "the front app"
         switch environment.zoom.perform(direction) {
-        case .success: return DesktopCommandResult(message: "Sent \(direction.title) to \(target)", diagnostic: "sent")
+        case .success:
+            dispatched()
+            return DesktopCommandResult(message: "Sent \(direction.title) to \(target)", diagnostic: "sent")
         case .failure(.desktopUnavailable(let state)): return DesktopCommandResult(message: state.message, diagnostic: "session-\(state.rawValue)")
         case .failure(.accessibilityPermissionMissing):
             return DesktopCommandResult(message: "Allow Accessibility for Hello Chat, then try again.", diagnostic: "accessibility")
@@ -100,7 +104,7 @@ struct DesktopCommandResult: Equatable {
         }
     }
 
-    private func carry(_ decision: AppCommandDecision) async -> DesktopCommandResult {
+    private func carry(_ decision: AppCommandDecision, dispatched: () -> Void) async -> DesktopCommandResult {
         // The catalog can finish after a lock, stop, or quit. Recheck just before dispatch.
         if let unavailable = unavailable() { return unavailable }
         switch decision {
@@ -110,6 +114,7 @@ struct DesktopCommandResult: Equatable {
             guard environment.activate(app) else {
                 return DesktopCommandResult(message: "Couldn't switch to \(app.displayName).", diagnostic: "activate-failed")
             }
+            dispatched()
             return await confirm(app, done: "Switched to \(app.displayName)",
                 pending: "Asked \(app.displayName) to come forward, but it isn't in front yet.")
         case .open(let app):
@@ -120,6 +125,8 @@ struct DesktopCommandResult: Equatable {
             guard await environment.open(app) else {
                 return DesktopCommandResult(message: "Couldn't open \(app.displayName).", diagnostic: "open-failed")
             }
+            if let unavailable = unavailable() { return unavailable }
+            dispatched()
             return await confirm(app, done: "Opened \(app.displayName)", pending: "Opening \(app.displayName). It isn't in front yet.")
         }
     }

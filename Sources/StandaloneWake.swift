@@ -69,6 +69,7 @@ struct StandaloneWake {
     private var configuration: [PhrasePattern] = []
     private var rejectsNegated = false
     private(set) var acceptedRange: Range<Int>?
+    private(set) var acceptedPatternIndex: Int?
 
     mutating func reset() { self = StandaloneWake(requiredPause: requiredPause) }
     mutating func resetContext() {
@@ -79,6 +80,7 @@ struct StandaloneWake {
         waitingForPause = false
         audioTime = nil
         acceptedRange = nil
+        acceptedPatternIndex = nil
     }
     mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
         audioTime = time
@@ -114,9 +116,19 @@ struct StandaloneWake {
         guard heardSpeech, checkedRevision != revision || waitingForPause else { return false }
         // Alternative command wording shares one occurrence count, so a revised
         // hypothesis from "mute chat" to "silent chat" cannot toggle twice.
-        var candidates: [(start: Int, end: Int)] = []
-        for pattern in patterns { candidates.append(contentsOf: pattern.matches(in: context, timings: wordTimings)) }
-        candidates = Array(Set(candidates.map { $0.start..<$0.end })).map { ($0.lowerBound, $0.upperBound) } // Two aliases for one action can cover the same occurrence.
+        var patternByRange: [Range<Int>: (index: Int, exact: Bool)] = [:]
+        for (index, pattern) in patterns.enumerated() {
+            let phraseWords = PhraseMatcher.words(pattern.text)
+            for match in pattern.matches(in: context, timings: wordTimings) {
+                let range = match.start..<match.end
+                let exact = context[range].elementsEqual(phraseWords)
+                // Keep one occurrence for a shared action. The exact wording
+                // owns its sound when another slot's dictionary also matches.
+                if let previous = patternByRange[range], previous.exact || !exact { continue }
+                patternByRange[range] = (index, exact)
+            }
+        }
+        var candidates = patternByRange.keys.map { (start: $0.lowerBound, end: $0.upperBound) }
         candidates.sort { left, right in left.start == right.start ? left.end < right.end : left.start < right.start }
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
         let audioRanges: [Range<Double>?] = candidates.map { match in
@@ -169,6 +181,7 @@ struct StandaloneWake {
             break
         }
         acceptedRange = accepted.map { $0.start..<$0.end }
+        acceptedPatternIndex = acceptedRange.flatMap { patternByRange[$0]?.index }
         let directAddress = accepted != nil
         checkedRevision = revision
         // Monotonic occurrence counts prevent corrections to an old sentence

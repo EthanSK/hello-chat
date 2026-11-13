@@ -43,6 +43,8 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/VideoBridgeTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/AppCommands.swift Sources/DesktopCommands.swift Tests/DesktopCommandTests.swift -o "$build_dir/DesktopCommandTests" -framework AppKit -framework ApplicationServices
 "$build_dir/DesktopCommandTests"
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/StandaloneWake.swift Sources/VideoBridge.swift Sources/AppCommands.swift Sources/Diagnostics.swift Sources/FeedbackSounds.swift Tests/FeedbackSoundTests.swift -o "$build_dir/FeedbackSoundTests" -framework AppKit -framework Combine
+"$build_dir/FeedbackSoundTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/PhraseHighlights.swift Tests/PhraseHighlightTests.swift -o "$build_dir/PhraseHighlightTests"
 "$build_dir/PhraseHighlightTests"
 
