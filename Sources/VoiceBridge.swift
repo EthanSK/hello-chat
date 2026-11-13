@@ -257,6 +257,14 @@ struct VoiceBridge {
         guard let pid, AXIsProcessTrusted(), codexProcess(pid) else { return Controls() }
         let root = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(root, 0.25)
+        // A fresh Codex process can expose only its native window shell until
+        // an accessibility client requests its web controls. Ask before the
+        // readiness scan; keep checking real controls instead of assuming ready.
+        // Electron can apply this request while returning an unsupported error,
+        // so the fresh tree below, not the setter result, decides readiness.
+        if attribute("AXEnhancedUserInterface", root) as? Bool != true {
+            _ = AXUIElementSetAttributeValue(root, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        }
         var result = Controls()
         var readFailed = false
         func read(_ name: String, _ element: AXUIElement, required: Bool = true) -> CFTypeRef? {
