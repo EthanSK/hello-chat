@@ -44,9 +44,11 @@ struct MicrophoneOwnership {
     }
 }
 
-// One list owns all seven default fields, their saved keys and their dictionary identity.
+// One list owns every default field, its saved key and its dictionary identity.
+// The two browser-video slots come last so Voice fields keep their order.
 enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
+    case pauseVideoPhrase, playVideoPhrase
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -57,6 +59,8 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .silentPhrase: return "Silent phrase"
         case .silencePhrase: return "Silence phrase"
         case .unsilencePhrase: return "Unsilence phrase"
+        case .pauseVideoPhrase: return "Pause video phrase"
+        case .playVideoPhrase: return "Play video phrase"
         }
     }
     var defaultText: String {
@@ -68,8 +72,14 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .silentPhrase: return "Silent Chat"
         case .silencePhrase: return "Silence Chat"
         case .unsilencePhrase: return "Unsilence Chat"
+        case .pauseVideoPhrase: return "Pause video"
+        case .playVideoPhrase: return "Play video"
         }
     }
+    // Browser-video phrases go through Agent Flow Bridge and never reach Codex Voice.
+    var controlsVideo: Bool { self == .pauseVideoPhrase || self == .playVideoPhrase }
+    static let voiceSlots = allCases.filter { !$0.controlsVideo }
+    static let videoSlots = allCases.filter(\.controlsVideo)
     var ending: Bool { self == .sleepPhrase }
     var identifier: String { self == .sleepPhrase ? "endPhrase" : rawValue }
     func isDefault(_ text: String) -> Bool { PhraseMatcher.words(text) == PhraseMatcher.words(defaultText) }
@@ -166,6 +176,14 @@ struct PhraseMatcher {
     static let silentPhrase = PhraseSlot.silentPhrase.defaultText.lowercased(), silencePhrase = PhraseSlot.silencePhrase.defaultText.lowercased(), unsilencePhrase = PhraseSlot.unsilencePhrase.defaultText.lowercased()
     static let microphonePhrases = [mutePhrase]
     static let controlPhrases = [mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase]
+    // Ethan's natural "pause the video" / "play video". Verbs stay directional: "play" never
+    // matches pause, and only the listed determiners may sit between the verb and "video".
+    static let pauseVideoPhrase = PhraseSlot.pauseVideoPhrase.defaultText.lowercased(), playVideoPhrase = PhraseSlot.playVideoPhrase.defaultText.lowercased()
+    static let videoPhrases = [pauseVideoPhrase, playVideoPhrase]
+    private static let videoVariants: [String: Set<String>] = [
+        pauseVideoPhrase: combinations(["pause", "paws"], ["video", "thevideo", "thisvideo"]),
+        playVideoPhrase: combinations(["play"], ["video", "thevideo", "thisvideo"]),
+    ]
     private static let defaultEndings = Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { (words($0.defaultText).joined(), $0.ending) }) // Normalize defaults once; this lookup runs for every candidate span.
     private static let audioDictionaryNames: Set<String> = ["chat", "chad", "chatt"] // Deliberately narrower than the wake dictionary; never turn "unmute" into "mute".
 
@@ -180,9 +198,9 @@ struct PhraseMatcher {
     static func knownSpellings(for phrase: String, similar: Bool, ending: Bool, dictionaries: PhraseDictionaries = .init()) -> [String] {
         let expected = words(phrase), compact = expected.joined()
         guard !compact.isEmpty else { return [] }
-        guard similar else { return [phrase] }
+        guard similar || videoVariants[expected.joined(separator: " ")] != nil else { return [phrase] }
         guard let slot = PhraseSlot.allCases.first(where: { $0.isDefault(phrase) && $0.ending == ending }) else { return [phrase] }
-        if let entries = dictionaries[words(slot.defaultText).joined()] {
+        if similar, let entries = dictionaries[words(slot.defaultText).joined()] {
             return [phrase] + entries.filter { words($0).joined() != compact }
         }
         var candidates: Set<String>
@@ -192,6 +210,8 @@ struct PhraseMatcher {
             candidates = endVariants.union(observedEndVariants)
         } else if controlPhrases.contains(expected.joined(separator: " ")) {
             candidates = combinations(oneEdits(expected[0]), audioDictionaryNames)
+        } else if let variants = videoVariants[expected.joined(separator: " ")] {
+            candidates = variants
         } else {
             return [phrase]
         }
@@ -209,7 +229,8 @@ struct PhraseMatcher {
         let expected = words(phrase)
         if words(candidate).joined() == expected.joined() { return .exact }
         if (!ending && expected == ["hello", "chat"]) || (ending && expected == ["bye", "chat"])
-            || controlPhrases.contains(expected.joined(separator: " ")) {
+            || controlPhrases.contains(expected.joined(separator: " "))
+            || videoVariants[expected.joined(separator: " ")] != nil {
             return .dictionary
         }
         return .fuzzy
@@ -344,7 +365,10 @@ struct PhraseMatcher {
     }
     private static func equivalentCompact(_ actual: String, expected: [String], compact: String, similar: Bool, allowEndAddressEdit: Bool, dictionaries: PhraseDictionaries = .init()) -> Bool {
         if actual == compact { return !compact.isEmpty }
-        guard similar, defaultEndings[compact] == allowEndAddressEdit else { return false }
+        guard defaultEndings[compact] == allowEndAddressEdit else { return false }
+        let naturalVideoVariant = videoVariants[expected.joined(separator: " ")]?.contains(actual) == true &&
+            !actual.hasPrefix("paws")
+        if !similar { return naturalVideoVariant }
         if dictionaries[compact] != nil {
             return dictionaries.contains(actual, for: compact) // Explicit overrides replace generated alternatives, including the open-ended wake rule.
         }
@@ -368,7 +392,9 @@ struct PhraseMatcher {
                     && oneEditApart(Array(verb), Array(expectedVerb)))
             }
         }
-        return false // Edited/custom phrases never acquire generated spelling alternatives.
+        // Ordinary variants such as "pause the video" work even without similar
+        // spellings. Edited/custom phrases never acquire generated alternatives.
+        return videoVariants[expected.joined(separator: " ")]?.contains(actual) == true
     }
     private static func oneEditApart(_ a: [Character], _ b: [Character]) -> Bool {
         guard abs(a.count - b.count) <= 1 else { return false }
@@ -393,9 +419,10 @@ struct PhraseMatcher {
         let maxSpan = max(common ? maximumDefaultSpan : expected.count + 1, overrideSpan) // Explicit aliases can be longer; preserve existing scan bounds for every unmodified phrase.
         var result: [(start: Int, end: Int)] = [], start = 0
         while start < tokens.count {
-            if start > 0, tokens[start - 1] == "un", controlPhrases.contains(expected.joined(separator: " ")),
+            if start > 0, tokens[start - 1] == "un",
+               controlPhrases.contains(expected.joined(separator: " ")) || videoPhrases.contains(expected.joined(separator: " ")),
                expected.first?.hasPrefix("un") == false {
-                start += 1; continue // A split "un mute" / "un silence" must never also match the opposite command.
+                start += 1; continue // A split "un mute" / "un silence" / "un pause" must never also match the opposite command.
             }
             var found = false
             var candidate = ""

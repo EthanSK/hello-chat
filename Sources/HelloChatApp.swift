@@ -423,6 +423,7 @@ struct MainView: View {
                         .disabled(model.busy && !preparing && !model.enabled)
                         .accessibilityIdentifier("listeningToggle")
                     PhraseFields(model: model)
+                    VideoControls(model: model, bridge: model.videoBridge)
                     // Ethan wants to change the microphone from the home page.
                     // Reuse Settings' observed inputs and saved selection.
                     MicrophoneSettings(inputs: model.inputs)
@@ -452,7 +453,9 @@ struct MainView: View {
                 Button { openWindow(id: "settings") } label: { Label("Settings", systemImage: "gearshape") }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refreshPermissions() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshPermissions(); model.refreshVideoBridge() // A status check only; no playback change.
+        }
     }
 }
 
@@ -486,12 +489,52 @@ struct OpenSettingsButton: View {
 // Both windows edit the same saved phrases, using the existing native form fields.
 private struct PhraseFields: View {
     @ObservedObject var model: GateModel
+    var slots: [PhraseSlot] = PhraseSlot.voiceSlots
     var body: some View {
-        ForEach(PhraseSlot.allCases) { slot in
+        ForEach(slots) { slot in
             PhraseField(slot: slot, text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
                 set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }), similar: model.similarPhrases,
                 dictionary: Binding(get: { model.phraseDictionaries[slot.rawValue] },
                     set: { model.phraseDictionaries[slot.rawValue] = $0 }))
+        }
+    }
+}
+
+// Browser video control needs a connected Agent Flow Bridge. Its phrases and buttons stay visible
+// but greyed out until then; the install link below them stays active.
+private struct VideoControls: View {
+    @ObservedObject var model: GateModel
+    @ObservedObject var bridge: VideoBridge
+    private var available: Bool { bridge.availability.isAvailable }
+    var body: some View {
+        PhraseFields(model: model, slots: PhraseSlot.videoSlots)
+            .disabled(!available)
+        HStack(spacing: 8) {
+            Text("Browser video")
+            Spacer(minLength: 8)
+            Button { model.requestVideo(.pause) } label: { Label("Pause", systemImage: "pause.fill") }
+                .accessibilityLabel("Pause browser video").accessibilityIdentifier("pauseVideoButton")
+            Button { model.requestVideo(.play) } label: { Label("Play", systemImage: "play.fill") }
+                .accessibilityLabel("Play browser video").accessibilityIdentifier("playVideoButton")
+        }
+        .disabled(!available)
+        .help(bridge.availability.detail)
+        if !available {
+            HStack(spacing: 5) {
+                Image(systemName: "info.circle").foregroundStyle(.secondary).accessibilityHidden(true)
+                Link("Install Agent Flow Bridge to use", destination: VideoBridge.installURL)
+                    .help(bridge.availability.detail)
+                    .accessibilityIdentifier("installAgentFlowBridgeLink")
+                Spacer(minLength: 8)
+                if bridge.availability == .checking {
+                    ProgressView().controlSize(.small).accessibilityLabel("Checking Agent Flow Bridge")
+                } else {
+                    Button { model.refreshVideoBridge() } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.borderless).help("Check Agent Flow Bridge again")
+                        .accessibilityLabel("Check Agent Flow Bridge again")
+                        .accessibilityIdentifier("videoBridgeRefreshButton")
+                }
+            }
         }
     }
 }
@@ -659,7 +702,8 @@ struct SettingsView: View {
             }
             Section("Phrases") {
                 PhraseFields(model: model)
-                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Repeating a command keeps its requested state.")
+                VideoControls(model: model, bridge: model.videoBridge)
+                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Pause video and Play video control the browser video through Agent Flow Bridge. Repeating a command keeps its requested state.")
                     .foregroundStyle(.secondary)
                 Toggle("Alternate spellings for default phrases", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")

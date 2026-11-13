@@ -87,6 +87,19 @@ import SwiftUI
     @Published var unsilencePhrase = PhraseSlot.unsilencePhrase.savedValue() {
         didSet { UserDefaults.standard.set(unsilencePhrase, forKey: "unsilencePhrase"); updatePhrases() }
     }
+    @Published var pauseVideoPhrase = PhraseSlot.pauseVideoPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(pauseVideoPhrase, forKey: "pauseVideoPhrase"); updatePhrases() }
+    }
+    @Published var playVideoPhrase = PhraseSlot.playVideoPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(playVideoPhrase, forKey: "playVideoPhrase"); updatePhrases() }
+    }
+    // Browser video control through Agent Flow Bridge. Independent of Codex Voice.
+    let videoBridge = VideoBridge()
+    private var videoPhraseDetectors = VideoPhraseDetectors()
+    var videoPhrases: [String] { [pauseVideoPhrase, playVideoPhrase].filter { !PhraseMatcher.words($0).isEmpty } }
+    private var videoPatterns: [VideoCommand: PhrasePattern] {
+        Dictionary(uniqueKeysWithValues: VideoCommand.allCases.map { ($0, pattern(for: $0.slot)) })
+    }
     @Published var phraseDictionaries = UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]] ?? [:] {
         didSet { UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); rebuildPhraseDictionaries(); updatePhrases() }
     }
@@ -119,6 +132,8 @@ import SwiftUI
         case .silentPhrase: return \.silentPhrase
         case .silencePhrase: return \.silencePhrase
         case .unsilencePhrase: return \.unsilencePhrase
+        case .pauseVideoPhrase: return \.pauseVideoPhrase
+        case .playVideoPhrase: return \.playVideoPhrase
         }
     }
     var controlPhrases: [String] { VoiceAudioAction.allCases.flatMap { phrases(for: $0) } }
@@ -232,6 +247,7 @@ import SwiftUI
         listener.onAudioActivity = { [weak self] level, seconds, audioTime in
             self?.standaloneWake.audio(level: level, seconds: seconds, at: audioTime)
             for action in VoiceAudioAction.allCases { self?.audioPhraseDetectors[action, default: StandaloneWake()].audio(level: level, seconds: seconds, at: audioTime) }
+            self?.videoPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
             // Raw speech can resume before its first text hypothesis arrives.
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
@@ -291,7 +307,21 @@ import SwiftUI
         updatePhrases()
         if enableSpotifyControl { spotifyVolume.setEnabled(lowerSpotifyDuringChat) }
     }
+    // Spoken or button video control. Sent once; Agent Flow Bridge picks the browser video and
+    // answers with the outcome. Nothing here changes Voice, the microphone or the busy state.
+    func requestVideo(_ command: VideoCommand) {
+        guard !quitting else { return }
+        Diagnostics.shared.record("video.command.requested", info: ["action": command.rawValue,
+            "bridge": videoBridge.availability.isAvailable ? "available" : "unavailable"])
+        videoBridge.send(command) { [weak self] outcome in
+            Diagnostics.shared.record("video.command.result", info: ["action": command.rawValue, "outcome": outcome.diagnostic])
+            guard let self, !self.quitting else { return }
+            self.lastEvent = outcome.summary(for: command)
+        }
+    }
+    func refreshVideoBridge() { if !quitting { videoBridge.refresh() } }
     func initializeListening() {
+        refreshVideoBridge()
         guard !listeningInitialized else { return }
         // Screen enumeration can settle after model construction. Read it at
         // window startup before choosing the already-docked behavior.
@@ -440,9 +470,10 @@ import SwiftUI
     }
     private func resetAudioPhrases() {
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
+        videoPhraseDetectors.reset()
     }
     private func updatePhrases() {
-        listener.contextualPhrases = [wakePhrase, sleepPhrase] + controlPhrases
+        listener.contextualPhrases = [wakePhrase, sleepPhrase] + controlPhrases + videoPhrases
         endPhrase.reset()
         standaloneWake.reset()
         resetAudioPhrases()
@@ -762,6 +793,7 @@ import SwiftUI
         // microphone ownership must not pause H Chat's existing recognizer.
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action, default: StandaloneWake()].update(text, at: Diagnostics.now, timings: timings) }
+        videoPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
         // Keep collecting while a keyword waits for its audio pause. An accepted
         // End below cancels the startup file before dispatching the native command.
@@ -793,6 +825,7 @@ import SwiftUI
                 let values = phrases(for: action)
                 if !values.isEmpty { audioPhraseDetectors[action, default: StandaloneWake()].cancelPending(patterns: patterns(for: action), endPattern: endPattern) }
             } // An explicit End wins over audio commands in the same transcript.
+            videoPhraseDetectors.cancelPending(patterns: videoPatterns, endPattern: endPattern) // ...and over video commands.
             cancelStartupSpeech()
             standaloneWake.cancelPending(patterns: [wakePattern], endPattern: endPattern)
             Diagnostics.shared.record("phrase.end.detected", info: ["busy": String(busy), "voice": microphone?.rawValue ?? "unknown"])
@@ -805,6 +838,15 @@ import SwiftUI
                 voiceTask = Task { await muteVoice(event: "Heard \(sleepPhrase)", feedbackAlreadyPlayed: true) }
             }
             return
+        }
+        // Browser video commands: consumed whether or not the bridge is available, never busy-gated,
+        // and never routed to beginVoice. Earlier wakes in the same transcript are consumed too.
+        let videoCommands = videoPhraseDetectors.poll(at: Diagnostics.now, patterns: videoPatterns)
+        if let command = VideoPhraseDetectors.admitted(videoCommands) {
+            for accepted in videoCommands {
+                standaloneWake.cancelPending(patterns: [wakePattern], endPattern: pattern(for: accepted.command.slot))
+            }
+            if !quitting { requestVideo(command) }
         }
         let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int)? in
             let values = phrases(for: action)
@@ -914,6 +956,7 @@ import SwiftUI
         updateListeningDelay = dockDelay
         if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
+        videoBridge.stop()
         let previous = voiceTask
         voice.detachForQuit()
         stopLocal()
