@@ -6,10 +6,44 @@ import Foundation
 import SQLite3
 
 struct VoiceTimeline {
+    static func databaseURL(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
+        let codex = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? home.appendingPathComponent(".codex", isDirectory: true)
+        return codex.appendingPathComponent("sqlite/codex.db")
+    }
+
     // This private schema is supplementary evidence, not a public Codex API.
     // Temporary calls can be memory-only, so their actual controls still win.
     static func hasActiveCall(database: URL, since: Date) -> Bool? {
         activeSessions(database: database, since: since).map { !$0.isEmpty }
+    }
+
+    // Verify the same session's End even if a replacement has since started.
+    static func hasEnded(database: URL, thread: UUID, session: UUID, since: Date) -> Bool? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK,
+              let db else { if let db { sqlite3_close(db) }; return nil }
+        defer { sqlite3_close(db) }
+        let sql = """
+            SELECT 1 FROM thread_timeline_ledger
+            WHERE host_id = 'local' AND lower(thread_id) = ? AND json_valid(payload_json)
+              AND lower(json_extract(payload_json, '$.sessionId')) = ?
+              AND json_extract(payload_json, '$.type') = 'session-ended'
+              AND json_extract(payload_json, '$.occurredAtMs') >= ?
+            LIMIT 1
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, thread.uuidString.lowercased(), -1, transient)
+        sqlite3_bind_text(statement, 2, session.uuidString.lowercased(), -1, transient)
+        sqlite3_bind_double(statement, 3, since.timeIntervalSince1970 * 1000)
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW: return true
+        case SQLITE_DONE: return false
+        default: return nil
+        }
     }
 
     static func activeSessions(database: URL, since: Date) -> Set<String>? {
@@ -68,9 +102,7 @@ struct VoiceTimeline {
     private let database: URL
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
-        let codex = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) }
-            ?? home.appendingPathComponent(".codex", isDirectory: true)
-        database = codex.appendingPathComponent("sqlite/codex.db")
+        database = VoiceTimeline.databaseURL(home: home)
     }
 
     func start() {
@@ -129,7 +161,12 @@ struct VoiceTimeline {
                     applicationAbsent: evidence.1, savedCallEnded: boundary.suppressControls)
                 self.installAccessibilityObserver(pid: state.pid, callElements: evidence.3)
                 self.installFileObservers()
-                self.onChange?(.init(presence: self.decision.presence, callIdentifier: self.boundaries.callIdentifier))
+                // Spotify tolerates ledger-only presence and incomplete AX
+                // reads. Peer End requires fresh evidence from both sources.
+                let verified = controlsPresent && state.accessibilityAllowed && state.pid != nil
+                    && evidence.2?.count == 1 ? evidence.2?.first : nil
+                self.onChange?(.init(presence: self.decision.presence, callIdentifier: self.boundaries.callIdentifier,
+                                     verifiedCallIdentifier: verified))
                 self.refreshAgain = self.refreshAgain || repeatRead
             } while self.refreshAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.refreshTask = nil }

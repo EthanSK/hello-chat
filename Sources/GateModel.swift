@@ -10,11 +10,14 @@ import SwiftUI
     @Published var soundEffects = UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true {
         didSet { UserDefaults.standard.set(soundEffects, forKey: "soundEffects") }
     }
-    let spotifyVolume = SpotifyVoiceVolume()
+    private let voiceCalls = VoiceCallMonitor()
+    private let voicePeerPriority = VoicePeerPriority()
+    let spotifyVolume: SpotifyVoiceVolume
     @Published var lowerSpotifyDuringChat = UserDefaults.standard.bool(forKey: "lowerSpotifyDuringChat") {
         didSet {
             UserDefaults.standard.set(lowerSpotifyDuringChat, forKey: "lowerSpotifyDuringChat")
             spotifyVolume.setEnabled(lowerSpotifyDuringChat)
+            updateVoiceCallMonitoring()
         }
     }
     @Published private(set) var voiceText = "Chat is off"
@@ -218,6 +221,7 @@ import SwiftUI
     // The meter diagnostic constructs this model before normal app ownership;
     // it must not start the optional Spotify side effect.
     init(enableSpotifyControl: Bool = true) {
+        spotifyVolume = SpotifyVoiceVolume(monitor: voiceCalls)
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
         desktopSession.onChange = { [weak self] state in
             guard let self else { return }
@@ -324,7 +328,19 @@ import SwiftUI
         listener.model = speechModel
         updateComputeLabel()
         updatePhrases()
-        if enableSpotifyControl { spotifyVolume.setEnabled(lowerSpotifyDuringChat) }
+        if enableSpotifyControl {
+            voiceCalls.onChange = { [weak self] state in
+                self?.spotifyVolume.observe(state)
+                self?.voicePeerPriority.observe(state)
+            }
+            spotifyVolume.setEnabled(lowerSpotifyDuringChat)
+            updateVoiceCallMonitoring()
+        }
+    }
+
+    private func updateVoiceCallMonitoring() {
+        if lowerSpotifyDuringChat || voicePeerPriority.enabled { voiceCalls.start() }
+        else { voiceCalls.stop() }
     }
     // Spoken or button video control. Sent once; Agent Flow Bridge picks the browser video and
     // answers with the outcome. Nothing here changes Voice, the microphone or the busy state.
@@ -1016,6 +1032,7 @@ import SwiftUI
         updateListeningDelay = nil
         quitting = false; busy = false; voiceTask = nil
         spotifyVolume.setEnabled(lowerSpotifyDuringChat)
+        updateVoiceCallMonitoring()
         microphone = await voice.reattachAfterFailedUpdate()
         showListening()
         // Re-evaluate the saved listening choice and current docking state.
@@ -1027,10 +1044,12 @@ import SwiftUI
         updateListeningDelay = dockDelay
         if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
+        voiceCalls.stop()
         videoBridge.stop()
         let previous = voiceTask
         voice.detachForQuit()
         stopLocal()
+        await voicePeerPriority.shutdown()
         await previous?.value
         archive.flush()
         await startupSpeechFile.flush()

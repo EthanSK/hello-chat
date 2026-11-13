@@ -197,3 +197,8 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 - Startup speech must use the same wake pattern as the detector. Re-matching only the base phrase drops the opening after an explicit dictionary alias; preserve alias matching in both anchor alignment and repeated-wake-only checks, including aliases longer than the earlier 12-word search window.
 
 - User correction, 8 November 2026: the Heard section must not grow indefinitely. Scrolling and selection apply only within the current recognition batch, preserving the pre-history implementation’s existing reset/quiet rules. The accumulating TranscriptHistory layer added in 976808c was an unintended behavior change and is removed; bind the native reader to GateModel.transcript and reset its held view at listener.onSession. Do not reintroduce cross-batch retention. SpeechOnset’s 2-second quiet boundary, model utterance completion and SpeechRollover’s 120-second / 45-second-plus-0.8-second-quiet thresholds remain recognizer-owned and unchanged. The JSON transcript archive and startup speech mailbox are separate and must retain their own existing boundaries.
+
+## Cross-Mac Voice startup
+
+- Two Macs can each own an independent Codex Voice call and audio route. Switching a system output affects its own Mac. Check both hosts before attributing continued speech or duplicate work to an audio-control regression.
+- Keep a configured peer's startup check in H Chat's shared native call observer. It runs for Voice started from Codex itself and does not depend on a backend turn or the optional Spotify setting. The exact End action uses the secondary Mac's current native control and saved session boundary. A successful dispatch still needs the same session's End record to confirm it.

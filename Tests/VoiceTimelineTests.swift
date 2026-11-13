@@ -30,6 +30,12 @@ import SQLite3
         sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',7,'{\"type\":\"session-started\",\"sessionId\":\"replacement\",\"occurredAtMs\":8000}')")
         precondition(VoiceTimeline.activeSessions(database: url, since: Date(timeIntervalSince1970: 2)) == ["chat:replacement"],
                      "Reader preserves changed identity when boolean active stays true")
+        let thread = UUID(), session = UUID(), replacement = UUID()
+        sql("INSERT INTO thread_timeline_ledger VALUES('local','\(thread)',8,'{\"type\":\"session-started\",\"sessionId\":\"\(session)\",\"occurredAtMs\":8000}')")
+        sql("INSERT INTO thread_timeline_ledger VALUES('local','\(thread)',9,'{\"type\":\"session-ended\",\"sessionId\":\"\(session)\",\"occurredAtMs\":9000}')")
+        sql("INSERT INTO thread_timeline_ledger VALUES('local','\(thread)',10,'{\"type\":\"session-started\",\"sessionId\":\"\(replacement)\",\"occurredAtMs\":10000}')")
+        precondition(VoiceTimeline.hasEnded(database: url, thread: thread, session: session, since: Date(timeIntervalSince1970: 2)) == true)
+        precondition(VoiceTimeline.hasEnded(database: url, thread: thread, session: replacement, since: Date(timeIntervalSince1970: 2)) == false)
         sql("DROP TABLE thread_timeline_ledger")
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == nil,
                      "A private schema mismatch is unknown, not a confirmed End")

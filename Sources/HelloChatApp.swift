@@ -10,6 +10,28 @@ import Darwin
 
 @main enum Main {
     static func main() {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if ["--voice-peer-status", "--voice-peer-end", "--voice-peer-confirm-end"].contains(arguments.first ?? "") {
+            // Bridge commands use the installed app's native Accessibility
+            // access without launching its UI, listener, or instance owner.
+            let receipt: VoicePeerReceipt
+            if arguments == ["--voice-peer-status"] {
+                receipt = VoicePeerControl.status()
+            } else if arguments.count == 2, arguments[0] == "--voice-peer-confirm-end",
+                      let call = VoicePeerCall(token: arguments[1]) {
+                receipt = VoicePeerControl.confirmation(of: call)
+            } else if arguments.count == 3, arguments[0] == "--voice-peer-end",
+                      let call = VoicePeerCall(token: arguments[1]),
+                      let expires = TimeInterval(arguments[2]), expires.isFinite,
+                      expires <= Date().timeIntervalSince1970 + 15 {
+                receipt = VoicePeerControl.end(call, expires: expires)
+            } else {
+                receipt = .init(status: .unknown)
+            }
+            let data = try! JSONEncoder().encode(receipt)
+            print(VoicePeerReceipt.wirePrefix + String(decoding: data, as: UTF8.self))
+            return
+        }
         if CommandLine.arguments.contains("--consume-startup-speech") {
             // The Voice skill's file handoff must exit before app startup,
             // instance ownership, microphone capture or native Voice control.

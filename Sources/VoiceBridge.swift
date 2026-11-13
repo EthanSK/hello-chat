@@ -216,11 +216,13 @@ struct VoiceBridge {
     }
     // A retry must never send the start/stop toggle a second time. A stale
     // End button may fail or do nothing, but cannot open a new Voice call.
-    static func pressEnd(pid: pid_t) throws {
-        let controls = voiceControls(pid, requireEnd: true)
-        guard let button = controls.end, usableEnd(button, pid: pid) else {
+    static func pressEnd(pid: pid_t, requireUniqueEnd: Bool = false, beforePress: () throws -> Void = {}) throws {
+        let controls = voiceControls(pid, requireEnd: true, requireUniqueEnd: requireUniqueEnd)
+        guard (!requireUniqueEnd || controls.complete && !controls.ambiguousEnd),
+              let button = controls.end, usableEnd(button, pid: pid) else {
             throw BridgeError.message("Couldn't find End Voice in Codex.")
         }
+        try beforePress()
         guard AXUIElementPerformAction(button, kAXPressAction as CFString) == .success else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
@@ -232,6 +234,7 @@ struct VoiceBridge {
         var microphoneButton: AXUIElement?
         var end: AXUIElement?
         var endLabel: String?
+        var ambiguousEnd = false
         var complete = false
         var nodes = 0
         var timeouts = 0
@@ -253,7 +256,8 @@ struct VoiceBridge {
         default: return nil
         }
     }
-    private static func voiceControls(_ pid: pid_t?, requireEnd: Bool = false, maximumDepth: Int = 96, requireOutput: Bool = false) -> Controls {
+    private static func voiceControls(_ pid: pid_t?, requireEnd: Bool = false, maximumDepth: Int = 96, requireOutput: Bool = false,
+                                      requireUniqueEnd: Bool = false) -> Controls {
         guard let pid, AXIsProcessTrusted(), codexProcess(pid) else { return Controls() }
         let root = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(root, 0.25)
@@ -296,6 +300,7 @@ struct VoiceBridge {
                     }
                     if let muted = outputMuteState(label: label) { result.outputMuted = muted }
                     if isEndVoiceLabel(label) {
+                        if let prior = result.end, !CFEqual(prior, element) { result.ambiguousEnd = true }
                         result.end = element; result.endLabel = label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                 }
@@ -315,7 +320,7 @@ struct VoiceBridge {
                 inspectButton(element)
                 // Stop after the requested control is found. An End button alone
                 // proves a call exists but cannot tell an audio command its mic state.
-                if requireOutput ? result.outputMuted != nil : (requireEnd ? result.end != nil : result.microphone != nil) { result.complete = true; return result }
+                if !requireUniqueEnd && (requireOutput ? result.outputMuted != nil : (requireEnd ? result.end != nil : result.microphone != nil)) { result.complete = true; return result }
             }
             if role == "AXWebArea" {
                 // Chromium may announce newly inserted call controls on this
@@ -337,7 +342,7 @@ struct VoiceBridge {
                     for button in buttons {
                         guard Date() < deadline else { result.failure = "deadline"; return result }
                         inspectButton(button)
-                        if requireOutput ? result.outputMuted != nil : (requireEnd ? result.end != nil : result.microphone != nil) { result.complete = true; return result }
+                        if !requireUniqueEnd && (requireOutput ? result.outputMuted != nil : (requireEnd ? result.end != nil : result.microphone != nil)) { result.complete = true; return result }
                     }
                     continue
                 }

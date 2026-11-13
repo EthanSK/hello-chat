@@ -78,7 +78,7 @@ enum SpotifyVolumeControl {
 @MainActor final class SpotifyVoiceVolume: ObservableObject {
     @Published private(set) var permissionRequired = false
     @Published private(set) var message = ""
-    private let monitor = VoiceCallMonitor()
+    private let monitor: VoiceCallMonitor
     private let queue = DispatchQueue(label: "HelloChat.spotify-volume", qos: .utility)
     private let session: SpotifyVolumeSession
     private var enabled = false
@@ -87,21 +87,24 @@ enum SpotifyVolumeControl {
     private var generation = 0
     private var spotifyLaunchObserver: NSObjectProtocol?
 
-    init(receiptURL: URL = AppPaths.support.appendingPathComponent("SpotifyVolume/restore.json")) {
+    init(monitor: VoiceCallMonitor, receiptURL: URL = AppPaths.support.appendingPathComponent("SpotifyVolume/restore.json")) {
+        self.monitor = monitor
         let receipt = SpotifyVolumeReceipt(url: receiptURL)
         session = SpotifyVolumeSession(access: .init(read: SpotifyVolumeControl.read, write: SpotifyVolumeControl.write,
             load: receipt.load, save: receipt.save))
-        monitor.onChange = { [weak self] state in
-            guard let self, state.presence != self.presence || state.callIdentifier != self.callIdentifier else { return }
-            self.presence = state.presence; self.callIdentifier = state.callIdentifier; self.reconcile()
-        }
+    }
+
+    func observe(_ state: VoiceCallObservation) {
+        guard enabled, state.presence != presence || state.callIdentifier != callIdentifier else { return }
+        presence = state.presence; callIdentifier = state.callIdentifier; reconcile()
     }
 
     func setEnabled(_ value: Bool) {
         observeSpotifyLaunch()
         enabled = value; generation += 1
-        if value { monitor.start() }
-        else { monitor.stop(); presence = .inactive; reconcile() }
+        presence = value ? .unknown : .inactive
+        callIdentifier = nil
+        if !value { reconcile() }
     }
 
     func requestPermission() {
@@ -163,7 +166,7 @@ enum SpotifyVolumeControl {
     }
 
     func shutdown(preservingVolume: Bool) async {
-        monitor.stop(); generation += 1
+        generation += 1
         if let spotifyLaunchObserver { NSWorkspace.shared.notificationCenter.removeObserver(spotifyLaunchObserver) }
         spotifyLaunchObserver = nil
         let session = self.session

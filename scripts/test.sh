@@ -8,6 +8,8 @@ swiftc -swift-version 5 -parse-as-library Sources/SpotifyVolumeSession.swift Tes
 "$build_dir/SpotifyVolumeTests" "$build_dir/SpotifyVolumeChecks.noindex"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Tests/VoiceTimelineTests.swift -o "$build_dir/VoiceTimelineTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/VoiceTimelineTests" "$build_dir/SpotifyVolumeChecks.noindex/timeline.sqlite"
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Tests/VoicePeerPriorityTests.swift -o "$build_dir/VoicePeerPriorityTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+"$build_dir/VoicePeerPriorityTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/StartupSpeech.swift Tests/StartupSpeechTests.swift -o "$build_dir/StartupSpeechTests"
 "$build_dir/StartupSpeechTests" "$build_dir/StartupSpeechChecks.noindex"
 swiftc -swift-version 5 -parse-as-library Sources/SpeechModel.swift Tests/SpeechModelTests.swift -o "$build_dir/SpeechModelTests" -framework AVFoundation

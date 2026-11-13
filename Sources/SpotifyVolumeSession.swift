@@ -16,6 +16,7 @@ enum SpotifyVolumePolicy {
 struct VoiceCallObservation: Equatable {
     let presence: VoiceCallPresence
     let callIdentifier: String?
+    var verifiedCallIdentifier: String? = nil
 }
 
 // Saved final End events outrank stale AX buttons. Session identity also

@@ -132,6 +132,21 @@ The original slider value is saved privately before it changes and restored afte
 
 Detection uses native Accessibility notifications and fresh call controls, including calls started or stopped directly in Codex and temporary chats. Saved call-boundary metadata is supplementary evidence during reconnects; Hello Chat does not subscribe to Codex's private server, read transcripts, or write its database. Incomplete control reads remain unknown. The private metadata format and UI can change across Codex versions; live manual-end and temporary-chat acceptance must be checked against the installed version.
 
+## Paired Macs and Codex Voice
+
+H Chat can give one Mac priority when both Macs have an active Codex Voice call. It checks after a native call starts, including calls opened using Codex's own Voice control. Configure both Macs with opposite roles and the exact names they use to reach each other in Agent Bridge. Leave both unconfigured for independent calls.
+
+```sh
+# On the Mac that keeps its call
+defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<secondary bridge name>' role primary
+# On the Mac that yields
+defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<primary bridge name>' role secondary
+```
+
+Both machines need H Chat at `/Applications/HelloChat.app` with Accessibility access and Agent Bridge at `~/bin/agent-bridge`. Restart H Chat after configuring the pair. A single call on either Mac works normally. When both calls can be identified, H Chat uses the secondary Mac's native End control for its exact session. This closes Voice and keeps the chat and its work. An unreachable peer or an ambiguous call leaves the calls open.
+
+For read-only diagnosis, run `/Applications/HelloChat.app/Contents/MacOS/HelloChat --voice-peer-status` locally or over the paired bridge. The command returns a status and, when verified, the current thread and session identifiers. To remove the pairing, delete the `voicePeerPriority` preference on both Macs and restart H Chat.
+
 ## Updates
 
 Release-configured builds use Sparkle 2.10.1. **Check for Updates…** is in the app menu and Settings. Automatic checks/downloads use Sparkle’s saved preferences; the app does not overwrite your choices on launch. Updates are signed with Ed25519, as well as the app’s Developer ID signature.
