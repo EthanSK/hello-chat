@@ -12,19 +12,18 @@ import Darwin
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if ["--voice-peer-status", "--voice-peer-end", "--voice-peer-confirm-end"].contains(arguments.first ?? "") {
-            // Bridge commands use the installed app's native Accessibility
-            // access without launching its UI, listener, or instance owner.
             let receipt: VoicePeerReceipt
-            if arguments == ["--voice-peer-status"] {
-                receipt = VoicePeerControl.status()
+            let expires = Date().timeIntervalSince1970 + 4
+            if VoicePeerConfiguration.installed == nil {
+                receipt = .init(status: .disabled)
+            } else if arguments == ["--voice-peer-status"] {
+                receipt = VoicePeerMailbox.submit(.init(action: .status, call: nil, expires: expires))
             } else if arguments.count == 2, arguments[0] == "--voice-peer-confirm-end",
                       let call = VoicePeerCall(token: arguments[1]) {
-                receipt = VoicePeerControl.confirmation(of: call)
+                receipt = VoicePeerMailbox.submit(.init(action: .confirmEnd, call: call, expires: expires))
             } else if arguments.count == 3, arguments[0] == "--voice-peer-end",
-                      let call = VoicePeerCall(token: arguments[1]),
-                      let expires = TimeInterval(arguments[2]), expires.isFinite,
-                      expires <= Date().timeIntervalSince1970 + 15 {
-                receipt = VoicePeerControl.end(call, expires: expires)
+                      let call = VoicePeerCall(token: arguments[1]), let deadline = TimeInterval(arguments[2]) {
+                receipt = VoicePeerMailbox.submit(.init(action: .end, call: call, expires: deadline))
             } else {
                 receipt = .init(status: .unknown)
             }

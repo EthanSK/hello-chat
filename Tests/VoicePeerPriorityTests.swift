@@ -77,6 +77,22 @@ import Foundation
         defaults.set(["machine": "paired-mac", "role": "primary"], forKey: "voicePeerPriority")
         precondition(VoicePeerConfiguration(defaults: defaults)?.machine == "paired-mac")
         precondition(VoicePeerConfiguration(defaults: defaults)?.role == .primary)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("VoicePeerMailbox-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let expired = VoicePeerMailbox.Request(action: .end, call: local, expires: Date().timeIntervalSince1970 - 1)
+        let noSession = VoicePeerMailbox.Request(action: .end, call: nil, expires: Date().timeIntervalSince1970 + 4)
+        let status = VoicePeerMailbox.Request(action: .status, call: nil, expires: Date().timeIntervalSince1970 + 4)
+        precondition(VoicePeerMailbox.submit(expired, directory: directory).status == .unknown)
+        precondition(VoicePeerMailbox.submit(noSession, directory: directory).status == .unknown)
+        precondition(VoicePeerMailbox.submit(status, directory: directory).status == .unknown)
+        let mailbox = VoicePeerMailbox(directory: directory) { request in
+            precondition(request.action == .status)
+            return .init(status: .active, call: local, role: .secondary)
+        }
+        mailbox.start()
+        let received = VoicePeerMailbox.submit(status, directory: directory)
+        precondition(received == .init(status: .active, call: local, role: .secondary))
+        mailbox.stop()
         print("Voice peer priority checks passed")
     }
 }

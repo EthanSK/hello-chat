@@ -143,7 +143,7 @@ defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<secondary b
 defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<primary bridge name>' role secondary
 ```
 
-Both machines need H Chat at `/Applications/HelloChat.app` with Accessibility access and Agent Bridge at `~/bin/agent-bridge`. Restart H Chat after configuring the pair. A single call on either Mac works normally. When both calls can be identified, H Chat uses the secondary Mac's native End control for its exact session. This closes Voice and keeps the chat and its work. An unreachable peer or an ambiguous call leaves the calls open.
+Both machines need H Chat running from `/Applications/HelloChat.app` with Accessibility access and Agent Bridge at `~/bin/agent-bridge`. Restart H Chat after configuring the pair. A single call on either Mac works normally. When both calls can be identified, H Chat uses the secondary Mac's native End control for its exact session. This closes Voice and keeps the chat and its work. An unreachable peer or an ambiguous call leaves the calls open.
 
 For read-only diagnosis, run `/Applications/HelloChat.app/Contents/MacOS/HelloChat --voice-peer-status` locally or over the paired bridge. The command returns a status and, when verified, the current thread and session identifiers. To remove the pairing, delete the `voicePeerPriority` preference on both Macs and restart H Chat.
 

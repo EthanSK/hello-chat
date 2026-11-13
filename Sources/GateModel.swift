@@ -12,6 +12,7 @@ import SwiftUI
     }
     private let voiceCalls = VoiceCallMonitor()
     private let voicePeerPriority = VoicePeerPriority()
+    private let voicePeerMailbox = VoicePeerMailbox(handler: VoicePeerControl.respond)
     let spotifyVolume: SpotifyVoiceVolume
     @Published var lowerSpotifyDuringChat = UserDefaults.standard.bool(forKey: "lowerSpotifyDuringChat") {
         didSet {
@@ -334,6 +335,7 @@ import SwiftUI
                 self?.voicePeerPriority.observe(state)
             }
             spotifyVolume.setEnabled(lowerSpotifyDuringChat)
+            if voicePeerPriority.enabled { voicePeerMailbox.start() }
             updateVoiceCallMonitoring()
         }
     }
@@ -1032,6 +1034,7 @@ import SwiftUI
         updateListeningDelay = nil
         quitting = false; busy = false; voiceTask = nil
         spotifyVolume.setEnabled(lowerSpotifyDuringChat)
+        if voicePeerPriority.enabled { voicePeerMailbox.start() }
         updateVoiceCallMonitoring()
         microphone = await voice.reattachAfterFailedUpdate()
         showListening()
@@ -1045,6 +1048,7 @@ import SwiftUI
         if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
         voiceCalls.stop()
+        voicePeerMailbox.stop()
         videoBridge.stop()
         let previous = voiceTask
         voice.detachForQuit()

@@ -30,8 +30,7 @@ struct VoicePeerConfiguration {
         self.role = role
     }
 
-    // The headless command runs the very same signed bundle as the app.
-    // Foundation rejects opening that bundle's own ID as a separate suite.
+    // Foundation rejects opening this bundle's own ID as a separate suite.
     static var installed: Self? { Self(defaults: .standard) }
 }
 
@@ -65,12 +64,21 @@ struct VoicePeerReceipt: Codable, Equatable {
 }
 
 enum VoicePeerControl {
+    static func respond(_ request: VoicePeerMailbox.Request) -> VoicePeerReceipt {
+        switch (request.action, request.call) {
+        case (.status, nil): return status()
+        case (.end, let call?): return end(call, expires: request.expires)
+        case (.confirmEnd, let call?): return confirmation(of: call)
+        default: return .init(status: .unknown)
+        }
+    }
+
     static func status() -> VoicePeerReceipt {
         guard let role = VoicePeerConfiguration.installed?.role else { return .init(status: .disabled) }
         guard let app = VoiceBridge.currentApplication(), let launch = app.launchDate else {
             let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
                 .contains { !$0.isTerminated }
-            return .init(status: running ? .unknown : .inactive)
+            return .init(status: running ? .unknown : .inactive, role: role)
         }
         let database = VoiceTimeline.databaseURL()
         let before = VoiceTimeline.activeSessions(database: database, since: launch)
@@ -84,7 +92,7 @@ enum VoicePeerControl {
             return .init(status: .active, call: call, role: role)
         }
         let absent = before.isEmpty && state.controlsComplete && !state.endControlAvailable && state.microphone == nil
-        return .init(status: absent ? .inactive : .unknown)
+        return .init(status: absent ? .inactive : .unknown, role: role)
     }
 
     static func end(_ call: VoicePeerCall, expires: TimeInterval) -> VoicePeerReceipt {

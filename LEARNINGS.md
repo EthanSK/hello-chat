@@ -202,3 +202,4 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 
 - Two Macs can each own an independent Codex Voice call and audio route. Switching a system output affects its own Mac. Check both hosts before attributing continued speech or duplicate work to an audio-control regression.
 - Keep a configured peer's startup check in H Chat's shared native call observer. It runs for Voice started from Codex itself and does not depend on a backend turn or the optional Spotify setting. The exact End action uses the secondary Mac's current native control and saved session boundary. A successful dispatch still needs the same session's End record to confirm it.
+- An SSH command on macOS can read native Accessibility by explicit PID while AppKit application discovery returns no GUI app identity. Have the paired command ask the existing desktop H Chat process to check and act. A missing response is unknown, including while H Chat is stopped or updating.
