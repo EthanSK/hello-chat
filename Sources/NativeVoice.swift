@@ -28,6 +28,8 @@ import Foundation
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
         var outputSnapshot: (() async -> VoiceSnapshot)? = nil
+        var frontmostPID: (() -> Int32?)? = nil
+        var restoreFocus: (Int32) -> Void = { _ in }
         static var live: Self {
             Self(snapshot: { await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value },
                  send: { command, pid in
@@ -45,7 +47,7 @@ import Foundation
                     }.value
                  },
                  activate: { pid in
-                    guard let app = NSRunningApplication(processIdentifier: pid) else {
+                    guard let app = VoiceBridge.currentApplication(), app.processIdentifier == pid else {
                         throw BridgeError.message("Open Codex, then try again.")
                     }
                     app.activate(options: [])
@@ -67,6 +69,9 @@ import Foundation
                     }.value
                  }, startSession: { .current }, outputSnapshot: {
                     await Task.detached(priority: .utility) { VoiceBridge.snapshot(readOutput: true) }.value
+                 }, frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+                 restoreFocus: { pid in
+                    _ = NSRunningApplication(processIdentifier: pid)?.activate(options: [])
                  })
         }
     }
@@ -264,9 +269,8 @@ import Foundation
         }
     }
 
-    // Directional speech commands use the existing toggle shortcut only when
-    // a fresh native state proves it is needed. Unknown state must never invert
-    // the microphone or speakers; repeated commands are harmless no-ops.
+    // Directional speech commands use the existing toggle shortcut with fresh
+    // state. A background speaker read can need one brief focus recovery.
     @discardableResult
     func setAudio(_ action: VoiceAudioAction, onRecognized: (() -> Void)? = nil) async throws -> Bool {
         try checkStartAllowed()
@@ -280,7 +284,7 @@ import Foundation
         }
         guard fresh.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for Hello Chat, then try again.") }
         if fresh.applicationAbsent { return false }
-        guard fresh.pid != nil, fresh.microphone != nil || fresh.outputMuted != nil || fresh.endControlAvailable else {
+        guard let pid = fresh.pid, fresh.microphone != nil || fresh.outputMuted != nil || fresh.endControlAvailable else {
             let absent = fresh.controlsComplete && (fresh.applicationReady || !fresh.inputRunning) // A complete native shell with active input still cannot prove Voice is absent.
             guard fresh.pid != nil, absent || (!fresh.applicationHasWindow && !fresh.inputRunning) else {
                 throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
@@ -288,8 +292,19 @@ import Foundation
             diagnostics?.record("voice.audio.inactive", info: ["action": action.rawValue])
             return false // Recognized words alone must never launch Voice or play an action sound.
         }
-        guard fresh.accessibilityAllowed, let pid = fresh.pid,
-              let current = action.isMuted(in: fresh) else {
+        var previousFocus: Int32?
+        var attemptedFocusRecovery = false
+        defer {
+            if let previousFocus, transport.frontmostPID?() == pid,
+               transport.startSession() == .interactive {
+                transport.restoreFocus(previousFocus)
+            }
+        }
+        if action.controlsSpeakers, fresh.outputMuted == nil {
+            attemptedFocusRecovery = true
+            fresh = try await recoverSpeakerControls(pid: pid, previousFocus: &previousFocus)
+        }
+        guard fresh.accessibilityAllowed, fresh.pid == pid, let current = action.isMuted(in: fresh) else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
         onRecognized?()
@@ -298,9 +313,12 @@ import Foundation
             diagnostics?.record("voice.audio.unchanged", info: ["action": action.rawValue])
             return true
         }
-        // postToPid already addresses Codex; activating it stole Ethan's focus.
-        // Recheck state without raising its window before sending the same key.
-        let ready = await snapshot(output: action.controlsSpeakers)
+        // Recheck the requested channel immediately before sending a toggle.
+        var ready = await snapshot(output: action.controlsSpeakers)
+        if action.controlsSpeakers, ready.pid == pid, ready.accessibilityAllowed,
+           ready.outputMuted == nil, !attemptedFocusRecovery {
+            ready = try await recoverSpeakerControls(pid: pid, previousFocus: &previousFocus)
+        }
         try checkStartAllowed()
         guard ready.accessibilityAllowed, ready.pid == pid,
               let readyMuted = action.isMuted(in: ready) else {
@@ -316,6 +334,28 @@ import Foundation
         try checkAttached()
         try await confirmAudio(action, pid: pid)
         return true
+    }
+
+    private func recoverSpeakerControls(pid: Int32, previousFocus: inout Int32?) async throws -> VoiceSnapshot {
+        try checkStartAllowed()
+        if let frontmost = transport.frontmostPID?(), frontmost != pid {
+            try transport.activate(pid)
+            previousFocus = frontmost
+            diagnostics?.record("voice.output.focus_requested")
+            let deadline = transport.now() + 0.45
+            // If the user moves to a third app, don't take focus back.
+            while transport.frontmostPID?() == frontmost, transport.now() < deadline {
+                try await transport.wait(0.05)
+                try checkStartAllowed()
+            }
+            diagnostics?.record("voice.output.focus_checked",
+                info: ["frontmost": String(transport.frontmostPID?() == pid)])
+        }
+        // Focus can expose a different Voice presentation. Always re-read the
+        // native control and verify its process before relying on its state.
+        let focused = await snapshot(output: true)
+        try checkStartAllowed()
+        return focused
     }
 
     private func confirmAudio(_ action: VoiceAudioAction, pid: Int32) async throws {
@@ -335,6 +375,7 @@ import Foundation
             guard remaining > 0 else { break }
             try await transport.wait(min(0.1, remaining))
         } while transport.now() <= deadline
+        if action.controlsSpeakers { throw BridgeError.outputUnconfirmed }
         throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
     }
 
@@ -462,7 +503,7 @@ import Foundation
             throw BridgeError.message("Couldn't confirm Codex Voice. End the call in Codex.")
         }
         try checkAttached()
-        // End retains its app-scoped activation; Start and audio commands do not.
+        // End retains its app-scoped activation. Speaker recovery is separate.
         // An AXPress acknowledgement is not confirmation that the call ended.
         try transport.activate(pid)
         diagnostics?.record("voice.end.activation_requested")

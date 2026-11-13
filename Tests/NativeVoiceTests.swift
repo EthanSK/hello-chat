@@ -162,6 +162,57 @@ import Foundation
         try await separatedReads.setAudio(.silenceSpeakers)
         precondition(outputRead == 3 && output.outputMuted == true && output.microphone == .listening)
 
+        var focus: Int32 = 456, focusEvents: [String] = [], speakerTime: TimeInterval = 0
+        var speakerMuted = false, hideAfterSend = false, speakerSends = 0
+        let focusRecovery = NativeVoice(transport: .init(snapshot: { fatalError("Speaker commands must read output") },
+            send: { command, pid in
+                precondition(command == VoiceBridge.outputMuteCommand && pid == 123 && focus == 123)
+                speakerSends += 1
+                focusEvents.append("send")
+                speakerMuted.toggle()
+            },
+            activate: { pid in focusEvents.append("activate"); focus = pid },
+            now: { speakerTime }, wait: { speakerTime += $0 },
+            outputSnapshot: {
+                var result = state(.listening)
+                result.endControlAvailable = true
+                if focus == 123 && !(hideAfterSend && speakerSends > 1) { result.outputMuted = speakerMuted }
+                return result
+            }, frontmostPID: { focus }, restoreFocus: { pid in focusEvents.append("restore"); focus = pid }))
+        try await focusRecovery.setAudio(.silenceSpeakers)
+        precondition(speakerMuted && focus == 456 && focusEvents == ["activate", "send", "restore"])
+        focusEvents.removeAll()
+        try await focusRecovery.setAudio(.silenceSpeakers)
+        precondition(speakerSends == 1 && focusEvents == ["activate", "restore"], "Repeating silence must not restore sound")
+        hideAfterSend = true
+        do {
+            try await focusRecovery.setAudio(.unsilenceSpeakers)
+            fatalError("A sent shortcut with no post-send state cannot confirm success")
+        } catch BridgeError.outputUnconfirmed { }
+        precondition(!speakerMuted && speakerSends == 2 && focus == 456, "Submit once and restore focus even when the resulting state is unavailable")
+
+        var warmFocus: Int32 = 456, warmMuted = false
+        let warmBackground = NativeVoice(transport: .init(snapshot: {
+            var result = state(.listening); result.outputMuted = warmMuted; return result
+        }, send: { _, _ in warmMuted = true }, activate: { _ in fatalError("A readable speaker control needs no focus change") },
+        frontmostPID: { warmFocus }))
+        try await warmBackground.setAudio(.silenceSpeakers)
+        precondition(warmMuted && warmFocus == 456)
+
+        var movedFocus: Int32 = 456
+        let userChangedFocus = NativeVoice(transport: .init(snapshot: {
+            var result = state(.listening)
+            if movedFocus == 123 { result.outputMuted = false }
+            return result
+        }, send: { _, _ in fatalError("A moving focus cannot authorize unknown speaker state") },
+        activate: { _ in movedFocus = 789 }, frontmostPID: { movedFocus },
+        restoreFocus: { _ in fatalError("User focus wins") }))
+        do {
+            try await userChangedFocus.setAudio(.silenceSpeakers)
+            fatalError("No directional speaker control was exposed")
+        } catch is BridgeError { }
+        precondition(movedFocus == 789)
+
         var mailboxState = state(), mailboxEvents: [String] = []
         let mailboxContext = VoiceStartContext()
         mailboxContext.prepareNewCall = { mailboxEvents.append("mailbox") }

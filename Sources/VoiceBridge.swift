@@ -579,11 +579,13 @@ struct VoiceKeyCombination {
 enum BridgeError: LocalizedError {
     case message(String)
     case endUnconfirmed
+    case outputUnconfirmed
     case desktopUnavailable(DesktopSessionState)
     var errorDescription: String? {
         switch self {
         case .message(let text): return text
         case .endUnconfirmed: return "Couldn't confirm Voice ended. Check Codex."
+        case .outputUnconfirmed: return "Sent the speaker shortcut. Couldn't confirm the change in Codex."
         case .desktopUnavailable(let session): return session.message
         }
     }

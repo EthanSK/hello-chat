@@ -943,6 +943,7 @@ import SwiftUI
                 defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
                 do {
                     for (action, _, slot) in actions { // A delayed transcript can contain both channels or opposite commands; apply them in spoken order.
+                        Diagnostics.shared.record("voice.audio.requested", info: ["action": action.rawValue, "phrase_slot": slot.rawValue])
                         let active = try await voice.setAudio(action, onRecognized: { self.feedback.play(.microphoneDetected) }) // Inactive Voice gets no sound or key.
                         guard generation == token else { return }
                         guard active else { continue }
