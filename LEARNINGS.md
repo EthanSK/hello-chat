@@ -1,6 +1,7 @@
 # Hello Chat engineering notes
 
 - The 13 November speaker-silence failures occurred before the sound update. Completed background AX scans found the microphone and End controls but no speaker state, and no output shortcut was posted. User-operated tests after bringing Codex forward confirmed both directions, then confirmed commands from Chrome too. This supports a conditional focus recovery when the speaker control is missing. Neither a permanently foreground-only shortcut nor a persistent H Chat cache was established. The speaker readback uses the native control on each request.
+- Ethan explicitly requested one best-effort speaker shortcut when output state stays unreadable after recovery. Fresh native microphone or End controls must still establish an active call on the same Codex process. Process-wide audio input alone is insufficient. Keep matching-state requests idempotent, send at most once per accepted command, and reserve the success sound for a confirmed requested state.
 
 - Command sounds belong to the phrase slot, so changing a phrase or speaking a different app name keeps its sound. The two speaker-silence slots share one action and occurrence history. Preserve the matched slot when choosing the confirmed-state cue, and prefer an exact phrase if the other slot's dictionary also covers the same occurrence. Video cues acknowledge the bridge request. App and zoom cues acknowledge accepted dispatch. Their status still reports the observed outcome.
 

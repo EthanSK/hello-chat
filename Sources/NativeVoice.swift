@@ -304,7 +304,9 @@ import Foundation
             attemptedFocusRecovery = true
             fresh = try await recoverSpeakerControls(pid: pid, previousFocus: &previousFocus)
         }
-        guard fresh.accessibilityAllowed, fresh.pid == pid, let current = action.isMuted(in: fresh) else {
+        let current = action.isMuted(in: fresh)
+        guard fresh.accessibilityAllowed, fresh.pid == pid,
+              current != nil || (action.controlsSpeakers && (fresh.microphone != nil || fresh.endControlAvailable)) else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
         onRecognized?()
@@ -320,8 +322,9 @@ import Foundation
             ready = try await recoverSpeakerControls(pid: pid, previousFocus: &previousFocus)
         }
         try checkStartAllowed()
+        let readyMuted = action.isMuted(in: ready)
         guard ready.accessibilityAllowed, ready.pid == pid,
-              let readyMuted = action.isMuted(in: ready) else {
+              readyMuted != nil || (action.controlsSpeakers && (ready.microphone != nil || ready.endControlAvailable)) else {
             throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
         }
         if readyMuted == action.targetMuted {
@@ -330,7 +333,8 @@ import Foundation
         }
         let command = action.controlsSpeakers ? VoiceBridge.outputMuteCommand : VoiceBridge.muteCommand
         try await transport.send(command, pid)
-        diagnostics?.record(action.controlsSpeakers ? "voice.output.shortcut_sent" : "voice.microphone.shortcut_sent", info: ["command": command, "action": action.rawValue])
+        diagnostics?.record(action.controlsSpeakers ? "voice.output.shortcut_sent" : "voice.microphone.shortcut_sent",
+            info: ["command": command, "action": action.rawValue, "prior_muted": readyMuted.map(String.init) ?? "unknown"])
         try checkAttached()
         try await confirmAudio(action, pid: pid)
         return true

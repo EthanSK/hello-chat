@@ -31,10 +31,16 @@ import Foundation
         for action in VoiceAudioAction.allCases {
             var unknownState = state(input: true)
             unknownState.endControlAvailable = true
+            var unknownSends = 0, unknownTime: TimeInterval = 0
             let unknown = NativeVoice(transport: .init(snapshot: { unknownState },
-                send: { _, _ in fatalError("Unknown state must never send a toggle") }, activate: { _ in }))
+                send: { command, pid in
+                    precondition(action.controlsSpeakers && command == VoiceBridge.outputMuteCommand && pid == 123)
+                    unknownSends += 1
+                }, activate: { _ in }, now: { unknownTime }, wait: { unknownTime += $0 }))
             do { try await unknown.setAudio(action); fatalError("Unknown state was reported as success") }
+            catch BridgeError.outputUnconfirmed { precondition(action.controlsSpeakers) }
             catch is BridgeError { }
+            precondition(unknownSends == (action.controlsSpeakers ? 1 : 0), "Only speaker commands may attempt one toggle with unknown state")
             var changing = state(action.targetMuted ? .listening : .muted); changing.outputMuted = !action.targetMuted
             var reads = 0
             let ready = NativeVoice(transport: .init(snapshot: {
@@ -199,19 +205,44 @@ import Foundation
         try await warmBackground.setAudio(.silenceSpeakers)
         precondition(warmMuted && warmFocus == 456)
 
-        var movedFocus: Int32 = 456
+        var movedFocus: Int32 = 456, movedSends = 0, movedTime: TimeInterval = 0
         let userChangedFocus = NativeVoice(transport: .init(snapshot: {
             var result = state(.listening)
             if movedFocus == 123 { result.outputMuted = false }
             return result
-        }, send: { _, _ in fatalError("A moving focus cannot authorize unknown speaker state") },
-        activate: { _ in movedFocus = 789 }, frontmostPID: { movedFocus },
+        }, send: { command, pid in
+            precondition(command == VoiceBridge.outputMuteCommand && pid == 123)
+            movedSends += 1
+        }, activate: { _ in movedFocus = 789 }, now: { movedTime }, wait: { movedTime += $0 }, frontmostPID: { movedFocus },
         restoreFocus: { _ in fatalError("User focus wins") }))
         do {
             try await userChangedFocus.setAudio(.silenceSpeakers)
-            fatalError("No directional speaker control was exposed")
+            fatalError("A best-effort send with no speaker readback cannot confirm silence")
+        } catch BridgeError.outputUnconfirmed { }
+        precondition(movedFocus == 789 && movedSends == 1)
+
+        var endedFocus: Int32 = 456
+        let endedDuringRecovery = NativeVoice(transport: .init(snapshot: {
+            endedFocus == 456 ? state(.listening) : state(input: true)
+        }, send: { _, _ in fatalError("A process-wide input stream cannot prove the call is still active") },
+        activate: { endedFocus = $0 }, frontmostPID: { endedFocus }, restoreFocus: { endedFocus = $0 }))
+        do {
+            try await endedDuringRecovery.setAudio(.silenceSpeakers)
+            fatalError("The live call disappeared during focus recovery")
         } catch is BridgeError { }
-        precondition(movedFocus == 789)
+        precondition(endedFocus == 456)
+
+        var bestEffortSent = false
+        let bestEffortConfirmed = NativeVoice(transport: .init(snapshot: {
+            var result = state(.listening)
+            if bestEffortSent { result.outputMuted = true }
+            return result
+        }, send: { command, pid in
+            precondition(!bestEffortSent && command == VoiceBridge.outputMuteCommand && pid == 123)
+            bestEffortSent = true
+        }, activate: { _ in fatalError("Codex already frontmost") }, frontmostPID: { 123 }))
+        let confirmed = try await bestEffortConfirmed.setAudio(.silenceSpeakers)
+        precondition(confirmed && bestEffortSent)
 
         var mailboxState = state(), mailboxEvents: [String] = []
         let mailboxContext = VoiceStartContext()
