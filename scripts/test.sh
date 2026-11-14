@@ -4,6 +4,8 @@ set -euo pipefail
 cd "${0:A:h:h}"
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
+swiftc -swift-version 5 -parse-as-library Sources/AppShortcuts.swift Tests/AppShortcutTests.swift -o "$build_dir/AppShortcutTests" -framework AppIntents
+"$build_dir/AppShortcutTests"
 swiftc -swift-version 5 -parse-as-library Sources/SpotifyVolumeSession.swift Tests/SpotifyVolumeTests.swift -o "$build_dir/SpotifyVolumeTests"
 "$build_dir/SpotifyVolumeTests" "$build_dir/SpotifyVolumeChecks.noindex"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Tests/VoiceTimelineTests.swift -o "$build_dir/VoiceTimelineTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3

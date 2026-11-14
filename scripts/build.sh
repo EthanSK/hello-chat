@@ -58,6 +58,7 @@ mkdir -p "${localized_info:h}"
 plutil -create xml1 "$localized_info"
 plutil -insert CFBundleName -string "$display_name" "$localized_info"
 plutil -insert CFBundleDisplayName -string "$display_name" "$localized_info"
+python3 scripts/build-app-shortcuts.py "$app" "$build_dir"
 identity="${HELLOCHAT_SIGNING_IDENTITY:-}"
 if [[ -z "$identity" ]]; then
   identity="$(security find-identity -v -p codesigning | awk '/"Developer ID Application:/{print $2; exit}')"

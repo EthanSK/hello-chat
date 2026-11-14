@@ -301,9 +301,17 @@ enum AppVersion {
 
 struct HelloChatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = GateModel()
+    @StateObject private var model: GateModel
     @StateObject private var zoom = InterfaceZoom()
     @StateObject private var updater = AppUpdater()
+    init() {
+        let model = GateModel()
+        _model = StateObject(wrappedValue: model)
+        HChatShortcutActions.handler = { [weak model] action in
+            guard let model else { throw HChatShortcutError.unavailable }
+            return try await model.performShortcut(action)
+        }
+    }
     var body: some Scene {
         Window("Hello Chat · \(AppVersion.display)", id: "main") {
             MainView(model: model, zoom: zoom, updater: updater)

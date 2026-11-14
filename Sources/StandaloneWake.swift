@@ -18,11 +18,13 @@ struct CommandPhraseDetectors<Command: CaseIterable & Hashable> {
         }
     }
     // Accepted commands in spoken order. Each occurrence is consumed once.
-    mutating func poll(at time: Double, patterns: [Command: PhrasePattern], directOnly: Bool = false) -> [(command: Command, range: Range<Int>)] {
+    mutating func poll(at time: Double, patterns: [Command: PhrasePattern], directOnly: Bool = false,
+                       onDecision: ((Command, String) -> Void)? = nil) -> [(command: Command, range: Range<Int>)] {
         Command.allCases.compactMap { command -> (command: Command, range: Range<Int>)? in
             guard let pattern = patterns[command], !PhraseMatcher.words(pattern.text).isEmpty,
                   detectors[command, default: StandaloneWake()].poll(at: time, phrase: pattern.text, similar: pattern.similar,
-                      rejectNegated: true, ending: pattern.ending, patterns: [pattern], directOnly: directOnly),
+                      rejectNegated: true, ending: pattern.ending, patterns: [pattern], directOnly: directOnly,
+                      onDecision: { decision, _, _ in onDecision?(command, decision) }),
                   let range = detectors[command]?.acceptedRange else { return nil }
             return (command, range)
         }.sorted { $0.range.lowerBound < $1.range.lowerBound }
@@ -56,6 +58,7 @@ struct StandaloneWake {
     private var context: [String] = []
     private var wordTimings: [(word: String, start: Double, end: Double)]?
     private var sentenceStarts: [Int] = []
+    private var desktopBoundaries: [Int] = []
     private var audioBoundary = 0
     private var quiet = 1.0
     private var audioTime: Double?
@@ -73,7 +76,7 @@ struct StandaloneWake {
 
     mutating func reset() { self = StandaloneWake(requiredPause: requiredPause) }
     mutating func resetContext() {
-        context = []; sentenceStarts = []; audioBoundary = 0
+        context = []; sentenceStarts = []; desktopBoundaries = []; audioBoundary = 0
         wordTimings = nil
         consumed = 0; revision += 1; quiet = 0
         consumedAudioRanges.removeAll()
@@ -100,12 +103,13 @@ struct StandaloneWake {
             else { starts.append(words.count) }
         }
         wordTimings = timings
-        guard words != context || starts != sentenceStarts else { return }
+        let boundaries = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: 0.35)
+        guard words != context || starts != sentenceStarts || boundaries != desktopBoundaries else { return }
         if audioBoundary > 0 {
             let common = zip(context, words).prefix { $0 == $1 }.count
             audioBoundary = min(audioBoundary, common)
         }
-        context = words; sentenceStarts = starts; changedAt = time; revision += 1
+        context = words; sentenceStarts = starts; desktopBoundaries = boundaries; changedAt = time; revision += 1
     }
     mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil, directOnly: Bool = false,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
@@ -150,7 +154,7 @@ struct StandaloneWake {
                 && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                 && sentenceStarts.contains { $0 > match.start && $0 < match.end }
             if (directOnly && !isDirectCommand(start: match.start, end: match.end)) ||
-                isMention(start: match.start, end: match.end, rejectNegated: rejectNegated) || weakSplit {
+                isMention(start: match.start, end: match.end, rejectNegated: rejectNegated, directOnly: directOnly) || weakSplit {
                 consumed = index + 1
                 rememberConsumed(audioRanges[index])
                 continue
@@ -224,9 +228,15 @@ struct StandaloneWake {
         checkedRevision = -1
     }
 
-    private func isMention(start: Int, end: Int, rejectNegated: Bool) -> Bool {
-        let sentenceStart = sentenceStarts.last(where: { $0 <= start }) ?? 0
-        let sentenceEnd = sentenceStarts.first(where: { $0 >= end }) ?? context.count
+    private func contextBounds(start: Int, end: Int, directOnly: Bool) -> (Int, Int) {
+        // Only desktop direct commands use timed context slicing. Preserve the
+        // tuned wake, End, audio and browser rules verbatim.
+        let boundaries = directOnly ? (sentenceStarts + desktopBoundaries).sorted() : sentenceStarts
+        return (boundaries.last(where: { $0 <= start }) ?? 0,
+                boundaries.first(where: { $0 >= end }) ?? context.count)
+    }
+    private func isMention(start: Int, end: Int, rejectNegated: Bool, directOnly: Bool) -> Bool {
+        let (sentenceStart, sentenceEnd) = contextBounds(start: start, end: end, directOnly: directOnly)
         let left = Array(context[max(min(audioBoundary, start), sentenceStart)..<start].suffix(3))
         let right = Array(context[end..<sentenceEnd].prefix(3))
         // Mute requests are reversible toggles, so "don't mute chat" is not a
@@ -252,8 +262,7 @@ struct StandaloneWake {
     }
 
     private func isDirectCommand(start: Int, end: Int) -> Bool {
-        let sentenceStart = sentenceStarts.last(where: { $0 <= start }) ?? 0
-        let sentenceEnd = sentenceStarts.first(where: { $0 >= end }) ?? context.count
+        let (sentenceStart, sentenceEnd) = contextBounds(start: start, end: end, directOnly: true)
         let left = context[max(min(audioBoundary, start), sentenceStart)..<start]
         let right = context[end..<sentenceEnd]
         let politeOpeners: Set<String> = ["please", "can", "could", "would", "you", "okay", "ok", "now", "and", "then"]

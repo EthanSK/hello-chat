@@ -724,17 +724,107 @@ import SwiftUI
             }
         }
     }
-    func manualMute(feedbackAlreadyPlayed: Bool = false) {
-        guard enabled || voice.connected, !quitting, !endingVoice else { return }
+    // Siri and personally trained Vocal Shortcuts use the same native actions
+    // and task ownership as the window/phrases. A native shortcut can start a
+    // call while local transcription is off, without turning that listener on.
+    func performShortcut(_ action: HChatShortcutAction) async throws -> String {
+        if action == .status {
+            let snapshot = await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value
+            guard snapshot.accessibilityAllowed else {
+                throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
+            }
+            if let microphone = snapshot.microphone {
+                return microphone == .muted ? "Chat microphone is muted." : "Chat is listening."
+            }
+            if snapshot.endControlAvailable { return "Chat is on. Microphone status is unknown." }
+            if snapshot.applicationAbsent || (snapshot.controlsComplete && !snapshot.inputRunning) { return "Chat is off." }
+            return "Chat status is unknown."
+        }
+        guard !quitting, !busy || action == .end else {
+            throw BridgeError.message("Hello Chat is busy. Try again when the current action finishes.")
+        }
+        let token = generation
+        error = nil
+        Diagnostics.shared.record("shortcut.requested", info: ["action": action.rawValue])
+        switch action {
+        case .start:
+            if enabled && detectionRunning {
+                beginVoice(trigger: "Voice started with shortcut")
+            } else {
+                busy = true
+                feedback.play(PhraseSlot.wakePhrase.cue)
+                let context = VoiceStartContext()
+                voiceStartContext = context
+                voiceTask = Task {
+                    await openVoice(trigger: "Voice started with shortcut", context: context, requiresListening: false)
+                }
+            }
+        case .end:
+            manualMute(force: true)
+        case .muteMicrophone, .unmuteMicrophone, .silenceSpeakers, .unsilenceSpeakers:
+            let audio: VoiceAudioAction
+            switch action {
+            case .muteMicrophone: audio = .muteMicrophone
+            case .unmuteMicrophone: audio = .unmuteMicrophone
+            case .silenceSpeakers: audio = .silenceSpeakers
+            case .unsilenceSpeakers: audio = .unsilenceSpeakers
+            case .start, .end, .status: preconditionFailure("Handled above")
+            }
+            busy = true
+            voiceTask = Task {
+                defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
+                do {
+                    let call = spotifyVolume.callEpoch
+                    let active = try await voice.setAudio(audio, onRecognized: { self.feedback.play(.microphoneDetected) })
+                    guard generation == token else { return }
+                    guard active else { throw BridgeError.message("Codex Voice is off.") }
+                    if !audio.controlsSpeakers {
+                        microphone = audio.targetMuted ? .muted : .listening
+                        spotifyVolume.confirmMicrophoneMute(audio.targetMuted, in: call)
+                    }
+                    if let slot = audio.slots.first { feedback.play(slot.cue) }
+                    showListening()
+                    lastEvent = audio.controlsSpeakers ? "Chat audio is \(audio.targetMuted ? "muted" : "on")" : "Chat is \(audio.targetMuted ? "muted" : "listening")"
+                } catch {
+                    guard generation == token, !(error is CancellationError) else { return }
+                    self.error = error.localizedDescription
+                }
+            }
+        case .status: break // Read-only status returned before reserving any control work.
+        }
+        let completionGeneration = generation // End may supersede an opening/audio operation.
+        let operation = voiceTask
+        await operation?.value
+        try Task.checkCancellation()
+        guard generation == completionGeneration, !quitting else { throw CancellationError() }
+        if let error { throw BridgeError.message(error) }
+        if action == .start, !voice.connected { throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.") }
+        Diagnostics.shared.record("shortcut.completed", info: ["action": action.rawValue])
+        // Keep actual configured wake/end phrases out of Siri's spoken result.
+        switch action {
+        case .start: return "Chat is on."
+        case .end: return "Chat is off."
+        case .muteMicrophone: return "Chat microphone is muted."
+        case .unmuteMicrophone: return "Chat microphone is on."
+        case .silenceSpeakers: return "Chat speakers are muted."
+        case .unsilenceSpeakers: return "Chat speakers are on."
+        case .status: return "Chat status is unknown."
+        }
+    }
+    func manualMute(feedbackAlreadyPlayed: Bool = false, force: Bool = false) {
+        guard enabled || voice.connected || voiceStartContext != nil || force, !quitting, !endingVoice else { return }
         cancelStartupSpeech()
         if busy, voiceStartContext != nil {
             let previous = voiceTask
             previous?.cancel()
-            let token = generation
-            Task {
+            let token = UUID(); generation = token
+            busy = true; endingVoice = true
+            voiceTask = Task {
+                defer { endingVoice = false; if generation == token { busy = false; voiceTask = nil } }
                 await voice.stop(); await previous?.value
-                guard generation == token, enabled else { return }
-                showListening(); busy = false; voiceTask = nil; lastEvent = "Voice connection cancelled"
+                guard generation == token, enabled || force else { return }
+                showListening(); lastEvent = "Voice connection cancelled"
+                if let failure = voice.lastError { error = failure }
             }
         } else if busy {
             let previous = voiceTask
@@ -743,10 +833,11 @@ import SwiftUI
             voiceTask = Task {
                 await previous?.value
                 guard generation == token, !quitting else { return }
-                await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true)
+                await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true, force: force)
             }
         } else {
-            voiceTask = Task { await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed) }
+            busy = true; endingVoice = true
+            voiceTask = Task { await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true, force: force) }
         }
     }
     // Ethan's 2 Nov "have like a refresh button ... so I can toggle it on and
@@ -793,8 +884,8 @@ import SwiftUI
         }
         voiceTask = Task { await openVoice(trigger: trigger, context: context) }
     }
-    private func openVoice(trigger: String, context: VoiceStartContext) async {
-        guard enabled, !quitting, !Task.isCancelled else { busy = false; return }
+    private func openVoice(trigger: String, context: VoiceStartContext, requiresListening: Bool = true) async {
+        guard enabled || !requiresListening, !quitting, !Task.isCancelled else { busy = false; return }
         shortcutNotice = VoiceBridge.shortcutSetupMessage()
         let token = generation
         busy = true; error = nil; status = "Connecting"; detail = "Opening chat…"; lastEvent = trigger
@@ -819,10 +910,10 @@ import SwiftUI
             let spotifyCall = spotifyVolume.callEpoch
             let openedMicrophone = try await voice.start(context: context)
             try Task.checkCancellation()
-            guard enabled, generation == token else { return }
+            guard enabled || !requiresListening, generation == token else { return }
             if let openedMicrophone, openedMicrophone != .listening { try await voice.setMicrophone(.listening) }
             try Task.checkCancellation()
-            guard enabled, generation == token else { return }
+            guard enabled || !requiresListening, generation == token else { return }
             if openedMicrophone != nil, !context.requestedNewCall {
                 spotifyVolume.confirmMicrophoneMute(false, in: spotifyCall)
             }
@@ -831,13 +922,13 @@ import SwiftUI
         } catch {
             Diagnostics.shared.failure("voice.open.failed", error)
             await voice.recoverFromStartFailure(error, context: context)
-            guard generation == token, enabled else { return }
+            guard generation == token, enabled || !requiresListening else { return }
             showListening()
             if !(error is CancellationError) { self.error = error.localizedDescription }
         }
     }
-    private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false, reserved: Bool = false) async {
-        guard enabled || voice.connected, !busy || reserved else { return }
+    private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false, reserved: Bool = false, force: Bool = false) async {
+        guard enabled || voice.connected || force, !busy || reserved else { return }
         cancelStartupSpeech()
         let token = generation
         busy = true; endingVoice = true
@@ -934,14 +1025,20 @@ import SwiftUI
         }
         // Zoom and app commands: same consumption rules, never busy-gated and never routed to
         // beginVoice. While an opening is being captured for Voice, its words belong to Voice.
-        let zooms = zoomPhraseDetectors.poll(at: Diagnostics.now, patterns: zoomPatterns, directOnly: true)
+        let zooms = zoomPhraseDetectors.poll(at: Diagnostics.now, patterns: zoomPatterns, directOnly: true,
+            onDecision: { command, decision in
+                Diagnostics.shared.record("desktop.zoom.evaluated", info: ["command": command.rawValue, "decision": decision])
+            })
         if !zooms.isEmpty {
             for accepted in zooms {
                 standaloneWake.cancelPending(patterns: [wakePattern], endPattern: pattern(for: accepted.command.slot))
             }
             if !quitting, !capturingStartupSpeech { for accepted in zooms { requestZoom(accepted.command) } }
         }
-        let appCommands = appCommandDetector.poll(switchPrefix: pattern(for: .switchAppPhrase), openPrefix: pattern(for: .openAppPhrase))
+        let appCommands = appCommandDetector.poll(switchPrefix: pattern(for: .switchAppPhrase), openPrefix: pattern(for: .openAppPhrase),
+            onDecision: { command, decision in
+                Diagnostics.shared.record("desktop.app.evaluated", info: ["command": command.rawValue, "decision": decision])
+            })
         if !appCommands.isEmpty, !quitting, !capturingStartupSpeech { performAppCommands(appCommands) }
         let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int, slot: PhraseSlot)? in
             let values = phrases(for: action)

@@ -199,6 +199,21 @@ struct PhrasePattern: Equatable {
     }
 }
 
+// Desktop commands can follow earlier speech in one unpunctuated ASR result.
+// Use real word spans, never synthesized hypothesis-arrival timestamps, to
+// recognize the same audio boundary already used by the microphone detector.
+enum DesktopSpeechBoundaries {
+    static func indices(words: [String], timings: [(word: String, start: Double, end: Double)]?, gap: Double) -> [Int] {
+        guard let timings, timings.map(\.word) == words, timings.count > 1 else { return [] }
+        return (1..<timings.count).filter { index in
+            let previous = timings[index - 1], next = timings[index]
+            return previous.start.isFinite && previous.end.isFinite && next.start.isFinite && next.end.isFinite &&
+                previous.end > previous.start && next.end > next.start &&
+                next.start - previous.end + 1e-9 >= gap
+        }
+    }
+}
+
 struct PhraseMatcher {
     enum MatchKind: String { case exact, dictionary, fuzzy }
     static let mutePhrase = PhraseSlot.mutePhrase.defaultText.lowercased(), unmutePhrase = PhraseSlot.unmutePhrase.defaultText.lowercased()

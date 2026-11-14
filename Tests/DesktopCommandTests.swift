@@ -101,6 +101,39 @@ private final class Probe {
         check(separate.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).map(\.name) == ["safari"], "An actual gap can end a prior request")
         check(heard("Open GitHub Desktop App").first?.name == "github desktop app", "An installed name can end in App")
 
+        // Synthetic real-audio spans reproduce the observed shape: a model can
+        // append a fresh request to earlier discussion without any punctuation.
+        func spans(_ text: String, gaps: [Int: Double] = [:]) -> [(word: String, start: Double, end: Double)] {
+            var time = 0.0
+            return PhraseMatcher.words(text).enumerated().map { index, word in
+                time += gaps[index] ?? 0.05
+                let start = time; time += 0.15
+                return (word, start, time)
+            }
+        }
+        let appText = "we discussed open Chrome and the app command open Chrome thanks"
+        let appSpans = spans(appText, gaps: [8: 0.7, 10: 0.9])
+        var noisyApp = AppCommandDetector()
+        noisyApp.audio(level: 0.2, seconds: 1, at: appSpans.last!.end)
+        noisyApp.update(appText, at: 1, timings: appSpans)
+        check(noisyApp.poll(switchPrefix: switchPrefix, openPrefix: openPrefix) == [command(.openApp, "chrome", bare: true)],
+              "Real word gaps isolate a later Open Chrome despite background noise and no punctuation")
+        check(noisyApp.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).isEmpty, "A timed app request is consumed once")
+        var noisyTail = AppCommandDetector()
+        let tailSpans = spans("open Chrome")
+        noisyTail.audio(level: 0.2, seconds: 1, at: tailSpans.last!.end + 0.81)
+        noisyTail.update("open Chrome", at: 1, timings: tailSpans)
+        check(noisyTail.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).count == 1,
+              "The existing finalization interval uses real word end time even if RMS never becomes quiet")
+        for badSpans in [spans(appText), appSpans.map { (word: $0.word, start: $0.start, end: $0.start) }, Array(appSpans.dropLast())] {
+            var detector = AppCommandDetector()
+            detector.audio(level: 0.2, seconds: 1)
+            detector.update(appText, at: 1, timings: badSpans)
+            detector.audio(level: 0, seconds: 1)
+            check(detector.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).isEmpty,
+                  "No gap, synthetic arrival timestamps or misaligned spans cannot split discussion into commands")
+        }
+
         // Duplicates: one action per spoken occurrence.
         var once = AppCommandDetector()
         once.audio(level: 0.2, seconds: 0.1); once.update("Switch app Chrome", at: 1); once.audio(level: 0, seconds: 1)
@@ -243,6 +276,24 @@ private final class Probe {
         for text in ["Don't zoom in", "Do not zoom out", "I said zoom in", "The zoom in button", "Zoom in phrase works", "I could zoom in on that", "Zoom in on the diagram", "Zoom", "Zoom inside"] {
             check(zoomHeard(text).isEmpty, "Not a zoom command: \(text)")
         }
+        let zoomText = "the zoom in command is not working zoom in zoom out"
+        let zoomSpans = spans(zoomText, gaps: [7: 0.7, 9: 0.7])
+        var noisyZoom = CommandPhraseDetectors<ZoomDirection>()
+        noisyZoom.audio(level: 0.2, seconds: 1)
+        noisyZoom.update(zoomText, at: 1, timings: zoomSpans)
+        check(noisyZoom.poll(at: 1, patterns: zoomPatterns, directOnly: true).map(\.command) == [.zoomIn, .zoomOut],
+              "Timed desktop boundaries isolate fresh zoom commands from earlier discussion")
+        check(noisyZoom.poll(at: 2, patterns: zoomPatterns, directOnly: true).isEmpty, "No timed zoom replay")
+        for badSpans in [spans(zoomText), zoomSpans.map { (word: $0.word, start: $0.start, end: $0.start) }] {
+            var detectors = CommandPhraseDetectors<ZoomDirection>()
+            detectors.audio(level: 0.2, seconds: 1); detectors.update(zoomText, at: 1, timings: badSpans)
+            check(detectors.poll(at: 1, patterns: zoomPatterns, directOnly: true).isEmpty, "Discussion needs a real word gap")
+        }
+        var stillNegated = CommandPhraseDetectors<ZoomDirection>()
+        let negatedText = "earlier discussion do not zoom in"
+        stillNegated.audio(level: 0.2, seconds: 1)
+        stillNegated.update(negatedText, at: 1, timings: spans(negatedText, gaps: [2: 0.7]))
+        check(stillNegated.poll(at: 1, patterns: zoomPatterns, directOnly: true).isEmpty, "A real gap never removes a command's own negation")
         var zoomOnce = CommandPhraseDetectors<ZoomDirection>()
         zoomOnce.audio(level: 0.2, seconds: 0.1); zoomOnce.update("Zoom in", at: 1)
         check(zoomOnce.poll(at: 1, patterns: zoomPatterns).count == 1, "Zoom acts")

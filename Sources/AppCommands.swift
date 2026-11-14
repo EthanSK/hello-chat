@@ -38,6 +38,8 @@ struct AppCommandDetector {
     private static let bareLeftWords: Set<String> = ["please", "ok", "okay", "now"]
     private var context: [String] = []
     private var sentenceStarts: [Int] = []
+    private var leftBoundaries: [Int] = []
+    private var endBoundaries: [Int] = []
     private var wordTimings: [(word: String, start: Double, end: Double)]?
     private var quiet = 0.0
     private var audioTime: Double?
@@ -66,9 +68,11 @@ struct AppCommandDetector {
             if token.rangeOfCharacter(from: .alphanumerics) != nil { words.append(token) } else { starts.append(words.count) }
         }
         wordTimings = timings
-        guard words != context || starts != sentenceStarts else { return }
+        let left = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: 0.35)
+        let ends = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: Self.finalizationSeconds)
+        guard words != context || starts != sentenceStarts || left != leftBoundaries || ends != endBoundaries else { return }
         if audioBoundary > 0 { audioBoundary = min(audioBoundary, zip(context, words).prefix { $0 == $1 }.count) }
-        context = words; sentenceStarts = starts; revision += 1
+        context = words; sentenceStarts = starts; leftBoundaries = left; endBoundaries = ends; revision += 1
     }
     // End wins over every app command heard so far in this transcript.
     mutating func consumeAll(switchPrefix: PhrasePattern, openPrefix: PhrasePattern) {
@@ -76,7 +80,8 @@ struct AppCommandDetector {
         for (index, prefix) in found.enumerated() { consume(index: index, start: prefix.start, end: prefix.end) }
         waiting = false; checkedRevision = revision
     }
-    mutating func poll(switchPrefix: PhrasePattern, openPrefix: PhrasePattern) -> [AppCommandCandidate] {
+    mutating func poll(switchPrefix: PhrasePattern, openPrefix: PhrasePattern,
+                       onDecision: ((AppCommandKind, String) -> Void)? = nil) -> [AppCommandCandidate] {
         guard heardSpeech, checkedRevision != revision || waiting else { return [] }
         checkedRevision = revision; waiting = false
         var result: [AppCommandCandidate] = []
@@ -85,16 +90,20 @@ struct AppCommandDetector {
             if let range = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
                 if consumedAudio.contains(where: { $0.overlaps(range) }) { continue }
             } else if index < consumedCount { continue }
-            let sentenceStart = sentenceStarts.last(where: { $0 <= prefix.start }) ?? 0
-            let sentenceEnd = max(prefix.end, sentenceStarts.first(where: { $0 > prefix.start }) ?? context.count)
+            let sentenceStart = (sentenceStarts + leftBoundaries).filter { $0 <= prefix.start }.max() ?? 0
+            let sentenceEnd = max(prefix.end, (sentenceStarts + endBoundaries).filter { $0 > prefix.start }.min() ?? context.count)
             let elapsed: Double
             if let alignedTimings, sentenceEnd < context.count {
                 elapsed = alignedTimings[sentenceEnd].start - alignedTimings[sentenceEnd - 1].end
-            } else if let audioTime, let alignedTimings, quiet > 0 {
-                elapsed = min(quiet, audioTime - alignedTimings[sentenceEnd - 1].end)
+            } else if let audioTime, let alignedTimings {
+                let last = alignedTimings[sentenceEnd - 1]
+                // Background playback can keep RMS above the quiet threshold.
+                // Real model spans still show that the spoken request ended.
+                elapsed = last.end > last.start ? audioTime - last.end : min(quiet, audioTime - last.end)
             } else { elapsed = quiet }
             if sentenceEnd < context.count, alignedTimings != nil, elapsed + 1e-9 < Self.finalizationSeconds {
                 consume(index: index, start: prefix.start, end: prefix.end)
+                onDecision?(prefix.kind, "rejected_no_audio_boundary")
                 continue
             }
             guard elapsed.isFinite, elapsed + 1e-9 >= Self.finalizationSeconds else {
@@ -102,15 +111,20 @@ struct AppCommandDetector {
             }
             consume(index: index, start: prefix.start, end: prefix.end)
             let left = context[max(min(audioBoundary, prefix.start), sentenceStart)..<prefix.start]
-            guard left.allSatisfy((prefix.bare ? Self.bareLeftWords : Self.prefixLeftWords).contains) else { continue }
+            guard left.allSatisfy((prefix.bare ? Self.bareLeftWords : Self.prefixLeftWords).contains) else {
+                onDecision?(prefix.kind, "rejected_context"); continue
+            }
             let name = Self.trimmed(Array(context[prefix.end..<sentenceEnd]), kind: prefix.kind)
-            guard (1...Self.maximumNameWords).contains(name.count), !Self.isDiscussion(name) else { continue }
+            guard (1...Self.maximumNameWords).contains(name.count), !Self.isDiscussion(name) else {
+                onDecision?(prefix.kind, "rejected_name_or_discussion"); continue
+            }
             var alternate: String?
             if prefix.kind == .openApp, !prefix.bare, prefix.start + 1 < prefix.end, context[prefix.end - 1] == "app" {
                 let bareName = Self.trimmed(Array(context[(prefix.end - 1)..<sentenceEnd]), kind: .openApp)
                 if bareName.count <= Self.maximumNameWords { alternate = bareName.joined(separator: " ") }
             }
             result.append(AppCommandCandidate(kind: prefix.kind, name: name.joined(separator: " "), bare: prefix.bare, alternateName: alternate))
+            onDecision?(prefix.kind, "accepted")
         }
         return result
     }
