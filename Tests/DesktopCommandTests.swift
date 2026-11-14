@@ -18,20 +18,50 @@ private final class Probe {
     @MainActor static func main() async throws {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
-        var nativeRequests = 0, axRequests = 0, identityReads = 0
-        check(RunningAppActivation.request(identityMatches: { true }, native: { nativeRequests += 1; return true },
-            accessibility: { axRequests += 1; return true }) && nativeRequests == 1 && axRequests == 0,
+        var nativeRequests = 0, axRequests = 0, workspaceRequests = 0, identityReads = 0
+        check(await RunningAppActivation.request(identityMatches: { true }, native: { nativeRequests += 1; return true },
+            accessibility: { axRequests += 1; return true }, workspace: { workspaceRequests += 1; return true })
+              && nativeRequests == 1 && axRequests == 0 && workspaceRequests == 0,
               "An accepted native activation never adds a second request")
-        check(RunningAppActivation.request(identityMatches: { true }, native: { false },
-            accessibility: { axRequests += 1; return true }) && axRequests == 1,
+        check(await RunningAppActivation.request(identityMatches: { true }, native: { false },
+            accessibility: { axRequests += 1; return true }, workspace: { workspaceRequests += 1; return true })
+              && axRequests == 1 && workspaceRequests == 0,
               "A refused native activation permits one Accessibility request")
-        check(!RunningAppActivation.request(identityMatches: { identityReads += 1; return identityReads == 1 }, native: { false },
-            accessibility: { axRequests += 1; return true }) && axRequests == 1,
+        check(await RunningAppActivation.request(identityMatches: { true }, native: { false },
+            accessibility: { axRequests += 1; return false }, workspace: { workspaceRequests += 1; return true })
+              && axRequests == 2 && workspaceRequests == 1,
+              "After both refusals, Launch Services gets one request")
+        check(!(await RunningAppActivation.request(identityMatches: { true }, native: { false },
+            accessibility: { false }, workspace: { workspaceRequests += 1; return false })) && workspaceRequests == 2,
+              "Three refusals report failure; nothing is retried")
+        check(!(await RunningAppActivation.request(identityMatches: { identityReads += 1; return identityReads == 1 }, native: { false },
+            accessibility: { axRequests += 1; return true }, workspace: { workspaceRequests += 1; return true }))
+              && axRequests == 2 && workspaceRequests == 2,
               "An exited or replaced process between attempts cannot receive the fallback")
-        check(!RunningAppActivation.request(identityMatches: { false }, native: { nativeRequests += 1; return true },
-            accessibility: { axRequests += 1; return true }) && nativeRequests == 1 && axRequests == 1,
+        check(!(await RunningAppActivation.request(identityMatches: { false }, native: { nativeRequests += 1; return true },
+            accessibility: { axRequests += 1; return true })) && nativeRequests == 1 && axRequests == 2,
               "A stale target receives no activation request")
         func failureText(_ decision: AppCommandDecision) -> String? { if case .failure(let text) = decision { return text }; return nil }
+
+        // Cancellation between activation routes must not post the next request.
+        let cancelledActivation = Task { @MainActor in
+            var fallback = 0
+            let result = await RunningAppActivation.request(identityMatches: { true }, native: {
+                withUnsafeCurrentTask { $0?.cancel() }; return false
+            }, accessibility: { fallback += 1; return true })
+            return (result, fallback)
+        }
+        let cancelledResult = await cancelledActivation.value
+        check(!cancelledResult.0 && cancelledResult.1 == 0, "Cancellation after native refusal prevents Accessibility")
+        let cancelledWorkspace = Task { @MainActor in
+            var fallback = 0
+            let result = await RunningAppActivation.request(identityMatches: { true }, native: { false }, accessibility: {
+                withUnsafeCurrentTask { $0?.cancel() }; return false
+            }, workspace: { fallback += 1; return true })
+            return (result, fallback)
+        }
+        let cancelledWorkspaceResult = await cancelledWorkspace.value
+        check(!cancelledWorkspaceResult.0 && cancelledWorkspaceResult.1 == 0, "Cancellation after AX refusal prevents Launch Services")
 
         // Slots: four new canonical preferences after the unchanged Voice and Browser fields.
         check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase], "Existing fields are intact")
@@ -45,6 +75,27 @@ private final class Probe {
         // App command detection.
         let switchPrefix = PhrasePattern(slot: .switchAppPhrase, text: "Switch app", similar: true, dictionaries: .init())
         let openPrefix = PhrasePattern(slot: .openAppPhrase, text: "Open app", similar: true, dictionaries: .init())
+        for (text, kind) in [("Switch app", AppCommandKind.switchApp), ("Open app", AppCommandKind.openApp)] {
+            var detector = AppCommandDetector()
+            let tokens = PhraseMatcher.words(text)
+            let timing: [(word: String, start: Double, end: Double)] = [(tokens[0], 0, 0.2), (tokens[1], 0.2, 0.35)]
+            detector.audio(level: 0.2, seconds: 0.1, at: 1.4)
+            detector.update(text, at: 1.4, timings: timing)
+            check(detector.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).isEmpty, "Prefix-only hypothesis sends nothing")
+            detector.update(text + " Chrome", at: 1.6, timings: timing + [("chrome", 0.45, 0.8)])
+            detector.audio(level: 0.2, seconds: 0.1, at: 1.8)
+            let completed = detector.poll(switchPrefix: switchPrefix, openPrefix: openPrefix)
+            check(completed.count == 1 && completed[0].kind == kind && completed[0].name == "chrome", "A delayed name completes the original occurrence")
+            check(detector.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).isEmpty, "A completed delayed name cannot replay")
+            var cancelled = AppCommandDetector()
+            cancelled.audio(level: 0.2, seconds: 0.1, at: 1.4)
+            cancelled.update(text, at: 1.4, timings: timing)
+            _ = cancelled.poll(switchPrefix: switchPrefix, openPrefix: openPrefix)
+            cancelled.consumeAll(switchPrefix: switchPrefix, openPrefix: openPrefix)
+            cancelled.update(text + " Chrome", at: 1.6, timings: timing + [("chrome", 0.45, 0.8)])
+            cancelled.audio(level: 0.2, seconds: 0.1, at: 1.8)
+            check(cancelled.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).isEmpty, "End cancellation also consumes a prefix awaiting its name")
+        }
         func heard(_ text: String, quiet: Double = 1) -> [AppCommandCandidate] {
             var detector = AppCommandDetector()
             detector.audio(level: 0.2, seconds: 0.1)
@@ -129,8 +180,21 @@ private final class Probe {
         var noisyApp = AppCommandDetector()
         noisyApp.audio(level: 0.2, seconds: 1, at: appSpans.last!.end)
         noisyApp.update(appText, at: 1, timings: appSpans)
-        check(noisyApp.poll(switchPrefix: switchPrefix, openPrefix: openPrefix) == [command(.openApp, "chrome", bare: true)],
+        var decisions: [(String, AppCommandDetector.Evidence)] = []
+        check(noisyApp.poll(switchPrefixes: [switchPrefix], openPrefixes: [openPrefix], onDecision: { decisions.append(($1, $2)) })
+              == [command(.openApp, "chrome", bare: true)],
               "Real word gaps isolate a later Open Chrome despite background noise and no punctuation")
+        check(decisions.map(\.0) == ["rejected_context", "accepted"] && decisions.allSatisfy { $0.1.timing == "model" }
+              && decisions.map { $0.1.leftWords } == [2, 0] && decisions.map { $0.1.nameWords } == [7, 1]
+              && abs((decisions[0].1.gapBefore ?? 0) - 0.05) < 1e-6 && abs((decisions[1].1.gapBefore ?? 0) - 0.7) < 1e-6
+              && abs((decisions[1].1.elapsed ?? 0) - 0.9) < 1e-6,
+              "Diagnostics separate discussion before a prefix from a real pause, without any words")
+        var untimed: [AppCommandDetector.Evidence] = []
+        var plain = AppCommandDetector()
+        plain.audio(level: 0.2, seconds: 0.1); plain.update("we discussed switch app chrome", at: 1); plain.audio(level: 0, seconds: 1)
+        _ = plain.poll(switchPrefixes: [switchPrefix], openPrefixes: [openPrefix], onDecision: { untimed.append($2) })
+        check(untimed.map(\.timing) == ["none"] && untimed.first?.gapBefore == nil && untimed.first?.leftWords == 2,
+              "Text without model spans is labelled, never given an invented gap")
         check(noisyApp.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).isEmpty, "A timed app request is consumed once")
         var noisyTail = AppCommandDetector()
         let tailSpans = spans("open Chrome")
@@ -164,28 +228,91 @@ private final class Probe {
         check(AppCommandDetector.barePrefix(for: PhrasePattern(text: "Launch app", similar: false)).map(\.text) == "launch" &&
               AppCommandDetector.barePrefix(for: PhrasePattern(text: "Open", similar: false)) == nil, "Bare form follows a custom prefix")
 
-        // Resolution: running apps for Switch, installed apps for Open.
+        // Extra listed phrases: each is a prefix for its own section. Only Open app phrases have the
+        // bare short form; Switch app phrases never gain one.
+        let bringUp = PhrasePattern(slot: .switchAppPhrase, text: "Bring up", similar: true, dictionaries: .init())
+        let launchApp = PhrasePattern(slot: .openAppPhrase, text: "Launch app", similar: true, dictionaries: .init())
+        func heardListed(_ text: String, switches: [PhrasePattern] = [switchPrefix, bringUp],
+                         opens: [PhrasePattern] = [openPrefix, launchApp]) -> [AppCommandCandidate] {
+            var detector = AppCommandDetector()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1); detector.audio(level: 0, seconds: 1)
+            return detector.poll(switchPrefixes: switches, openPrefixes: opens)
+        }
+        check(heardListed("Bring up Chrome") == [command(.switchApp, "chrome")], "An extra Switch app phrase is a prefix")
+        check(heardListed("Switch app Chrome") == [command(.switchApp, "chrome")], "The main phrase still works beside it")
+        check(heardListed("Launch Safari") == [command(.openApp, "safari", bare: true)] &&
+              heardListed("Open Safari") == [command(.openApp, "safari", bare: true)], "Each Open app phrase keeps its short form")
+        for text in ["Switch Chrome", "Bring Chrome", "Don't bring up Chrome", "I said launch app Safari"] {
+            check(heardListed(text).isEmpty, "No new short form, mention or negation: \(text)")
+        }
+        let switchTo = PhrasePattern(slot: .switchAppPhrase, text: "Switch app to", similar: true, dictionaries: .init())
+        check(heardListed("Switch app to Chrome", switches: [switchPrefix, switchTo]) == [command(.switchApp, "chrome")],
+              "Overlapping listed phrases are one spoken occurrence")
+        var revisedAlias = AppCommandDetector()
+        revisedAlias.audio(level: 0.2, seconds: 0.1); revisedAlias.update("Switch app Chrome", at: 1); revisedAlias.audio(level: 0, seconds: 1)
+        check(revisedAlias.poll(switchPrefixes: [switchPrefix, bringUp], openPrefixes: [openPrefix]).count == 1, "First listed phrase acts")
+        revisedAlias.update("Bring up Chrome", at: 2)
+        check(revisedAlias.poll(switchPrefixes: [switchPrefix, bringUp], openPrefixes: [openPrefix]).isEmpty,
+              "A revision to another listed phrase is the same occurrence")
+
+        // A pause heard after the prefix used to skip the left-context check: "the switch app chrome",
+        // a 0.5 s pause, then more words was admitted. The words before the prefix still count.
+        var latePause = AppCommandDetector()
+        latePause.audio(level: 0.2, seconds: 0.1); latePause.update("the switch app chrome", at: 1)
+        latePause.audio(level: 0, seconds: 0.5); latePause.audio(level: 0.2, seconds: 0.1)
+        latePause.update("the switch app chrome thanks", at: 2); latePause.audio(level: 0, seconds: 1)
+        var latePauseDecision = ""
+        check(latePause.poll(switchPrefixes: [switchPrefix], openPrefixes: [openPrefix],
+                             onDecision: { _, decision, _ in latePauseDecision = decision }).isEmpty && latePauseDecision == "rejected_context",
+              "A later pause never removes the words before a prefix")
+        // Every pause is kept, so hesitating inside a request keeps the pause before it.
+        var hesitant = AppCommandDetector()
+        hesitant.audio(level: 0.2, seconds: 0.1); hesitant.update("we talked about it", at: 1)
+        hesitant.audio(level: 0, seconds: 0.4); hesitant.audio(level: 0.2, seconds: 0.1)
+        hesitant.update("we talked about it switch app", at: 2)
+        hesitant.audio(level: 0, seconds: 0.4); hesitant.audio(level: 0.2, seconds: 0.1)
+        hesitant.update("we talked about it switch app chrome", at: 3); hesitant.audio(level: 0, seconds: 1)
+        check(hesitant.poll(switchPrefixes: [switchPrefix], openPrefixes: [openPrefix]) == [command(.switchApp, "chrome")],
+              "A pause before the prefix still separates it from earlier discussion after a second pause")
+
+        // Resolution. Ethan, 14 November 2026: Switch app and Open app are interchangeable. Both bring
+        // a running app forward and open an installed one that isn't running. This replaces the old
+        // contract (Switch: running apps only; Open: installed apps only), checked below as changes.
         let chrome = AppCandidate(id: "com.google.Chrome", names: ["Google Chrome"], pid: 11)
         let chatGPT = AppCandidate(id: "com.openai.chat", names: ["ChatGPT"], pid: 12)
         let codex = AppCandidate(id: "com.openai.codex", names: ["Codex"], pid: 13)
         let code = AppCandidate(id: "com.microsoft.VSCode", names: ["Code", "Visual Studio Code"], pid: 14)
         let running = [chrome, chatGPT, codex, code]
-        check(AppCommandPlanner.decideSwitch("chrome", running: running) == .activate(chrome), "Chrome alias")
-        let chromeWrapper = AppCandidate(id: "example.workflow", names: ["Chrome"], pid: 20)
-        check(AppCommandPlanner.decideSwitch("chrome", running: [chromeWrapper, chrome]) == .activate(chrome), "Chrome alias selects the browser over a named wrapper")
-        check(AppCommandPlanner.decideSwitch("chorme", running: running) == .activate(chrome), "Close spelling of a known alias")
-        check(AppCommandPlanner.decideSwitch("chat gpt", running: running) == .activate(chatGPT), "Chat GPT is ChatGPT when it is open")
-        check(AppCommandPlanner.decideSwitch("chat gpt", running: [chrome, codex]) == .activate(codex), "Chat GPT falls back to Codex")
-        check(AppCommandPlanner.decideSwitch("bs code", running: running) == .activate(code), "BS Code is VS Code")
-        check(AppCommandPlanner.decideSwitch("visual studio code", running: running) == .activate(code), "Exact bundle name")
-        check(AppCommandPlanner.decideSwitch("googel chrome", running: running) == .activate(chrome), "Conservative fuzzy match")
-        check(failureText(AppCommandPlanner.decideSwitch("safari", running: running))?.contains("already open") == true,
-              "Switch never reaches for an app that isn't running")
+        func decide(_ kind: AppCommandKind, _ name: String, bare: Bool = false, alternate: String? = nil,
+                    running: [AppCandidate], installed: [AppCandidate] = []) -> AppCommandDecision {
+            AppCommandPlanner.decide(command(kind, name, bare: bare, alternate: alternate), running: running, installed: installed)
+        }
+        func target(_ decision: AppCommandDecision) -> String? {
+            switch decision {
+            case .activate(let app): return "activate \(app.id) \(app.pid ?? -1)"
+            case .open(let app): return "open \(app.id)"
+            default: return nil
+            }
+        }
+        for kind in [AppCommandKind.switchApp, .openApp] {
+            check(decide(kind, "chrome", running: running) == .activate(chrome), "Chrome alias: \(kind)")
+            let chromeWrapper = AppCandidate(id: "example.workflow", names: ["Chrome"], pid: 20)
+            check(decide(kind, "chrome", running: [chromeWrapper, chrome]) == .activate(chrome), "Chrome alias selects the browser over a named wrapper")
+            check(decide(kind, "chorme", running: running) == .activate(chrome), "Close spelling of a known alias")
+            check(decide(kind, "chat gpt", running: running) == .activate(chatGPT), "Chat GPT is ChatGPT when it is open")
+            check(decide(kind, "bs code", running: running) == .activate(code), "BS Code is VS Code")
+            check(decide(kind, "visual studio code", running: running) == .activate(code), "Exact bundle name")
+            check(decide(kind, "googel chrome", running: running) == .activate(chrome), "Conservative fuzzy match")
+        }
+        // A running alias target wins over launching a preferred app that isn't open.
+        check(decide(.openApp, "chat gpt", running: [chrome, codex],
+                     installed: [AppCandidate(id: "com.openai.chat", names: ["ChatGPT"], url: URL(fileURLWithPath: "/Applications/ChatGPT.app"))])
+              == .activate(codex), "Chat GPT brings the open Codex forward")
         let impostor = AppCandidate(id: "com.example.chat", names: ["ChatGPT"], pid: 20)
-        check(failureText(AppCommandPlanner.decideSwitch("chat gpt", running: [chatGPT, impostor]))?.contains("Say the full app name") == true,
+        check(failureText(decide(.switchApp, "chat gpt", running: [chatGPT, impostor]))?.contains("Say the full app name") == true,
               "An ambiguous exact name is never masked by the alias")
         let notes = [AppCandidate(id: "a.notes", names: ["Notes"], pid: 21), AppCandidate(id: "b.notes", names: ["Notes"], pid: 22)]
-        check(failureText(AppCommandPlanner.decideSwitch("notes", running: notes)) != nil, "Two apps with one name are ambiguous")
+        check(failureText(decide(.switchApp, "notes", running: notes)) != nil, "Two apps with one name are ambiguous")
         let rhymes = [AppCandidate(id: "a.notion", names: ["Notion"], pid: 23), AppCandidate(id: "a.motion", names: ["Motion"], pid: 24)]
         if case .ambiguous(let names) = AppResolver.resolve("lotion", among: rhymes, allowFuzzy: true) {
             check(Set(names) == ["Notion", "Motion"], "Fuzzy ties name both apps")
@@ -198,18 +325,42 @@ private final class Probe {
         let safari = installedApp("com.apple.Safari", "Safari"), appStore = installedApp("com.apple.AppStore", "App Store")
         let installedChrome = installedApp("com.google.Chrome", "Google Chrome")
         let installed = [safari, appStore, installedChrome]
-        check(AppCommandPlanner.decideOpen(command(.openApp, "safari", bare: true), installed: installed) == .open(safari), "Open Safari")
-        check(AppCommandPlanner.decideOpen(command(.openApp, "chrome", bare: true), installed: installed) == .open(installedChrome), "Open Chrome")
-        check(AppCommandPlanner.decideOpen(command(.openApp, "app store", bare: true), installed: installed) == .open(appStore), "Open the App Store")
-        check(AppCommandPlanner.decideOpen(command(.openApp, "store", alternate: "app store"), installed: installed) == .open(appStore), "Open app store")
-        check(AppCommandPlanner.decideOpen(command(.openApp, "store", alternate: "app store"),
-              installed: installed + [installedApp("x.score", "Score")]) == .open(appStore), "Exact App Store beats fuzzy Score")
-        check(AppCommandPlanner.decideOpen(command(.openApp, "safar"), installed: installed) == .open(safari), "Open app prefix may fuzzy-match")
-        for name in ["safar", "door", "chrome settings", "codex"] {
-            check(AppCommandPlanner.decideOpen(command(.openApp, name, bare: true), installed: installed) == .ignore, "Bare open stays ordinary speech: \(name)")
+        // Closed apps: both phrases open the verified installed copy.
+        for kind in [AppCommandKind.switchApp, .openApp] {
+            check(decide(kind, "safari", running: [], installed: installed) == .open(safari), "Closed Safari opens: \(kind)")
+            check(decide(kind, "chrome", running: [], installed: installed) == .open(installedChrome), "Closed Chrome opens: \(kind)")
+            check(decide(kind, "safar", running: running, installed: installed) == .open(safari), "A full prefix may fuzzy-match a closed app: \(kind)")
+            check(failureText(decide(kind, "chrome settings", running: [], installed: installed)) == "No app matches “chrome settings”.",
+                  "A full prefix reports no match: \(kind)")
         }
-        check(failureText(AppCommandPlanner.decideOpen(command(.openApp, "chrome settings"), installed: installed)) != nil, "Open app reports no match")
-        check(AppCommandPlanner.decideOpen(command(.openApp, "codex", bare: true), installed: installed) == .ignore, "Open never uses running apps")
+        // Changed: Switch app used to answer "No open app matches “safari”" here.
+        check(target(decide(.switchApp, "safari", running: running, installed: installed)) == "open com.apple.Safari",
+              "Switch app opens an installed app that isn't running")
+        // Changed: Open used to launch through Launch Services even when the app was already open.
+        check(decide(.openApp, "chrome", bare: true, running: running, installed: installed) == .activate(chrome),
+              "Open Chrome brings the running browser forward")
+        // Changed: bare Open used to ignore running apps that aren't in an application folder.
+        check(decide(.openApp, "codex", bare: true, running: running, installed: installed) == .activate(codex),
+              "Open Codex brings the running app forward")
+        check(decide(.openApp, "safari", bare: true, running: running, installed: installed) == .open(safari), "Open Safari")
+        check(decide(.openApp, "app store", bare: true, running: running, installed: installed) == .open(appStore), "Open the App Store")
+        check(decide(.openApp, "store", alternate: "app store", running: running, installed: installed) == .open(appStore), "Open app store")
+        check(decide(.openApp, "store", alternate: "app store", running: running,
+                     installed: installed + [installedApp("x.score", "Score")]) == .open(appStore), "Exact App Store beats fuzzy Score")
+        for name in ["safar", "door", "chrome settings", "googel chrome"] {
+            check(decide(.openApp, name, bare: true, running: running, installed: installed) == .ignore, "Bare open stays ordinary speech: \(name)")
+        }
+        // No wrong app: a close spelling of a running app can't beat an installed app's exact name.
+        let notion = AppCandidate(id: "a.notion", names: ["Notion"], pid: 30), motion = installedApp("a.motion", "Motion")
+        for kind in [AppCommandKind.switchApp, .openApp] {
+            check(decide(kind, "motion", running: [notion], installed: [motion]) == .open(motion), "Exact closed Motion beats running Notion: \(kind)")
+            check(decide(kind, "notion", running: [notion], installed: [motion, installedApp("a.notion", "Notion")]) == .activate(notion),
+                  "Running Notion is brought forward, never opened again: \(kind)")
+        }
+        // A running copy absorbs the installed names, so an installed-only name still reaches it.
+        let openCode = AppCandidate(id: "com.microsoft.VSCode", names: ["Code"], pid: 31)
+        check(target(decide(.switchApp, "visual studio code", running: [openCode], installed: [installedApp("com.microsoft.VSCode", "Visual Studio Code")]))
+              == "activate com.microsoft.VSCode 31", "Installed names reach the running process")
 
         // Installed catalog: intended roots, one ordinary nested level, never inside a bundle.
         check(InstalledAppCatalog.roots(home: URL(fileURLWithPath: "/Users/test")).map(\.url.path) ==
@@ -317,6 +468,28 @@ private final class Probe {
         zoomEnded.audio(level: 0.2, seconds: 0.1); zoomEnded.update("Zoom in. Bye chat.", at: 1)
         zoomEnded.cancelPending(patterns: zoomPatterns, endPattern: end)
         check(zoomEnded.poll(at: 1, patterns: zoomPatterns).isEmpty, "End wins over zoom")
+        // Listed extra phrases share the direction's detector and its one occurrence count. The
+        // default phrases above take the same path with one phrase each.
+        let enlarge = PhrasePattern(slot: .zoomInPhrase, text: "Enlarge", similar: true, dictionaries: .init())
+        let zoomAliases: [ZoomDirection: [PhrasePattern]] = [.zoomIn: [zoomPatterns[.zoomIn]!, enlarge], .zoomOut: [zoomPatterns[.zoomOut]!]]
+        var aliasZoom = CommandPhraseDetectors<ZoomDirection>()
+        aliasZoom.audio(level: 0.2, seconds: 0.1); aliasZoom.update("Enlarge", at: 1)
+        check(aliasZoom.poll(at: 1, aliases: zoomAliases, directOnly: true).map(\.command) == [.zoomIn], "An extra zoom phrase zooms in")
+        aliasZoom.update("Zoom in", at: 2)
+        check(aliasZoom.poll(at: 2, aliases: zoomAliases, directOnly: true).isEmpty, "A revision to the main phrase doesn't zoom twice")
+        for text in ["Don't enlarge", "The enlarge button"] {
+            var detectors = CommandPhraseDetectors<ZoomDirection>()
+            detectors.audio(level: 0.2, seconds: 0.1); detectors.update(text, at: 1)
+            check(detectors.poll(at: 1, aliases: zoomAliases, directOnly: true).isEmpty, "Extra phrases keep negation and mention rules: \(text)")
+        }
+        let goodnight = PhrasePattern(slot: .sleepPhrase, text: "Goodnight chat", similar: true, dictionaries: .init())
+        var aliasEnded = CommandPhraseDetectors<ZoomDirection>()
+        aliasEnded.audio(level: 0.2, seconds: 0.1); aliasEnded.update("Zoom in. Goodnight chat.", at: 1)
+        aliasEnded.cancelPending(patterns: zoomPatterns, endPattern: end)
+        var stillPending = aliasEnded
+        check(stillPending.poll(at: 1, patterns: zoomPatterns).count == 1, "The main End phrase alone doesn't cover an extra End phrase")
+        aliasEnded.cancelPending(aliases: zoomAliases, endPatterns: [end, goodnight])
+        check(aliasEnded.poll(at: 1, aliases: zoomAliases).isEmpty, "An extra End phrase wins over zoom too")
 
         // Zoom key contract (Agentic Mouse): Cmd+Shift+Equals (24) in, Cmd+Minus (27) out, one balanced pair.
         func shortcut(_ recorder: KeyRecorder, trusted: Bool = true, session: DesktopSessionState = .interactive,
@@ -371,25 +544,38 @@ private final class Probe {
 
         var result = await commands.perform(command(.switchApp, "chrome"))
         check(result == DesktopCommandResult(message: "Switched to Google Chrome", diagnostic: "frontmost"), "Switch confirms the front app")
-        check(probe.activated == [chrome.id] && probe.opened.isEmpty && probe.scans == 0, "Switch only activates a running app")
+        check(probe.activated == [chrome.id] && probe.opened.isEmpty && probe.scans == 0,
+              "An exact running match activates it without reading the installed catalog")
         probe.bringsForward = false
         result = await commands.perform(command(.switchApp, "codex"))
         check(result.diagnostic == "dispatched" && result.message == "Asked Codex to come forward, but it isn't in front yet." && probe.sleeps == 10,
               "Dispatch is not reported as success")
-        result = await commands.perform(command(.switchApp, "safari"))
-        check(result.message?.hasPrefix("No open app matches") == true && probe.opened.isEmpty && probe.scans == 0, "Switch never launches")
         probe.bringsForward = true
+        // Changed (Ethan, 14 November 2026): Switch app used to refuse a closed app.
+        result = await commands.perform(command(.switchApp, "safari"))
+        check(result == DesktopCommandResult(message: "Opened Safari", diagnostic: "frontmost") && probe.opened == [safari.id]
+              && probe.scans == 1, "Switch app opens a closed installed app")
         result = await commands.perform(command(.openApp, "safari", bare: true))
-        check(result == DesktopCommandResult(message: "Opened Safari", diagnostic: "frontmost") && probe.opened == [safari.id], "Open Safari")
+        check(result == DesktopCommandResult(message: "Opened Safari", diagnostic: "frontmost") && probe.opened == [safari.id, safari.id], "Open Safari")
+        // Changed: bare Open used to ignore running Codex, and Open app used to relaunch running Chrome.
         result = await commands.perform(command(.openApp, "codex", bare: true))
-        check(result == DesktopCommandResult(message: nil, diagnostic: "ignored") && probe.opened == [safari.id], "Bare open never uses running apps")
+        check(result == DesktopCommandResult(message: "Switched to Codex", diagnostic: "frontmost") && probe.activated.last == codex.id
+              && probe.opened.count == 2, "Open Codex brings the running app forward")
+        result = await commands.perform(command(.openApp, "chrome", alternate: "app chrome"))
+        check(result.message == "Switched to Google Chrome" && probe.activated.last == chrome.id && probe.opened.count == 2,
+              "Open app Chrome switches to the running browser")
         check(probe.scans == 1, "The installed catalog is cached, not rescanned per command")
         probe.verifies = false
         result = await commands.perform(command(.openApp, "app store", bare: true))
-        check(result.message == "App Store is no longer installed there." && probe.opened == [safari.id], "A vanished bundle is not opened")
+        check(result.message == "App Store is no longer installed there." && probe.opened.count == 2, "A vanished bundle is not opened")
         probe.verifies = true
         _ = await commands.perform(command(.openApp, "safari", bare: true))
         check(probe.scans == 2, "A vanished bundle refreshes the catalog")
+        let activationsBeforeUnknown = probe.activated.count, opensBeforeUnknown = probe.opened.count
+        result = await commands.perform(command(.switchApp, "lantern"))
+        check(result == DesktopCommandResult(message: "No app matches “lantern”.", diagnostic: "not-resolved")
+              && probe.activated.count == activationsBeforeUnknown && probe.opened.count == opensBeforeUnknown,
+              "An unknown app is reported, and nothing is switched or opened")
         probe.session = .locked
         let activations = probe.activated.count
         result = await commands.perform(command(.switchApp, "chrome"))
@@ -420,14 +606,23 @@ private final class Probe {
         result = await pending.perform(command(.openApp, "safari", bare: true)) { timeline.events.append("sound") }
         check(Array(timeline.events.prefix(2)) == ["open", "sound"] && timeline.events.filter { $0 == "sound" }.count == 1
               && result.diagnostic == "dispatched", "Open sounds once when the open request is accepted")
+        // Both phrases sound once for running and closed apps alike.
+        timeline.events.removeAll()
+        result = await pending.perform(command(.openApp, "codex", bare: true)) { timeline.events.append("sound") }
+        check(Array(timeline.events.prefix(2)) == ["activate", "sound"] && timeline.events.filter { $0 == "sound" }.count == 1,
+              "Open sounds once when a running app is asked forward")
+        timeline.events.removeAll()
+        result = await pending.perform(command(.switchApp, "safari")) { timeline.events.append("sound") }
+        check(Array(timeline.events.prefix(2)) == ["open", "sound"] && timeline.events.filter { $0 == "sound" }.count == 1,
+              "Switch sounds once when a closed app is opened")
         var sounds = 0
-        for name in ["chrome", "codex"] {
+        for name in ["chrome", "codex", "safari"] {
             _ = await commands.perform(command(.switchApp, name)) { sounds += 1 }
         }
-        check(sounds == 2, "The spoken app name doesn't change whether the command sounds")
+        check(sounds == 3, "The spoken app name doesn't change whether the command sounds")
         sounds = 0
         _ = await commands.perform(command(.openApp, "door", bare: true)) { sounds += 1 }
-        _ = await commands.perform(command(.switchApp, "safari")) { sounds += 1 }
+        _ = await commands.perform(command(.switchApp, "lantern")) { sounds += 1 }
         probe.verifies = false
         _ = await commands.perform(command(.openApp, "safari", bare: true)) { sounds += 1 }
         probe.verifies = true

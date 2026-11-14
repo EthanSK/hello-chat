@@ -519,20 +519,110 @@ struct OpenSettingsButton: View {
     }
 }
 
-// Both windows edit the same saved phrases, using the existing native form fields.
+// Both windows edit the same saved phrases, using the existing native form fields. Extra phrases
+// sit directly below their section's main phrase (Ethan, 14 November 2026); + adds one.
+private enum PhraseFocus: Hashable { case main(PhraseSlot), row(UUID) }
+
 private struct PhraseFields: View {
     @ObservedObject var model: GateModel
     var slots: [PhraseSlot] = PhraseSlot.voiceSlots
+    @FocusState private var focus: PhraseFocus?
     var body: some View {
         ForEach(slots) { slot in
             PhraseField(slot: slot, text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
                 set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }), similar: model.similarPhrases,
                 dictionary: Binding(get: { model.phraseDictionaries[slot.rawValue] },
-                    set: { model.phraseDictionaries[slot.rawValue] = $0 }))
+                    set: { model.phraseDictionaries[slot.rawValue] = $0 }),
+                commit: PhraseCommit(field: .main(slot), focus: $focus, commit: commit), add: { add(slot) })
+            PhraseIssueText(issue: model.phraseIssue(slot, id: nil), identifier: slot.identifier + "Issue")
+            ForEach(Array((model.phraseAliases[slot] ?? []).enumerated()), id: \.element.id) { index, row in
+                ExtraPhraseField(slot: slot, number: index + 2,
+                    text: Binding(get: { model.phraseAliases[slot]?.first { $0.id == row.id }?.text ?? "" },
+                        set: { model.setPhraseRow(slot, id: row.id, text: $0) }),
+                    commit: PhraseCommit(field: .row(row.id), focus: $focus, commit: commit),
+                    remove: { model.removePhraseRow(slot, id: row.id) })
+                PhraseIssueText(issue: model.phraseIssue(slot, id: row.id), identifier: "\(slot.identifier)\(index + 2)Issue")
+            }
             if let example = slot.example {
                 Text(example).foregroundStyle(.secondary).accessibilityIdentifier("\(slot.rawValue)Example")
             }
         }
+    }
+    private func commit(_ field: PhraseFocus) {
+        switch field {
+        case .main(let slot): model.commitPhraseRow(slot, id: nil)
+        case .row(let id): if let slot = model.phraseSlot(containing: id) { model.commitPhraseRow(slot, id: id) }
+        }
+    }
+    private func add(_ slot: PhraseSlot) {
+        let id = model.addPhraseRow(slot)
+        Task { @MainActor in focus = .row(id) } // The new field exists only after this update.
+    }
+}
+
+// Slash entry such as "Open app / Switch app" becomes rows only on Return, leaving the field or
+// leaving the window, never while typing. Each field commits only itself.
+private struct PhraseCommit: ViewModifier {
+    let field: PhraseFocus
+    var focus: FocusState<PhraseFocus?>.Binding
+    let commit: (PhraseFocus) -> Void
+    @Environment(\.controlActiveState) private var activeState
+    func body(content: Content) -> some View {
+        content
+            .focused(focus, equals: field)
+            .onSubmit { commit(field) }
+            .onChange(of: focus.wrappedValue == field) { focused, now in if focused, !now { commit(field) } }
+            .onChange(of: activeState) { _, state in if state == .inactive, focus.wrappedValue == field { commit(field) } }
+            .onDisappear { if focus.wrappedValue == field { commit(field) } }
+    }
+}
+
+// A repeat for the same action is redundant (grey); a phrase another action already owns is
+// ignored for this one (red, with the existing warning icon).
+private struct PhraseIssueText: View {
+    let issue: PhraseConfiguration.Issue?
+    let identifier: String
+    var body: some View {
+        switch issue {
+        case .conflict(let owner):
+            Label(Self.text(owner), systemImage: "exclamationmark.triangle").foregroundStyle(.red).accessibilityIdentifier(identifier)
+        case .duplicate(let owner):
+            Text(Self.text(owner)).foregroundStyle(.secondary).accessibilityIdentifier(identifier)
+        case nil:
+            EmptyView()
+        }
+    }
+    // Every section label is a phrase or prefix name, such as "Already an end phrase".
+    static func text(_ owner: PhraseSlot) -> String {
+        let name = owner.label.lowercased()
+        return "Already \("aeiou".contains(name.first ?? " ") ? "an" : "a") \(name)"
+    }
+}
+
+private struct ExtraPhraseField: View {
+    let slot: PhraseSlot
+    let number: Int
+    @Binding var text: String
+    let commit: PhraseCommit
+    let remove: () -> Void
+    var body: some View {
+        HStack(spacing: 5) {
+            // The main row's label space, so the fields line up under it.
+            Group {
+                Text(slot.label).fixedSize(horizontal: true, vertical: false)
+                Image(systemName: "info.circle")
+            }
+            .hidden().accessibilityHidden(true)
+            Spacer(minLength: 8)
+            TextField(slot.label, text: $text).labelsHidden()
+                .multilineTextAlignment(.trailing).accessibilityLabel("\(slot.label) \(number)")
+                .accessibilityIdentifier("\(slot.identifier)\(number)")
+                .modifier(commit)
+            Button(action: remove) { Image(systemName: "minus.circle") }
+                .buttonStyle(.plain).help("Remove phrase")
+                .accessibilityLabel("Remove \(slot.label.lowercased()) \(number)")
+                .accessibilityIdentifier("\(slot.identifier)\(number)Remove")
+        }.accessibilityElement(children: .contain)
     }
 }
 
@@ -580,6 +670,8 @@ private struct PhraseField: View {
     @Binding var text: String
     let similar: Bool
     @Binding var dictionary: [String]?
+    let commit: PhraseCommit
+    let add: () -> Void
     @State private var showingSpellings = false
     private var available: Bool { slot.isDefault(text) }
     var body: some View {
@@ -596,12 +688,17 @@ private struct PhraseField: View {
             Spacer(minLength: 8)
             TextField(slot.label, text: $text).labelsHidden()
                 .multilineTextAlignment(.trailing).accessibilityLabel(slot.label).accessibilityIdentifier(slot.identifier)
+                .modifier(commit)
             if !available {
                 Button { text = slot.defaultText } label: { Image(systemName: "arrow.counterclockwise") }
                     .buttonStyle(.plain).help("Restore default phrase")
                     .accessibilityLabel("Restore default \(slot.label.lowercased())")
                     .accessibilityIdentifier(slot.identifier + "Reset")
             }
+            Button(action: add) { Image(systemName: "plus.circle") }
+                .buttonStyle(.plain).help("Add phrase")
+                .accessibilityLabel("Add \(slot.label.lowercased())")
+                .accessibilityIdentifier(slot.identifier + "Add")
         }.accessibilityElement(children: .contain)
     }
 }
@@ -740,13 +837,13 @@ struct SettingsView: View {
                 PhraseFields(model: model)
                 VideoControls(model: model, bridge: model.videoBridge)
                 PhraseFields(model: model, slots: PhraseSlot.desktopSlots)
-                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Pause video and Play video control the browser video through Agent Flow Bridge. Repeating a command keeps its requested state. Say an app name after Switch app (open apps only) or Open app. Zoom in and Zoom out send the standard zoom shortcut to the front app.")
+                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Pause video and Play video control the browser video through Agent Flow Bridge. Repeating a command keeps its requested state. Say an app name after Switch app or Open app to bring it forward, opening it if needed. Zoom in and Zoom out send the standard zoom shortcut to the front app. Use + to add another phrase, or separate phrases with /.")
                     .foregroundStyle(.secondary)
                 Toggle("Alternate spellings for default phrases", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
                 Text(model.similarPhrases ? "Custom phrases match exactly. Use each default phrase’s info button to view or replace its dictionary. Green is exact; orange is an alternate spelling." : "Alternate spellings are off. Saved phrases match exactly, ignoring capitalization, spacing and punctuation.")
                     .foregroundStyle(.secondary)
-                if PhraseMatcher.words(model.wakePhrase).isEmpty || PhraseMatcher.words(model.sleepPhrase).isEmpty {
+                if !model.hasPhrase(.wakePhrase) || !model.hasPhrase(.sleepPhrase) {
                     Text("Enter both phrases").foregroundStyle(.red)
                 }
                 Button(model.checkingSpeech ? "Checking speech…" : "Check speech recognition") { model.checkSpeech() }

@@ -55,26 +55,32 @@ struct DesktopCommandResult: Equatable {
     let diagnostic: String // Never contains spoken words or app names.
 }
 
-// A background speech command may be refused by AppKit's activation policy.
-// Fall back once to the native Accessibility frontmost attribute, addressing
-// the same live process. Never launch an app or retry a changed identity.
+// A background speech command may be refused by AppKit's activation policy (21:33:13 UTC on 14
+// November 2026: accepted, then activate-failed). Each later route runs once, only after the
+// previous one was refused, and only while the same live process is still the target: the native
+// Accessibility frontmost attribute, then Launch Services, which handles activation for an app it
+// opens. Launch Services may reopen a window, as a Dock click does; that is now acceptable because
+// Switch app and Open app both may open apps. No retry, delay or second request of the same kind.
 enum RunningAppActivation {
-    static func request(identityMatches: () -> Bool, native: () -> Bool, accessibility: () -> Bool) -> Bool {
-        guard identityMatches() else { return false }
+    static func request(identityMatches: () -> Bool, native: () -> Bool, accessibility: () async -> Bool,
+                        workspace: () async -> Bool = { false }) async -> Bool {
+        guard !Task.isCancelled, identityMatches() else { return false }
         if native() { return true }
-        guard identityMatches() else { return false }
-        return accessibility()
+        guard !Task.isCancelled, identityMatches() else { return false }
+        if await accessibility() { return true }
+        guard !Task.isCancelled, identityMatches() else { return false }
+        return await workspace()
     }
 }
 
 // Carries out app and zoom commands. Every dependency is injectable; tests never switch, open
-// or type. Switch reads running apps only. Open reads a cached catalog of installed apps that is
-// built on demand, never on every audio frame and never in the background.
+// or type. An exact running match needs only the running apps. Anything else reads a cached
+// catalog of installed apps that is built on demand, never per audio frame or in the background.
 @MainActor final class DesktopCommands {
     struct Environment {
         var session: () -> DesktopSessionState = { .current }
         var running: () -> [AppCandidate] = DesktopCommands.runningApps
-        var activate: (AppCandidate) -> Bool = DesktopCommands.activateRunning
+        var activate: (AppCandidate) async -> Bool = DesktopCommands.activateRunning
         var isFrontmost: (AppCandidate) -> Bool = DesktopCommands.isFrontmost
         var frontmostName: () -> String? = { NSWorkspace.shared.frontmostApplication?.localizedName }
         var installed: () async -> [AppCandidate] = DesktopCommands.scanInstalled
@@ -93,14 +99,14 @@ enum RunningAppActivation {
 
     // `dispatched` runs once, when macOS accepts the switch/open request or the zoom keys are sent:
     // before front-app confirmation, and never for ignored, unresolved, blocked or cancelled work.
+    // Switch app and Open app share this one action; the candidate's section only picks its sound.
     func perform(_ candidate: AppCommandCandidate, dispatched: () -> Void = {}) async -> DesktopCommandResult {
         if let unavailable = unavailable() { return unavailable }
-        switch candidate.kind {
-        case .switchApp:
-            return await carry(AppCommandPlanner.decideSwitch(candidate.name, running: environment.running()), dispatched: dispatched)
-        case .openApp:
-            return await carry(AppCommandPlanner.decideOpen(candidate, installed: await installedApps()), dispatched: dispatched)
+        if let decision = AppCommandPlanner.decideRunning(candidate, running: environment.running()) {
+            return await carry(decision, dispatched: dispatched)
         }
+        let installed = await installedApps()
+        return await carry(AppCommandPlanner.decide(candidate, running: environment.running(), installed: installed), dispatched: dispatched)
     }
 
     func zoom(_ direction: ZoomDirection, dispatched: () -> Void = {}) -> DesktopCommandResult {
@@ -123,9 +129,10 @@ enum RunningAppActivation {
         case .ignore: return DesktopCommandResult(message: nil, diagnostic: "ignored")
         case .failure(let text): return DesktopCommandResult(message: text, diagnostic: "not-resolved")
         case .activate(let app):
-            guard environment.activate(app) else {
+            guard await environment.activate(app) else {
                 return DesktopCommandResult(message: "Couldn't switch to \(app.displayName).", diagnostic: "activate-failed")
             }
+            if let unavailable = unavailable() { return unavailable }
             dispatched()
             return await confirm(app, done: "Switched to \(app.displayName)",
                 pending: "Asked \(app.displayName) to come forward, but it isn't in front yet.")
@@ -184,8 +191,9 @@ enum RunningAppActivation {
         return front.bundleIdentifier == app.id && front.bundleURL?.resolvingSymlinksInPath() == app.url?.resolvingSymlinksInPath()
     }
 
-    // Activation only: a quit app is never relaunched by Switch.
-    nonisolated static func activateRunning(_ app: AppCandidate) -> Bool {
+    // Brings the same live process forward. The Accessibility request runs off the main thread, so
+    // an unresponsive app can't stall recognition; its existing one-second messaging bound remains.
+    static func activateRunning(_ app: AppCandidate) async -> Bool {
         guard let pid = app.pid else { return false }
         func current() -> NSRunningApplication? {
             guard let running = NSRunningApplication(processIdentifier: pid),
@@ -193,19 +201,27 @@ enum RunningAppActivation {
                   (running.bundleIdentifier ?? "pid:\(pid)") == app.id, running.bundleURL == app.url else { return nil }
             return running
         }
-        return RunningAppActivation.request(identityMatches: { current() != nil }, native: {
+        return await RunningAppActivation.request(identityMatches: { current() != nil }, native: {
             let accepted = current()?.activate(options: []) ?? false
             Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid)],
                 info: ["method": "appkit", "accepted": String(accepted)])
             return accepted
         }, accessibility: {
-            guard AXIsProcessTrusted() else { return false }
-            let target = AXUIElementCreateApplication(pid)
-            AXUIElementSetMessagingTimeout(target, 1)
-            let result = AXUIElementSetAttributeValue(target, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid), "ax_result": Double(result.rawValue)],
-                info: ["method": "accessibility", "accepted": String(result == .success)])
+            let result = await Task.detached(priority: .userInitiated) { () -> AXError? in
+                guard AXIsProcessTrusted() else { return nil }
+                let target = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(target, 1)
+                return AXUIElementSetAttributeValue(target, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            }.value
+            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid), "ax_result": Double(result?.rawValue ?? 0)],
+                info: ["method": "accessibility", "trusted": String(result != nil), "accepted": String(result == .success)])
             return result == .success
+        }, workspace: {
+            guard let url = current()?.bundleURL else { return false }
+            let opened = await openApplication(at: url)
+            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid), "opened_pid": Double(opened ?? -1)],
+                info: ["method": "workspace", "accepted": String(opened != nil), "same_process": String(opened == pid)])
+            return opened != nil
         })
     }
 
@@ -227,12 +243,17 @@ enum RunningAppActivation {
 
     nonisolated static func openInstalled(_ app: AppCandidate) async -> Bool {
         guard let url = app.url else { return false }
+        return await openApplication(at: url) != nil
+    }
+
+    // Reuses a running instance rather than starting a second one. Returns the process it opened.
+    nonisolated static func openApplication(at url: URL) async -> Int32? {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.createsNewApplicationInstance = false
         configuration.addsToRecentItems = false
         configuration.promptsUserIfNeeded = false
-        do { _ = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration); return true }
-        catch { return false }
+        do { return try await NSWorkspace.shared.openApplication(at: url, configuration: configuration).processIdentifier }
+        catch { return nil }
     }
 }

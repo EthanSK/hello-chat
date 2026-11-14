@@ -186,23 +186,33 @@ import Foundation
         precondition(legacyPending.volume == 80 && legacyPending.receipt == nil)
 
         var boundaries = SavedCallBoundaries()
-        _ = boundaries.observe(["A"], controlsPresent: true, controlsComplete: true)
-        let replacementBoundary = boundaries.observe(["B"], controlsPresent: true, controlsComplete: true)
+        _ = boundaries.observe(ledger(["A"]), controlsPresent: true, controlsComplete: true)
+        let replacementBoundary = boundaries.observe(ledger(["B"], ended: ["A"]), controlsPresent: true, controlsComplete: true)
         precondition(replacementBoundary.endPrevious && !replacementBoundary.suppressControls,
                      "Active-to-active replacement still closes the old call")
-        let knownEnd = boundaries.observe([], controlsPresent: true, controlsComplete: true)
+        let knownEnd = boundaries.observe(ledger([], ended: ["A", "B"]), controlsPresent: true, controlsComplete: true)
         precondition(knownEnd.endPrevious && knownEnd.suppressControls,
                      "Final saved End outranks stale buttons")
-        precondition(boundaries.observe([], controlsPresent: true, controlsComplete: true).suppressControls)
-        _ = boundaries.observe([], controlsPresent: false, controlsComplete: true)
-        precondition(!boundaries.observe([], controlsPresent: true, controlsComplete: true).suppressControls,
+        precondition(boundaries.observe(ledger([], ended: ["A", "B"]), controlsPresent: true, controlsComplete: true).suppressControls)
+        _ = boundaries.observe(ledger([], ended: ["A", "B"]), controlsPresent: false, controlsComplete: true)
+        precondition(!boundaries.observe(ledger([], ended: ["A", "B"]), controlsPresent: true, controlsComplete: true).suppressControls,
                      "A later temporary call can use fresh controls")
-        _ = boundaries.observe(["C"], controlsPresent: true, controlsComplete: true)
+        _ = boundaries.observe(ledger(["C"], ended: ["A", "B"]), controlsPresent: true, controlsComplete: true)
         precondition(!boundaries.observe(nil, controlsPresent: false, controlsComplete: false).endPrevious &&
                      boundaries.hasActiveCall, "Unavailable metadata retains the known call")
-        precondition(!boundaries.observe(["C", "D"], controlsPresent: true, controlsComplete: true).endPrevious)
-        precondition(!boundaries.observe(["D"], controlsPresent: true, controlsComplete: true).endPrevious,
+        precondition(!boundaries.observe(ledger(["C", "D"]), controlsPresent: true, controlsComplete: true).endPrevious)
+        precondition(!boundaries.observe(ledger(["D"], ended: ["C"]), controlsPresent: true, controlsComplete: true).endPrevious,
                      "An overlapping remaining call keeps the shared volume lease")
+        // A read bounded by the wrong launch time drops every row. Missing is
+        // not ended: no saved End, no stale-button override, no stale vouching.
+        let missing = boundaries.observe(ledger([]), controlsPresent: true, controlsComplete: true)
+        precondition(!missing.endPrevious && !missing.suppressControls && missing.vanished && !boundaries.hasActiveCall,
+                     "A session that disappears without its own End record is indeterminate")
+        _ = boundaries.observe(ledger(["E"]), controlsPresent: true, controlsComplete: true)
+        let changed = boundaries.observe(ledger(["F"]), controlsPresent: true, controlsComplete: true)
+        precondition(!changed.endPrevious && changed.vanished && boundaries.callIdentifier == "F",
+                     "Without an End record, the changed identity closes the old lease downstream")
+        try callPresenceReplays()
 
         var call = VoiceCallDecision()
         precondition(!call.observe(controlsPresent: true, controlsComplete: true, persistedCallActive: false, applicationAbsent: false))
@@ -215,7 +225,8 @@ import Foundation
         _ = call.observe(controlsPresent: true, controlsComplete: true, persistedCallActive: true, applicationAbsent: false)
         _ = call.observe(controlsPresent: false, controlsComplete: true, persistedCallActive: true, applicationAbsent: false)
         precondition(call.presence == .active, "Persisted active session protects transport reconnect")
-        _ = call.observe(controlsPresent: false, controlsComplete: true, persistedCallActive: true, applicationAbsent: true)
+        precondition(call.observe(controlsPresent: false, controlsComplete: true, persistedCallActive: true, applicationAbsent: true)
+                     && call.presence == .unknown, "Process exit asks for one immediate confirming read")
         _ = call.observe(controlsPresent: false, controlsComplete: true, persistedCallActive: true, applicationAbsent: true)
         precondition(call.presence == .inactive, "Actual process exit ends even stale persisted sessions")
         _ = call.observe(controlsPresent: true, controlsComplete: true, persistedCallActive: false,
@@ -230,6 +241,118 @@ import Foundation
         precondition(permissions == 0o600)
         try receipt.save(nil); check(try receipt.load() == nil)
         print("Spotify volume ownership, recovery and call-decision checks passed")
+    }
+
+    static func ledger(_ active: Set<String>, ended: Set<String> = []) -> VoiceLedgerSessions {
+        VoiceLedgerSessions(active: active, ended: ended)
+    }
+
+    static func read(_ controls: String, _ saved: VoiceLedgerSessions?, process: pid_t? = 3735,
+                     absent: Bool = false, resolved: Bool = true) -> VoiceCallRead {
+        VoiceCallRead(controlsPresent: controls == "present", controlsComplete: controls != "incomplete",
+                      applicationAbsent: absent, process: process, ledger: saved, ledgerResolved: resolved)
+    }
+
+    // Mirrors SpotifyVoiceVolume.observe: duplicate presence/identity is ignored
+    // and only changes reconcile the injected Spotify fixture.
+    final class Replay {
+        let fixture = Fixture()
+        lazy var session = fixture.session()
+        var tracker = VoiceCallTracker()
+        var presence: VoiceCallPresence = .unknown
+        var identifier: String?
+        var published: [VoiceCallPresence] = []
+        var evidence: [String] = []
+
+        @discardableResult func step(_ read: VoiceCallRead) throws -> Bool {
+            let result = tracker.observe(read)
+            for observation in result.observations {
+                let next = observation.presence == .inactive ? nil : observation.callIdentifier ?? identifier
+                guard observation.presence != presence || next != identifier else { continue }
+                presence = observation.presence; identifier = next
+                published.append(presence); evidence.append(observation.evidence ?? "")
+                _ = try session.reconcile(presence, callIdentifier: identifier)
+            }
+            return result.readAgain
+        }
+    }
+
+    static func callPresenceReplays() throws {
+        // Observed 22:07/22:17 shape: the saved session never ended, but one read
+        // could not bind the ledger to the verified Codex launch.
+        let glitch = Replay()
+        try glitch.step(read("present", ledger(["thread:current"])))
+        precondition(glitch.fixture.volume == 50 && glitch.presence == .active)
+        try glitch.step(read("incomplete", nil, process: nil, resolved: false))
+        try glitch.step(read("present", nil, resolved: false))
+        precondition(glitch.presence == .active && glitch.published == [.active] && glitch.fixture.writes == [50],
+                     "An unresolved launch keeps the known call instead of restoring")
+        precondition(glitch.tracker.observe(read("incomplete", nil, resolved: false)).observations.last?.evidence
+                     == "controls=incomplete saved=unresolved")
+        // The previous fallback produced an empty read from a too-late cutoff.
+        try glitch.step(read("present", ledger([])))
+        try glitch.step(read("incomplete", ledger([])))
+        try glitch.step(read("present", ledger(["thread:current"])))
+        precondition(!glitch.published.contains(.inactive) && glitch.fixture.writes == [50] && glitch.fixture.volume == 50,
+                     "A session missing without its End record never restores Spotify")
+        // A real End still restores on the first read, even with stale buttons.
+        try glitch.step(read("present", ledger([], ended: ["thread:current"])))
+        precondition(glitch.presence == .inactive && glitch.fixture.volume == 80 && glitch.fixture.writes == [50, 80])
+        precondition(glitch.evidence.last == "controls=present saved=ended")
+        try glitch.step(read("present", ledger([], ended: ["thread:current"])))
+        precondition(glitch.presence == .inactive, "Saved End outranks stale controls until they clear")
+
+        // Observed 22:14 shape: a temporary-thread session ended and the original
+        // thread started a new session four seconds later. Both are real.
+        let moved = Replay()
+        try moved.step(read("present", ledger(["new:temp"])))
+        try moved.step(read("absent", ledger([], ended: ["new:temp"])))
+        precondition(moved.presence == .inactive && moved.fixture.writes == [50, 80], "A real End is not delayed")
+        try moved.step(read("present", ledger(["original:current"], ended: ["new:temp"])))
+        precondition(moved.presence == .active && moved.identifier == "original:current" && moved.fixture.writes == [50, 80, 50])
+
+        // End and Start between two reads still restore, then lower the new call.
+        let rapid = Replay()
+        try rapid.step(read("present", ledger(["chat:A"])))
+        try rapid.step(read("present", ledger(["chat:B"], ended: ["chat:A"])))
+        precondition(rapid.published == [.active, .inactive, .active] && rapid.identifier == "chat:B" &&
+                     rapid.fixture.writes == [50, 80, 50] && rapid.fixture.receipt?.callIdentifier == "chat:B")
+
+        // Codex exit: one unknown read, then an immediate second read ends it.
+        let exit = Replay()
+        try exit.step(read("present", ledger(["chat:A"])))
+        let confirmExit = try exit.step(read("incomplete", nil, process: nil, absent: true, resolved: false))
+        precondition(confirmExit && exit.presence == .unknown && exit.fixture.volume == 50)
+        let exitAgain = try exit.step(read("incomplete", nil, process: nil, absent: true, resolved: false))
+        precondition(!exitAgain && exit.presence == .inactive && exit.fixture.volume == 80,
+                     "Process exit restores without a timer")
+
+        // Codex replaced between reads: its call cannot continue in a new process,
+        // even when the new launch time cannot be resolved.
+        let replaced = Replay()
+        try replaced.step(read("present", ledger(["chat:A"]), process: 100))
+        try replaced.step(read("incomplete", nil, process: 200, resolved: false))
+        precondition(replaced.presence == .unknown && replaced.published.contains(.inactive) &&
+                     replaced.fixture.volume == 80 && replaced.evidence.contains("controls=incomplete saved=process_replaced"))
+        precondition(replaced.tracker.activeSessions == nil, "No stale saved session protects the new process")
+        // A temporary call in the new process still ends from fresh controls.
+        try replaced.step(read("present", nil, process: 200, resolved: false))
+        precondition(replaced.presence == .active && replaced.fixture.volume == 50)
+        let confirmEnd = try replaced.step(read("absent", nil, process: 200, resolved: false))
+        precondition(confirmEnd)
+        try replaced.step(read("absent", nil, process: 200, resolved: false))
+        precondition(replaced.presence == .inactive && replaced.fixture.volume == 80)
+
+        // Saved startup acceptance alone still cannot lower Spotify.
+        let ledgerOnly = Replay()
+        try ledgerOnly.step(read("absent", ledger(["chat:A"])))
+        try ledgerOnly.step(read("incomplete", ledger(["chat:A"])))
+        precondition(ledgerOnly.presence == .unknown && ledgerOnly.fixture.writes.isEmpty)
+        // Once established, incomplete reads and a reconnect keep the call.
+        try ledgerOnly.step(read("present", ledger(["chat:A"])))
+        try ledgerOnly.step(read("absent", ledger(["chat:A"])))
+        try ledgerOnly.step(read("incomplete", ledger(["chat:A"])))
+        precondition(ledgerOnly.presence == .active && ledgerOnly.fixture.writes == [50])
     }
 
     static func microphonePhraseVolume() throws {

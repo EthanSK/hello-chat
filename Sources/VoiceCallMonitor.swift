@@ -47,6 +47,12 @@ struct VoiceTimeline {
     }
 
     static func activeSessions(database: URL, since: Date) -> Set<String>? {
+        sessions(database: database, since: since)?.active
+    }
+
+    // Also report each exact session's own End record. Absence from the
+    // active set alone is not proof that a call closed.
+    static func sessions(database: URL, since: Date) -> VoiceLedgerSessions? {
         var db: OpaquePointer?
         guard sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK,
               let db else { if let db { sqlite3_close(db) }; return nil }
@@ -64,10 +70,10 @@ struct VoiceTimeline {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_double(statement, 1, since.timeIntervalSince1970 * 1000)
-        var active = Set<String>(), count = 0
+        var active = Set<String>(), ended = Set<String>(), count = 0
         while true {
             let result = sqlite3_step(statement)
-            if result == SQLITE_DONE { return count < 2000 ? active : nil }
+            if result == SQLITE_DONE { return count < 2000 ? VoiceLedgerSessions(active: active, ended: ended) : nil }
             guard result == SQLITE_ROW,
                   let thread = sqlite3_column_text(statement, 0),
                   let session = sqlite3_column_text(statement, 1),
@@ -76,7 +82,7 @@ struct VoiceTimeline {
             let key = String(cString: thread) + ":" + String(cString: session)
             switch String(cString: kind) {
             case "session-started": active.insert(key)
-            case "session-ended": active.remove(key)
+            case "session-ended": active.remove(key); ended.insert(key)
             default: return nil
             }
         }
@@ -85,14 +91,13 @@ struct VoiceTimeline {
 
 @MainActor final class VoiceCallMonitor {
     var onChange: ((VoiceCallObservation) -> Void)?
-    private var decision = VoiceCallDecision()
+    private var tracker = VoiceCallTracker()
     private var started = false
     private var generation = UUID()
     private var refreshTask: Task<Void, Never>?
     private var refreshAgain = false
     private var metadataTask: Task<Void, Never>?
     private var metadataAgain = false
-    private var boundaries = SavedCallBoundaries()
     private var workspace: [NSObjectProtocol] = []
     private var observer: AXObserver?
     private var observedPID: pid_t?
@@ -107,7 +112,7 @@ struct VoiceTimeline {
 
     func start() {
         guard !started else { refresh(); return }
-        started = true; generation = UUID(); decision = VoiceCallDecision(); boundaries = SavedCallBoundaries()
+        started = true; generation = UUID(); tracker = VoiceCallTracker()
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
                      NSWorkspace.didActivateApplicationNotification, NSWorkspace.didWakeNotification] {
             workspace.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
@@ -141,33 +146,27 @@ struct VoiceTimeline {
                 self.refreshAgain = false
                 let database = self.database
                 let evidence = await Task.detached(priority: .utility) {
-                    let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
-                        .filter { !$0.isTerminated }
+                    let absent = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
+                        .filter { !$0.isTerminated }.isEmpty
+                    // Bound saved boundaries by the same verified process as
+                    // the native controls. An unresolved process or launch is
+                    // unknown evidence, never "no sessions since now".
+                    let app = VoiceBridge.currentApplication()
                     var callElements: [AXUIElement] = []
                     let state = VoiceBridge.snapshot(requireEnd: true, observeCallElements: { callElements = $0 })
-                    let since = apps.count == 1 ? apps[0].launchDate ?? Date() : Date()
-                    return (state, apps.isEmpty, VoiceTimeline.activeSessions(database: database, since: since), callElements)
+                    let launch = state.pid != nil && app?.processIdentifier == state.pid ? app?.launchDate : nil
+                    let read = VoiceCallRead(controlsPresent: state.endControlAvailable || state.microphone != nil,
+                        controlsComplete: state.controlsComplete, applicationAbsent: absent, process: state.pid,
+                        ledger: launch.flatMap { VoiceTimeline.sessions(database: database, since: $0) },
+                        ledgerResolved: launch != nil, accessibilityAllowed: state.accessibilityAllowed)
+                    return (read, state.pid, callElements)
                 }.value
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
-                let state = evidence.0
-                let controlsPresent = state.endControlAvailable || state.microphone != nil
-                let boundary = self.boundaries.observe(evidence.2, controlsPresent: controlsPresent,
-                                                       controlsComplete: state.controlsComplete)
-                // An End followed by Start can happen between two reads. The
-                // active boolean stays true, but the previous call still ends.
-                if boundary.endPrevious { self.onChange?(.init(presence: .inactive, callIdentifier: nil)) }
-                let repeatRead = self.decision.observe(controlsPresent: controlsPresent,
-                    controlsComplete: state.controlsComplete, persistedCallActive: self.boundaries.hasActiveCall,
-                    applicationAbsent: evidence.1, savedCallEnded: boundary.suppressControls)
-                self.installAccessibilityObserver(pid: state.pid, callElements: evidence.3)
+                let result = self.tracker.observe(evidence.0)
+                self.installAccessibilityObserver(pid: evidence.1, callElements: evidence.2)
                 self.installFileObservers()
-                // Spotify tolerates ledger-only presence and incomplete AX
-                // reads. Peer End requires fresh evidence from both sources.
-                let verified = controlsPresent && state.accessibilityAllowed && state.pid != nil
-                    && evidence.2?.count == 1 ? evidence.2?.first : nil
-                self.onChange?(.init(presence: self.decision.presence, callIdentifier: self.boundaries.callIdentifier,
-                                     verifiedCallIdentifier: verified))
-                self.refreshAgain = self.refreshAgain || repeatRead
+                for observation in result.observations { self.onChange?(observation) }
+                self.refreshAgain = self.refreshAgain || result.readAgain
             } while self.refreshAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.refreshTask = nil }
         }
@@ -189,7 +188,7 @@ struct VoiceTimeline {
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
                 // Most SQLite writes are unrelated to call boundaries. They
                 // must not cause repeated AX scans of a busy conversation.
-                if let value, value != self.boundaries.activeSessions { self.refresh() }
+                if let value, value != self.tracker.activeSessions { self.refresh() }
             } while self.metadataAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.metadataTask = nil }
         }

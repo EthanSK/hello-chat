@@ -13,17 +13,26 @@ struct CommandPhraseDetectors<Command: CaseIterable & Hashable> {
     }
     // End wins over these commands in the same transcript, as it does over audio commands.
     mutating func cancelPending(patterns: [Command: PhrasePattern], endPattern: PhrasePattern) {
-        for (command, pattern) in patterns where !PhraseMatcher.words(pattern.text).isEmpty {
-            detectors[command, default: StandaloneWake()].cancelPending(patterns: [pattern], endPattern: endPattern)
+        cancelPending(aliases: patterns.mapValues { [$0] }, endPatterns: [endPattern])
+    }
+    // Every phrase listed for a command shares that command's one occurrence count.
+    mutating func cancelPending(aliases: [Command: [PhrasePattern]], endPatterns: [PhrasePattern]) {
+        for (command, list) in aliases {
+            let usable = list.filter { !PhraseMatcher.words($0.text).isEmpty }
+            if !usable.isEmpty { detectors[command, default: StandaloneWake()].cancelPending(patterns: usable, endPatterns: endPatterns) }
         }
     }
     // Accepted commands in spoken order. Each occurrence is consumed once.
     mutating func poll(at time: Double, patterns: [Command: PhrasePattern], directOnly: Bool = false,
                        onDecision: ((Command, String) -> Void)? = nil) -> [(command: Command, range: Range<Int>)] {
+        poll(at: time, aliases: patterns.mapValues { [$0] }, directOnly: directOnly, onDecision: onDecision)
+    }
+    mutating func poll(at time: Double, aliases: [Command: [PhrasePattern]], directOnly: Bool = false,
+                       onDecision: ((Command, String) -> Void)? = nil) -> [(command: Command, range: Range<Int>)] {
         Command.allCases.compactMap { command -> (command: Command, range: Range<Int>)? in
-            guard let pattern = patterns[command], !PhraseMatcher.words(pattern.text).isEmpty,
+            guard let list = aliases[command]?.filter({ !PhraseMatcher.words($0.text).isEmpty }), let pattern = list.first,
                   detectors[command, default: StandaloneWake()].poll(at: time, phrase: pattern.text, similar: pattern.similar,
-                      rejectNegated: true, ending: pattern.ending, patterns: [pattern], directOnly: directOnly,
+                      rejectNegated: true, ending: pattern.ending, patterns: list, directOnly: directOnly,
                       onDecision: { decision, _, _ in onDecision?(command, decision) }),
                   let range = detectors[command]?.acceptedRange else { return nil }
             return (command, range)
@@ -215,8 +224,12 @@ struct StandaloneWake {
             endPattern: PhrasePattern(text: endPhrase, similar: similar, ending: true, dictionaries: dictionaries))
     }
     mutating func cancelPending(patterns: [PhrasePattern], endPattern: PhrasePattern) {
+        cancelPending(patterns: patterns, endPatterns: [endPattern])
+    }
+    mutating func cancelPending(patterns: [PhrasePattern], endPatterns: [PhrasePattern]) {
         // End and audio commands consume earlier wakes using the same slot rules that accepted them.
-        guard let end = endPattern.matches(in: context, timings: wordTimings).last?.end else { return }
+        // With several phrases for one command, the latest heard one bounds the consumed wakes.
+        guard let end = endPatterns.compactMap({ $0.matches(in: context, timings: wordTimings).last?.end }).max() else { return }
         let earlier = Array(Set(patterns.flatMap { $0.matches(in: context, timings: wordTimings) }.filter { $0.end <= end }.map { $0.start..<$0.end })) // Count the same ranges as poll when two spellings share one action.
         consumed = max(consumed, earlier.count)
         if let wordTimings, wordTimings.map(\.word) == context {

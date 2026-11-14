@@ -6,6 +6,11 @@ import Foundation
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
         }
+        for text in ["by H chat", "the actions can be exposed by H chat, but Apple's phrase", "written by H chad", "handled by H chats", "B Y H C H A T"] {
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)
+            expect(!detector.pollEnd(at: 1, phrase: "Bye Chat", similar: true), "Discussion of H Chat cannot become a generated End address")
+        }
         var revisedOccurrences = StandaloneWake()
         revisedOccurrences.audio(level: 0.2, seconds: 0.1, at: 2)
         revisedOccurrences.update("I said mute chat. Mute chat", at: 1, timings: [("i", 0, 0.1), ("said", 0.1, 0.2), ("mute", 0.2, 0.3), ("chat", 0.3, 0.4), ("mute", 1, 1.1), ("chat", 1.1, 1.2)])

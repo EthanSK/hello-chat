@@ -17,30 +17,117 @@ struct VoiceCallObservation: Equatable {
     let presence: VoiceCallPresence
     let callIdentifier: String?
     var verifiedCallIdentifier: String? = nil
+    // Metadata-only explanation for diagnostics. Never a call or thread identifier.
+    var evidence: String? = nil
+}
+
+// Saved boundaries read after the current Codex process launched. `ended`
+// holds sessions with their own session-ended record, even if restarted.
+struct VoiceLedgerSessions: Equatable {
+    var active: Set<String>
+    var ended: Set<String> = []
 }
 
 // Saved final End events outrank stale AX buttons. Session identity also
 // catches End/Start pairs whose short inactive interval was never observed.
 struct SavedCallBoundaries {
+    struct Outcome: Equatable {
+        var endPrevious = false
+        var suppressControls = false
+        // The known session left the active set without its own End record.
+        var vanished = false
+    }
     private(set) var activeSessions: Set<String>?
     private var suppressUntilControlsClear = false
     var hasActiveCall: Bool { activeSessions.map { !$0.isEmpty } ?? false }
     var callIdentifier: String? { activeSessions?.count == 1 ? activeSessions?.first : nil }
 
-    mutating func observe(_ current: Set<String>?, controlsPresent: Bool,
-                          controlsComplete: Bool) -> (endPrevious: Bool, suppressControls: Bool) {
-        var ended = false
+    // Only the known session's own End record proves the call closed. A session
+    // that merely disappears (another launch cutoff, pruned or unresolved rows)
+    // is indeterminate. The ledger stops vouching for it and fresh native
+    // controls decide; keeping the stale set would block a real restore.
+    mutating func observe(_ current: VoiceLedgerSessions?, controlsPresent: Bool,
+                          controlsComplete: Bool) -> Outcome {
+        var outcome = Outcome()
         if let current {
-            if let previous = activeSessions, !previous.isEmpty, previous.isDisjoint(with: current) {
-                ended = true
-                suppressUntilControlsClear = current.isEmpty
+            if let previous = activeSessions, !previous.isEmpty, previous.isDisjoint(with: current.active) {
+                if previous.isSubset(of: current.ended) {
+                    outcome.endPrevious = true
+                    suppressUntilControlsClear = current.active.isEmpty
+                } else { outcome.vanished = true }
             }
-            if !current.isEmpty { suppressUntilControlsClear = false }
-            activeSessions = current
+            if !current.active.isEmpty { suppressUntilControlsClear = false }
+            activeSessions = current.active
         }
-        let suppress = suppressUntilControlsClear
+        outcome.suppressControls = suppressUntilControlsClear
         if controlsComplete && !controlsPresent { suppressUntilControlsClear = false }
-        return (ended, suppress)
+        return outcome
+    }
+}
+
+// One fresh native read. `ledger` is nil when the verified Codex process or its
+// launch time is unresolved, or the private schema/read is unavailable.
+struct VoiceCallRead {
+    var controlsPresent: Bool
+    var controlsComplete: Bool
+    var applicationAbsent: Bool
+    var process: pid_t?
+    var ledger: VoiceLedgerSessions?
+    var ledgerResolved = true
+    var accessibilityAllowed = true
+}
+
+// Combine native controls with saved boundaries for the same Codex process.
+// Pure state, so replayed reads exercise the live observer's transitions.
+struct VoiceCallTracker {
+    private var boundaries = SavedCallBoundaries()
+    private var decision = VoiceCallDecision()
+    private var process: pid_t?
+    var presence: VoiceCallPresence { decision.presence }
+    var activeSessions: Set<String>? { boundaries.activeSessions }
+
+    // Returns observations in publication order, and whether to read again now.
+    mutating func observe(_ read: VoiceCallRead) -> (observations: [VoiceCallObservation], readAgain: Bool) {
+        var observations: [VoiceCallObservation] = []
+        var replaced = false
+        if let next = read.process, let owner = process, owner != next {
+            // A replacement Codex process cannot continue the old process's
+            // call, even if its exit was never observed between two reads.
+            replaced = boundaries.hasActiveCall || decision.presence == .active
+            boundaries = SavedCallBoundaries(); decision = VoiceCallDecision()
+        }
+        if let next = read.process { process = next }
+        let boundary = boundaries.observe(read.ledger, controlsPresent: read.controlsPresent,
+                                          controlsComplete: read.controlsComplete)
+        let evidence = Self.evidence(read, boundary, replaced: replaced)
+        // An End followed by Start can happen between two reads. The active
+        // boolean stays true, but the previous call still ends.
+        if replaced || boundary.endPrevious {
+            observations.append(.init(presence: .inactive, callIdentifier: nil, evidence: evidence))
+        }
+        let readAgain = decision.observe(controlsPresent: read.controlsPresent,
+            controlsComplete: read.controlsComplete, persistedCallActive: boundaries.hasActiveCall,
+            applicationAbsent: read.applicationAbsent, savedCallEnded: boundary.suppressControls)
+        // Spotify tolerates ledger-only presence and incomplete AX reads. Peer
+        // End requires fresh evidence from both sources.
+        let active = read.ledger?.active
+        let verified = read.controlsPresent && read.accessibilityAllowed && read.process != nil
+            && active?.count == 1 ? active?.first : nil
+        observations.append(.init(presence: decision.presence, callIdentifier: boundaries.callIdentifier,
+                                  verifiedCallIdentifier: verified, evidence: evidence))
+        return (observations, readAgain)
+    }
+
+    private static func evidence(_ read: VoiceCallRead, _ boundary: SavedCallBoundaries.Outcome,
+                                 replaced: Bool) -> String {
+        let controls = read.controlsPresent ? "present" : read.controlsComplete ? "absent" : "incomplete"
+        let saved: String
+        if replaced { saved = "process_replaced" }
+        else if boundary.endPrevious { saved = "ended" }
+        else if boundary.vanished { saved = "vanished" }
+        else if let ledger = read.ledger { saved = ledger.active.isEmpty ? "none" : "active" }
+        else { saved = read.ledgerResolved ? "unreadable" : "unresolved" }
+        return "controls=\(controls) saved=\(saved)" + (read.applicationAbsent ? " app=absent" : "")
     }
 }
 

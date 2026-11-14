@@ -77,10 +77,11 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .zoomOutPhrase: return "Zoom out phrase"
         }
     }
-    // Shown under the field. App prefixes are followed by an app name.
+    // Shown under the field. App prefixes are followed by an app name; both bring an app forward,
+    // opening it if needed (Ethan, 14 November 2026: "open should switch ... make it interchangeable").
     var example: String? {
         switch self {
-        case .switchAppPhrase: return "Say “Switch app Chrome” to bring an open app forward."
+        case .switchAppPhrase: return "Say “Switch app Chrome” to bring Chrome forward, opening it if needed."
         case .openAppPhrase: return "Say “Open app Safari”, or just “Open Safari”."
         default: return nil
         }
@@ -117,6 +118,121 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         // Standardize only the old shipped lowercase audio defaults. Custom text stays verbatim.
         return !ending && self != .wakePhrase && saved == defaultText.lowercased() ? defaultText : saved
     }
+    // The command each section requests. Silent/Silence and, since Ethan's 14 November 2026
+    // decision, Switch app/Open app are two sections for one action; each keeps its own sound.
+    var action: PhraseAction {
+        switch self {
+        case .wakePhrase: return .wake
+        case .sleepPhrase: return .end
+        case .mutePhrase: return .muteMicrophone
+        case .unmutePhrase: return .unmuteMicrophone
+        case .silentPhrase, .silencePhrase: return .silenceSpeakers
+        case .unsilencePhrase: return .unsilenceSpeakers
+        case .pauseVideoPhrase: return .pauseVideo
+        case .playVideoPhrase: return .playVideo
+        case .switchAppPhrase, .openAppPhrase: return .app
+        case .zoomInPhrase: return .zoomIn
+        case .zoomOutPhrase: return .zoomOut
+        }
+    }
+}
+
+enum PhraseAction: String, CaseIterable {
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, app, zoomIn, zoomOut
+    var slots: [PhraseSlot] { PhraseSlot.allCases.filter { $0.action == self } }
+}
+
+// Ethan's extra phrases (14 November 2026): each section keeps its saved main phrase and can list
+// more explicit phrases below it. Typing "Open app / Switch app" is another way to add rows.
+struct PhraseRow: Identifiable, Equatable {
+    let id: UUID
+    var text: String
+    init(_ text: String, id: UUID = UUID()) { self.id = id; self.text = text }
+}
+
+enum PhraseList {
+    static let defaultsKey = "phraseAliases"
+    static func key(_ text: String) -> String { PhraseMatcher.words(text).joined() }
+    // Trimmed, nonempty pieces in typed order.
+    static func pieces(_ text: String) -> [String] {
+        text.split(separator: "/", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
+    // Applied when a row is submitted or loses focus, never per keystroke. The first piece stays in
+    // the row; later pieces are new rows, skipping any already listed. Existing rows are never removed.
+    static func commit(_ text: String, others: [String]) -> (text: String, added: [String])? {
+        guard text.contains("/") else { return nil }
+        let parts = pieces(text)
+        var seen = Set(others.map(key)), added: [String] = []
+        if let first = parts.first { seen.insert(key(first)) }
+        for part in parts.dropFirst() where !key(part).isEmpty && seen.insert(key(part)).inserted { added.append(part) }
+        return (parts.first ?? "", added)
+    }
+    // One section's rows after its main row (`index` nil) or an extra row is submitted or left.
+    // New pieces go directly below the row they were typed in. An extra row left without letters
+    // or numbers can't match and isn't saved, so it goes; the main row always stays.
+    static func commit(main: String, rows: [PhraseRow], at index: Int?) -> (main: String, rows: [PhraseRow]) {
+        var main = main, rows = rows
+        let row = index.map { $0 + 1 } ?? 0
+        let all = [main] + rows.map(\.text)
+        if let committed = commit(all[row], others: all.indices.filter { $0 != row }.map { all[$0] }) {
+            rows.insert(contentsOf: committed.added.map { PhraseRow($0) }, at: row)
+            if let index { rows[index].text = committed.text } else { main = committed.text }
+        }
+        if let index, key(rows[index].text).isEmpty { rows.remove(at: index) }
+        return (main, rows)
+    }
+    static func decode(_ value: Any?) -> [PhraseSlot: [String]] {
+        guard let saved = value as? [String: [String]] else { return [:] }
+        var result: [PhraseSlot: [String]] = [:]
+        for slot in PhraseSlot.allCases { if let rows = saved[slot.rawValue], !rows.isEmpty { result[slot] = rows } }
+        return result
+    }
+    // Blank rows stay visible while editing but aren't saved. Unknown keys from another build are kept.
+    static func encode(_ rows: [PhraseSlot: [String]], preserving saved: Any?) -> [String: [String]] {
+        var result = (saved as? [String: [String]] ?? [:]).filter { key, _ in PhraseSlot(rawValue: key) == nil }
+        for (slot, texts) in rows {
+            let kept = texts.filter { !key($0).isEmpty }
+            if !kept.isEmpty { result[slot.rawValue] = kept }
+        }
+        return result
+    }
+}
+
+// Every section's rows, main phrase first. The first section to claim a phrase keeps it: main
+// phrases before extra rows, then section order. A repeat for the same action is redundant; a
+// repeat for a different action is ignored so a new row can never take over a working command.
+struct PhraseConfiguration: Equatable {
+    enum Issue: Equatable { case duplicate(PhraseSlot), conflict(PhraseSlot) }
+    let rows: [PhraseSlot: [String]]
+    private(set) var issues: [PhraseSlot: [Int: Issue]] = [:]
+    private var active: [PhraseSlot: [String]] = [:]
+
+    init(rows: [PhraseSlot: [String]]) {
+        self.rows = rows
+        var owners: [String: PhraseSlot] = [:], claimed: [PhraseSlot: [Int]] = [:]
+        let order = PhraseSlot.allCases.map { ($0, 0) }
+            + PhraseSlot.allCases.flatMap { slot in (1..<max(1, rows[slot]?.count ?? 0)).map { (slot, $0) } }
+        for (slot, index) in order {
+            guard let text = rows[slot]?[safe: index] else { continue }
+            let key = PhraseList.key(text)
+            guard !key.isEmpty else { continue }
+            if let owner = owners[key] {
+                issues[slot, default: [:]][index] = owner.action == slot.action ? .duplicate(owner) : .conflict(owner)
+            } else {
+                owners[key] = slot; claimed[slot, default: []].append(index)
+            }
+        }
+        for (slot, indices) in claimed { active[slot] = indices.sorted().compactMap { rows[slot]?[safe: $0] } }
+    }
+    // Phrases that take part in detection, highlighting and startup capture, in row order.
+    func phrases(for slot: PhraseSlot) -> [String] { active[slot] ?? [] }
+    func issue(_ slot: PhraseSlot, row: Int) -> Issue? { issues[slot]?[row] }
+    var allPhrases: [String] { PhraseSlot.allCases.flatMap { phrases(for: $0) } }
+}
+
+extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
 
 // Dictionaries are explicit full phrases, one per line. Blank means the default phrase only.
@@ -343,6 +459,11 @@ struct PhraseMatcher {
     private static let endVariants = combinations(
         byeAddresses.union(oneEdits("bye").filter { $0.hasPrefix("b") && $0.count >= 2 }), expandedNames)
         .subtracting(safeDiscussionVariants)
+        // "by H Chat" is ordinary discussion of the helper, not an End request. The generated
+        // one-edit address "byh" had rejoined those three words and ended a live call. Exclude
+        // that family here so detection, dictionary export and highlighting agree; "by chat"
+        // and the other intentional End spellings retain their existing acceptance.
+        .subtracting(combinations(["byh"], expandedNames))
     // "as well chat" is Ethan's screenshot/log example. Opus's phonetic
     // suggestion favours Hello, not Bye; a closing alias would interrupt
     // ordinary "do that as well, Chat" requests. Keep this wake-only.

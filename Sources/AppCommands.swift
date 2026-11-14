@@ -44,19 +44,35 @@ struct AppCommandDetector {
     private var quiet = 0.0
     private var audioTime: Double?
     private var heardSpeech = false
-    private var audioBoundary = 0
+    // Every quiet gap of at least 0.35 s, as a word index. Keeping only the latest one let a pause
+    // inside or after a request replace the pause before it, and an index past the prefix used to
+    // skip the left-context check entirely.
+    private var audioBoundaries: [Int] = []
+    private static let maximumAudioBoundaries = 64
     private var consumedAudio: [Range<Double>] = []
     private var consumedCount = 0
     private var revision = 0
     private var checkedRevision = -1
     private var waiting = false
 
+    // Word-free evidence for diagnostics: why a prefix was or wasn't admitted.
+    struct Evidence: Equatable {
+        var leftWords = 0
+        var nameWords = 0
+        var timing = "none"      // model: real word spans; arrival: synthesized hypothesis times; mixed; none.
+        var gapBefore: Double?   // Real gap before the prefix, when both words have model spans.
+        var elapsed: Double?     // Pause after the name used for finalization.
+    }
+
     mutating func reset() { self = AppCommandDetector() }
     mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
         audioTime = time
         if level < 0.02 { quiet += seconds }
         else {
-            if quiet >= 0.35, heardSpeech { audioBoundary = context.count }
+            if quiet >= 0.35, heardSpeech, audioBoundaries.last != context.count {
+                audioBoundaries.append(context.count)
+                if audioBoundaries.count > Self.maximumAudioBoundaries { audioBoundaries.removeFirst() }
+            }
             heardSpeech = true; quiet = 0
         }
     }
@@ -71,22 +87,36 @@ struct AppCommandDetector {
         let left = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: 0.35)
         let ends = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: Self.finalizationSeconds)
         guard words != context || starts != sentenceStarts || left != leftBoundaries || ends != endBoundaries else { return }
-        if audioBoundary > 0 { audioBoundary = min(audioBoundary, zip(context, words).prefix { $0 == $1 }.count) }
+        if !audioBoundaries.isEmpty {
+            let common = zip(context, words).prefix { $0 == $1 }.count
+            var clamped: [Int] = []
+            for boundary in audioBoundaries.map({ min($0, common) }) where clamped.last != boundary { clamped.append(boundary) }
+            audioBoundaries = clamped
+        }
         context = words; sentenceStarts = starts; leftBoundaries = left; endBoundaries = ends; revision += 1
     }
     // End wins over every app command heard so far in this transcript.
     mutating func consumeAll(switchPrefix: PhrasePattern, openPrefix: PhrasePattern) {
-        let found = prefixes(switchPrefix: switchPrefix, openPrefix: openPrefix)
+        consumeAll(switchPrefixes: [switchPrefix], openPrefixes: [openPrefix])
+    }
+    mutating func consumeAll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern]) {
+        let found = prefixes(switchPrefixes: switchPrefixes, openPrefixes: openPrefixes)
         for (index, prefix) in found.enumerated() { consume(index: index, start: prefix.start, end: prefix.end) }
         waiting = false; checkedRevision = revision
     }
     mutating func poll(switchPrefix: PhrasePattern, openPrefix: PhrasePattern,
                        onDecision: ((AppCommandKind, String) -> Void)? = nil) -> [AppCommandCandidate] {
+        poll(switchPrefixes: [switchPrefix], openPrefixes: [openPrefix], onDecision: { kind, decision, _ in onDecision?(kind, decision) })
+    }
+    // Each listed phrase is a prefix for its own section. Only Open app phrases have the bare short
+    // form ("Open Safari"); Switch app phrases never gain one.
+    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern],
+                       onDecision: ((AppCommandKind, String, Evidence) -> Void)? = nil) -> [AppCommandCandidate] {
         guard heardSpeech, checkedRevision != revision || waiting else { return [] }
         checkedRevision = revision; waiting = false
         var result: [AppCommandCandidate] = []
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
-        for (index, prefix) in prefixes(switchPrefix: switchPrefix, openPrefix: openPrefix).enumerated() {
+        for (index, prefix) in prefixes(switchPrefixes: switchPrefixes, openPrefixes: openPrefixes).enumerated() {
             if let range = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
                 if consumedAudio.contains(where: { $0.overlaps(range) }) { continue }
             } else if index < consumedCount { continue }
@@ -101,22 +131,33 @@ struct AppCommandDetector {
                 // Real model spans still show that the spoken request ended.
                 elapsed = last.end > last.start ? audioTime - last.end : min(quiet, audioTime - last.end)
             } else { elapsed = quiet }
+            var evidence = Self.evidence(prefix: prefix.start, end: sentenceEnd, timings: alignedTimings)
+            evidence.elapsed = elapsed.isFinite ? elapsed : nil
             if sentenceEnd < context.count, alignedTimings != nil, elapsed + 1e-9 < Self.finalizationSeconds {
                 consume(index: index, start: prefix.start, end: prefix.end)
-                onDecision?(prefix.kind, "rejected_no_audio_boundary")
+                onDecision?(prefix.kind, "rejected_no_audio_boundary", evidence)
                 continue
             }
             guard elapsed.isFinite, elapsed + 1e-9 >= Self.finalizationSeconds else {
                 waiting = true; break // Still speaking: keep this occurrence pending.
             }
-            consume(index: index, start: prefix.start, end: prefix.end)
-            let left = context[max(min(audioBoundary, prefix.start), sentenceStart)..<prefix.start]
-            guard left.allSatisfy((prefix.bare ? Self.bareLeftWords : Self.prefixLeftWords).contains) else {
-                onDecision?(prefix.kind, "rejected_context"); continue
-            }
+            // The context starts at the latest pause or sentence start before the prefix. A pause
+            // heard after it says nothing about the words before it.
+            let leftStart = max(audioBoundaries.last(where: { $0 <= prefix.start }) ?? 0, sentenceStart)
+            let left = context[leftStart..<prefix.start]
             let name = Self.trimmed(Array(context[prefix.end..<sentenceEnd]), kind: prefix.kind)
+            evidence.leftWords = left.count; evidence.nameWords = name.count
+            guard left.allSatisfy((prefix.bare ? Self.bareLeftWords : Self.prefixLeftWords).contains) else {
+                consume(index: index, start: prefix.start, end: prefix.end)
+                onDecision?(prefix.kind, "rejected_context", evidence); continue
+            }
+            // ASR can deliver the prefix first even after its audio clock has advanced. No name
+            // at the current tail is not a rejected occurrence: a later text revision can supply
+            // it. Leave it unconsumed without polling unchanged text or adding another wait.
+            if name.isEmpty, sentenceEnd == context.count { continue }
+            consume(index: index, start: prefix.start, end: prefix.end)
             guard (1...Self.maximumNameWords).contains(name.count), !Self.isDiscussion(name) else {
-                onDecision?(prefix.kind, "rejected_name_or_discussion"); continue
+                onDecision?(prefix.kind, "rejected_name_or_discussion", evidence); continue
             }
             var alternate: String?
             if prefix.kind == .openApp, !prefix.bare, prefix.start + 1 < prefix.end, context[prefix.end - 1] == "app" {
@@ -124,9 +165,20 @@ struct AppCommandDetector {
                 if bareName.count <= Self.maximumNameWords { alternate = bareName.joined(separator: " ") }
             }
             result.append(AppCommandCandidate(kind: prefix.kind, name: name.joined(separator: " "), bare: prefix.bare, alternateName: alternate))
-            onDecision?(prefix.kind, "accepted")
+            onDecision?(prefix.kind, "accepted", evidence)
         }
         return result
+    }
+    private static func evidence(prefix start: Int, end: Int, timings: [(word: String, start: Double, end: Double)]?) -> Evidence {
+        var evidence = Evidence()
+        guard let timings, start < end, end <= timings.count else { return evidence }
+        let window = timings[max(0, start - 1)..<end]
+        let real = window.filter { $0.end > $0.start }.count
+        evidence.timing = real == window.count ? "model" : (real == 0 ? "arrival" : "mixed")
+        if start > 0, timings[start - 1].end > timings[start - 1].start, timings[start].end > timings[start].start {
+            evidence.gapBefore = timings[start].start - timings[start - 1].end
+        }
+        return evidence
     }
     // "The switch app prefix works", "open app command is broken": talk about the feature.
     private static let discussionLeads: Set<String> = ["phrase", "prefix", "command", "commands", "feature", "button", "word"]
@@ -144,17 +196,26 @@ struct AppCommandDetector {
         if name.last == "please" { name = name.dropLast() }
         return Array(name)
     }
-    private func prefixes(switchPrefix: PhrasePattern, openPrefix: PhrasePattern) -> [(start: Int, end: Int, kind: AppCommandKind, bare: Bool)] {
+    private func prefixes(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern]) -> [(start: Int, end: Int, kind: AppCommandKind, bare: Bool)] {
         var found: [(start: Int, end: Int, kind: AppCommandKind, bare: Bool)] = []
-        for match in switchPrefix.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, .switchApp, false)) }
-        let open = openPrefix.matches(in: context, timings: wordTimings)
-        for match in open { found.append((match.start, match.end, .openApp, false)) }
-        if let bare = Self.barePrefix(for: openPrefix) {
-            for match in bare.matches(in: context, timings: wordTimings) where !open.contains(where: { $0.start == match.start }) {
+        for pattern in switchPrefixes {
+            for match in pattern.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, .switchApp, false)) }
+        }
+        for pattern in openPrefixes {
+            for match in pattern.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, .openApp, false)) }
+        }
+        let full = found
+        for pattern in openPrefixes {
+            guard let bare = Self.barePrefix(for: pattern) else { continue }
+            for match in bare.matches(in: context, timings: wordTimings) where !full.contains(where: { $0.start == match.start }) {
                 found.append((match.start, match.end, .openApp, true))
             }
         }
-        return found.sorted { $0.start < $1.start }
+        // Overlapping listed phrases ("switch app" and "switch app to") are one spoken occurrence.
+        var kept: [(start: Int, end: Int, kind: AppCommandKind, bare: Bool)] = []
+        for prefix in found.sorted(by: { $0.start != $1.start ? $0.start < $1.start : $0.end > $1.end })
+        where kept.allSatisfy({ $0.end <= prefix.start || prefix.end <= $0.start }) { kept.append(prefix) }
+        return kept
     }
     // "Open app" also listens for bare "open"; a custom "Launch app" listens for "launch".
     static func barePrefix(for pattern: PhrasePattern) -> PhrasePattern? {
@@ -275,31 +336,52 @@ enum AppCommandDecision: Equatable {
     case failure(String)
 }
 
+// Switch app and Open app are interchangeable (Ethan, 14 November 2026): both bring an open app
+// forward and open an installed app that isn't running. This supersedes the earlier running-only
+// Switch app. Only the bare "Open Safari" form stays stricter: it needs an exact name or alias.
 enum AppCommandPlanner {
-    // Switch only ever considers apps that are already running; it never launches anything.
-    static func decideSwitch(_ name: String, running: [AppCandidate]) -> AppCommandDecision {
-        switch AppResolver.resolve(name, among: running, allowFuzzy: true) {
+    // An exact name or alias of a running app wins without reading the installed catalog.
+    static func decideRunning(_ candidate: AppCommandCandidate, running: [AppCandidate]) -> AppCommandDecision? {
+        switch AppResolver.resolve(candidate.name, among: running, allowFuzzy: false) {
         case .match(let app, _): return .activate(app)
-        case .ambiguous(let names): return .failure(ambiguity(name, names))
-        case .none: return .failure("No open app matches “\(name)”. Switch app only uses apps that are already open.")
+        case .ambiguous(let names): return candidate.bare ? .ignore : .failure(ambiguity(candidate.name, names))
+        case .none: break
         }
+        if let alternate = candidate.alternateName,
+           case .match(let app, _) = AppResolver.resolve(alternate, among: running, allowFuzzy: false) { return .activate(app) }
+        return nil
     }
-    // Open only considers verified installed apps. Bare "open" needs an exact name or alias.
-    static func decideOpen(_ candidate: AppCommandCandidate, installed: [AppCandidate]) -> AppCommandDecision {
-        let exact = AppResolver.resolve(candidate.name, among: installed, allowFuzzy: false)
+    // Everything else compares running and verified installed apps together, so a close spelling of
+    // a running app can't beat the exact name of an installed one. A running copy is preferred.
+    static func decide(_ candidate: AppCommandCandidate, running: [AppCandidate], installed: [AppCandidate]) -> AppCommandDecision {
+        if let decision = decideRunning(candidate, running: running) { return decision }
+        let apps = merged(running: running, installed: installed)
+        let exact = AppResolver.resolve(candidate.name, among: apps, allowFuzzy: false)
         if case .none = exact, let alternate = candidate.alternateName,
-           case .match(let app, _) = AppResolver.resolve(alternate, among: installed, allowFuzzy: false) {
-            return .open(app)
+           case .match(let app, _) = AppResolver.resolve(alternate, among: apps, allowFuzzy: false) {
+            return target(app)
         }
         let resolution = exact == .none && !candidate.bare
-            ? AppResolver.resolve(candidate.name, among: installed, allowFuzzy: true) : exact
+            ? AppResolver.resolve(candidate.name, among: apps, allowFuzzy: true) : exact
         switch resolution {
-        case .match(let app, _): return .open(app)
+        case .match(let app, _): return target(app)
         case .ambiguous(let names): return candidate.bare ? .ignore : .failure(ambiguity(candidate.name, names))
-        case .none:
-            return candidate.bare ? .ignore : .failure("No installed app matches “\(candidate.name)”.")
+        case .none: return candidate.bare ? .ignore : .failure("No app matches “\(candidate.name)”.")
         }
     }
+    // A running app absorbs its installed copies' names; installed apps that aren't running follow.
+    static func merged(running: [AppCandidate], installed: [AppCandidate]) -> [AppCandidate] {
+        let runningIDs = Set(running.map(\.id))
+        let open = running.map { app -> AppCandidate in
+            var app = app
+            for copy in installed where copy.id == app.id {
+                for name in copy.names where !app.names.contains(name) { app.names.append(name) }
+            }
+            return app
+        }
+        return open + installed.filter { !runningIDs.contains($0.id) }
+    }
+    private static func target(_ app: AppCandidate) -> AppCommandDecision { app.pid == nil ? .open(app) : .activate(app) }
     private static func ambiguity(_ name: String, _ names: [String]) -> String {
         "“\(name)” matches \(names.joined(separator: " and ")). Say the full app name."
     }

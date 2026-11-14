@@ -85,6 +85,8 @@ enum SpotifyVolumeControl {
     private var presence: VoiceCallPresence = .unknown
     private var callIdentifier: String?
     private var microphoneMuted: Bool?
+    // Why the observer last changed presence: metadata only, for diagnostics.
+    private var evidence: String?
     private(set) var callEpoch = 0
     private var generation = 0
     private var spotifyLaunchObserver: NSObjectProtocol?
@@ -106,6 +108,7 @@ enum SpotifyVolumeControl {
         }
         presence = state.presence
         callIdentifier = nextIdentifier
+        evidence = state.evidence
         reconcile()
     }
 
@@ -125,6 +128,7 @@ enum SpotifyVolumeControl {
         presence = value ? .unknown : .inactive
         callIdentifier = nil
         microphoneMuted = nil
+        evidence = nil
         if !value { reconcile() }
     }
 
@@ -156,6 +160,7 @@ enum SpotifyVolumeControl {
         let state = enabled ? presence : .inactive
         let callIdentifier = self.callIdentifier
         let microphoneMuted = self.microphoneMuted
+        let evidence = enabled ? self.evidence ?? "none" : "disabled"
         generation += 1
         let generation = self.generation
         let session = self.session
@@ -164,7 +169,8 @@ enum SpotifyVolumeControl {
                 let result = try session.reconcile(state, callIdentifier: callIdentifier, microphoneMuted: microphoneMuted)
                 Diagnostics.shared.record("spotify.volume.reconciled", info: [
                     "result": result.rawValue, "call": state.rawValue,
-                    "confirmed_mic_command": microphoneMuted.map { $0 ? "mute" : "unmute" } ?? "none"
+                    "confirmed_mic_command": microphoneMuted.map { $0 ? "mute" : "unmute" } ?? "none",
+                    "evidence": evidence
                 ])
                 Task { @MainActor [weak self] in
                     guard let self, self.generation == generation else { return }

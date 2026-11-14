@@ -215,7 +215,33 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 - A long unpunctuated transcript can include both discussion and later desktop commands. For desktop context only, use aligned positive-duration model word spans to recover the existing 0.35-second boundary; app-name completion retains its existing 0.8-second interval. Never treat synthesized zero-duration hypothesis-arrival times as real pauses. Focused regressions preserve discussion/negation rejection, once-only dispatch and the separate wake/End behavior. This mechanism reproduction is not proof of the exact word gaps in a past live recording.
 - `NSRunningApplication.activate(options:)` is a request; macOS can refuse background activation. The native Accessibility `AXFrontmost` attribute supplies a bounded fallback for the same verified running PID after a refusal, without opening/relaunching an app. Recheck identity before that fallback and retain actual frontmost confirmation. Record API acceptance and AX error code separately; an `activate-failed` event from older builds alone cannot distinguish an identity guard failure from OS refusal. Live acceptance of the fallback remains distinct from injected routing coverage. [Apple activation behavior](https://developer.apple.com/documentation/appkit/passing-control-from-one-app-to-another-with-cooperative-activation)
 
+## 2026-11-14 — Interchangeable app commands and extra phrases
+
+- Ethan: "open should switch ... make it interchangeable". Switch app and Open app are one launch-or-activate action (`PhraseAction.app`), each keeping its own sound. An exact name or alias among running apps activates without a catalog scan. Otherwise running and installed apps are compared in one pool, with the running copy preferred. Fuzzy matching therefore can't choose a closed lookalike over the open app. The bare "Open X" form stays Open-only and exact/alias-only. This supersedes the running-only Switch contract.
+- Activation chain, once each and only after the previous step is refused, with identity rechecked before each step:
+  - AppKit `activate`.
+  - AX `AXFrontmost`, off the main thread with a 1 s bound.
+  - Launch Services `openApplication` of the same running bundle URL.
+
+  Launching is now allowed, so this supersedes the "without opening/relaunching" limit above. The reopen event can open a window in some apps. `desktop.app.activation` records method, accepted, ax_result, trusted, opened_pid and same_process. Injected checks don't prove live acceptance.
+- `desktop.app.evaluated` records left_words, name_words, timing (model/arrival/mixed/none), gap_before_s and pause_after_s, never words.
+  - The 14 November 21:40–21:41 rejected_context/rejected_name_or_discussion events had no archived word spans, so their cause can't be reconstructed. They're separate from the 21:33 activate-failed event.
+  - A 0.35 s pause after the prefix used to bypass the left-context check, and only the latest pause was kept. Recent pauses are now kept (bounded), and the nearest one at or before the prefix applies. This only tightens admission; thresholds are unchanged.
+- Extra phrases:
+  - Storage: main phrases keep their own defaults keys. Extra rows live under `phraseAliases`. Rows without letters or numbers aren't saved, and keys from other builds are preserved.
+  - `PhraseConfiguration` is the one source for detection, highlighting, recognizer hints, cancellation and startup capture.
+  - Precedence: main phrases first, then extra rows in section and list order. A repeat for the same action is redundant. A repeat for another action is ignored and its row warns, so a new row can't take over a working command.
+  - Matching: extra phrases match exactly. Only a phrase equal to its section's default uses that default's dictionary.
+  - Slash entry splits only on Return, focus loss, window deactivation or disappearance. Pieces land directly below the row they were typed in. An extra row left without letters or numbers is removed.
+
 ## Spotify volume and microphone phrases
 
 - A confirmed microphone mute phrase restores the original slider level while keeping the same call's receipt. Confirmed unmute, including waking an existing muted call, reapplies the normal cap. Agent Flow's recording controls and H Chat's speaker phrases do not set this Spotify state. Keep End, a replacement call and a manual slider change distinct from a temporary restore.
 - Save the pending restore before writing the original volume. A restart between that write and its readback must recognize both the cap and the original, while a manual change during the restored phase must never reacquire old ownership.
+
+## 2026-11-14 — Call evidence and delayed command hypotheses
+
+- A saved call End must be supported by that exact session's own `session-ended` record. Disappearance from a metadata read is not an End: a too-late cutoff or unresolved application identity can omit an active session. Bind the ledger cutoff to the same verified Codex process as the native controls and treat an unresolved launch date as unknown, never “since now”. The pure tracker tests cover disappearance with live controls, actual End/Start, process replacement/exit, manual Spotify changes and receipt recovery. New reconcile evidence is metadata-only. The initiating transient lookup failure was inferred from the event pattern, not captured by the old diagnostics.
+- Reconcile every local session in the affected interval before attributing a Spotify jump to inference: a briefly opened different chat can genuinely end before the original chat resumes. Real recorded boundaries retain prompt restoration; do not add a blanket smoothing delay to hide them.
+- Recognition can report an app prefix before its name even after the decoded audio clock has advanced. Keep a valid prefix with an empty current tail unconsumed for a later text revision, without adding a timer or repeatedly reevaluating unchanged text. End cancellation must still consume it. Check task cancellation between activation routes as well as before the overall command.
+- Generated one-edit End spellings had joined an ordinary preposition and the safe H Chat discussion name. Exclude that `byh` address family from the shared generated dictionary so detection, export and highlighting agree. Intentional End spellings and explicit custom phrases retain their existing rules. Recorded discussion reproduced the former bug offline; no live call was ended to test it.

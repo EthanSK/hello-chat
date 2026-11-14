@@ -61,7 +61,7 @@ import Foundation
         check(runs("Start Lantern. End Lantern. Hello Chat. Bye Chat.", "Start Lantern", end: "End Lantern").filter { $0.kind != nil }.map(\.text) == ["Start Lantern", "End Lantern"], "Both saved custom phrases replace defaults")
         check(runs("Bye Chat", end: "Different phrase").allSatisfy { $0.kind == nil }, "Changing the saved end phrase removes its old highlight")
         check(runs("Bye Chat", end: "Bye Chat", limit: 5).allSatisfy { $0.kind == nil }, "A clipped end phrase is never highlighted as complete")
-        for text in ["UI Chat", "UIChat", "U I C H A T", "B Chat", "BChat", "be chat", "bee chat", "H Chat"] {
+        for text in ["UI Chat", "UIChat", "U I C H A T", "B Chat", "BChat", "be chat", "bee chat", "H Chat", "by H chat", "handled by H chats", "B Y H C H A T"] {
             check(runs(text, end: "Bye Chat").allSatisfy { $0.kind == nil }, "Safe discussion aliases stay unhighlighted")
         }
         for text in ["Unmute Chat", "Unsilence Chat"] {
@@ -71,6 +71,16 @@ import Foundation
         check(overlap.map(\.text).joined() == "Bye Chat" && overlap.count == 1 && overlap.first?.kind == .exact, "Exact end wins an overlapping fuzzy wake without duplicating text")
         check(runs("Hello Chat", end: "Hello Chat").filter { $0.kind != nil }.count == 1, "Identical temporary field values highlight once")
         check(runs("Hello Chat", "Hello", false, end: "Hello Chat").filter { $0.kind != nil }.map(\.text) == ["Hello Chat"], "Longer exact custom phrase wins a shared prefix")
+        // Extra rows (14 November 2026): every listed phrase is in the pattern list the detector uses.
+        let listed = [PhraseSlot.wakePhrase: ["Hello Chat", "Hey Lantern"], .sleepPhrase: ["Bye Chat", "Goodnight Chat"], .zoomInPhrase: ["Zoom in", "Bigger"]]
+        let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { ($0, listed[$0] ?? [$0.defaultText]) }))
+        let listedPatterns = PhraseSlot.allCases.flatMap { slot in
+            configuration.phrases(for: slot).map { PhrasePattern(slot: slot, text: $0, similar: true, dictionaries: .init()) }
+        }
+        let extra = PhraseHighlights.runs(in: "Hey Lantern, bigger. Goodnight chat. Hey lanterns.", phrase: "Hello Chat", endPhrase: "Bye Chat",
+                                          similar: true, patterns: listedPatterns).filter { $0.kind != nil }
+        check(extra.map(\.text) == ["Hey Lantern", "bigger", "Goodnight chat"] && extra.allSatisfy { $0.kind == .exact },
+              "Extra wake, End and command phrases highlight green; near misses stay neutral")
         print("\(checks) phrase highlight checks passed")
     }
 }
