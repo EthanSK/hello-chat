@@ -13,6 +13,8 @@ Keep useful, verified project lessons in [LEARNINGS.md](../../../LEARNINGS.md). 
 
 Tell the user this project skill is active and why, unless they explicitly request silent use.
 
+Private preference evidence: [user-preferences.md](user-preferences.md); read only when an unsettled decision needs its history.
+
 ## Names and scope
 
 Refer to the helper as **H Chat** so it doesn't trigger, in discussions and speech. Refer to its End command as **B Chat**. Ethan wants to discuss these safely without accidentally starting or ending Voice. Never say or quote the actual spoken End phrase or its former unsafe alias in voice-facing output, including speech reminders. Keep actual internal identifiers and configured phrases where implementation requires them; this is conversational naming, not a product rename. B Chat is not a new trigger. User-requested — 2026-11-08.
@@ -54,6 +56,8 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 - Separate the configured/intended command, the physical key event actually delivered, and the observed app result. A documented default, wake sound, or emitted event does not prove Codex received or accepted the action. State uncertainty until the result is observed; do not describe a default Start binding as invalid merely because delivery failed.
 
 ## Installation and release
+
+- User-corrected — 2026-11-14: for Ethan’s authorized local updates, follow the shared `development-workflow/references/local-installation.md` local-first rule. Review and build a viable local batch, preserve the existing Developer ID identity, entitlements and updater trust, then install it through H Chat’s safe detach/flush path. Full tests, Apple notarisation, public release and download verification follow local use unless a specific demonstrated platform restriction requires otherwise. `RELEASE.md` owns public qualification, not a blanket gate before local installation. Do not use an ad-hoc replacement or end an external Voice call to hurry an update.
 
 - Establish the exact source commit, bundle version and build before handing an artifact to an installer. Coordinate one installation owner; never race copies or change an artifact another task is signing/installing.
 - Before an authorized restart or replacement, preserve preferences, startup settings and a recoverable old bundle. H Chat's normal detach/flush cleanup preserves external Voice and recording sessions; never end them to make installation possible.

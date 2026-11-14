@@ -1,5 +1,10 @@
 # Hello Chat engineering notes
 
+
+## 2026-11-14 — Local updates precede public qualification
+
+Ethan reaffirmed that local useful installation comes before full testing and public release. The project skill and RELEASE.md now distinguish local installation from public qualification. Preserve compatible signing, entitlements, updater trust and normal detach/flush behavior; a public notarisation or upload delay is not automatically a local-install blocker. Existing local preview support is independent of the release workflow. No app was built, installed or restarted by this documentation audit.
+
 - The 13 November speaker-silence failures occurred before the sound update. Completed background AX scans found the microphone and End controls but no speaker state, and no output shortcut was posted. User-operated tests after bringing Codex forward confirmed both directions, then confirmed commands from Chrome too. This supports a conditional focus recovery when the speaker control is missing. Neither a permanently foreground-only shortcut nor a persistent H Chat cache was established. The speaker readback uses the native control on each request.
 - Ethan explicitly requested one best-effort speaker shortcut when output state stays unreadable after recovery. Fresh native microphone or End controls must still establish an active call on the same Codex process. Process-wide audio input alone is insufficient. Keep matching-state requests idempotent, send at most once per accepted command, and reserve the success sound for a confirmed requested state.
 
