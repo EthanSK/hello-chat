@@ -1,6 +1,6 @@
 # Releasing Hello Chat
 
-Every push to `main` starts the Release workflow on a dedicated Apple Silicon signing runner. The job tests, builds, verifies the Developer ID signature and microphone entitlement, notarises and staples the app, signs the final ZIP for Sparkle, and publishes a new immutable release. No signing private key is exported to GitHub.
+Every push to `main` starts the Release workflow on a dedicated Apple Silicon signing runner. It tests, builds, verifies the Developer ID signature and microphone entitlement, notarises and staples the app, and signs the final ZIP for Sparkle. GitHub Actions transfers that package as an artifact, then a GitHub-hosted runner publishes the immutable release and verifies its downloadable bytes. The artifact contains only the signed public package and its release metadata. No signing private key is exported to GitHub.
 
 ## One-time signing runner setup
 

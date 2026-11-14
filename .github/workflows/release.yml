@@ -21,6 +21,9 @@ jobs:
     # The signed archive is about 1 GB. Leave room for Apple notarization
     # and GitHub uploads from the signing Mac's connection.
     timeout-minutes: 180
+    outputs:
+      tag: ${{ steps.draft.outputs.tag }}
+      commit: ${{ steps.draft.outputs.commit }}
     permissions:
       contents: write
     env:
@@ -119,7 +122,8 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' HelloChat.app/Contents/Info.plist)" = "${tag#v}"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' HelloChat.app/Contents/Info.plist)" = "$(jq -er .build "$receipt")"
           printf 'HELLOCHAT_RELEASE_TAG=%s\nHELLOCHAT_RELEASE_COMMIT=%s\n' "$tag" "$source" >> "$GITHUB_ENV"
-      - name: Publish immutable release
+      - name: Prepare immutable draft
+        id: draft
         shell: bash
         run: |
           set -euo pipefail
@@ -136,7 +140,58 @@ jobs:
               --title "$display_name ${HELLOCHAT_RELEASE_TAG#v}" --generate-notes \
               --notes 'Signed and notarized for Apple Silicon Macs running macOS 15 or later. Existing installations can use Check for Updates.'
           fi
-          release_id=$(gh release view "$HELLOCHAT_RELEASE_TAG" --json databaseId --jq .databaseId)
+          if ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$HELLOCHAT_RELEASE_TAG"); then
+            jq -e --arg commit "$release_commit" '.object.type == "commit" and .object.sha == $commit' <<< "$ref" >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$HELLOCHAT_RELEASE_TAG" -f sha="$release_commit"
+          fi
+          printf 'tag=%s\ncommit=%s\n' "$HELLOCHAT_RELEASE_TAG" "$release_commit" >> "$GITHUB_OUTPUT"
+          cp "$RUNNER_TEMP/release-manifest.json" "$HELLOCHAT_BUILD_DIR/release-manifest.json"
+      - name: Transfer signed package
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-${{ github.run_id }}
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
+          path: |
+            ${{ env.HELLOCHAT_BUILD_DIR }}/HelloChat-macOS-arm64.zip
+            ${{ env.HELLOCHAT_BUILD_DIR }}/SHA256SUMS
+            ${{ env.HELLOCHAT_BUILD_DIR }}/appcast.xml
+            ${{ env.HELLOCHAT_BUILD_DIR }}/release-manifest.json
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      HELLOCHAT_RELEASE_TAG: ${{ needs.release.outputs.tag }}
+      HELLOCHAT_RELEASE_COMMIT: ${{ needs.release.outputs.commit }}
+      HELLOCHAT_BUILD_DIR: ${{ runner.temp }}/package.noindex
+    steps:
+      - name: Download signed package
+        uses: actions/download-artifact@v4
+        with:
+          name: signed-release-${{ github.run_id }}
+          path: ${{ env.HELLOCHAT_BUILD_DIR }}
+      - name: Verify signed package receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$HELLOCHAT_BUILD_DIR"
+          shasum -a 256 -c SHA256SUMS
+          jq -e --arg commit "$HELLOCHAT_RELEASE_COMMIT" --arg tag "$HELLOCHAT_RELEASE_TAG" '.commit == $commit and .tag == $tag' release-manifest.json >/dev/null
+          cp release-manifest.json "$RUNNER_TEMP/release-manifest.json"
+      - name: Publish immutable release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=$(gh release view "$HELLOCHAT_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish,databaseId)
+          jq -e --arg commit "$HELLOCHAT_RELEASE_COMMIT" '.isDraft and .targetCommitish == $commit' <<< "$release" >/dev/null
+          release_id=$(jq -er .databaseId <<< "$release")
           asset_api="repos/$GITHUB_REPOSITORY/releases/$release_id/assets"
           # GitHub exposes a digest for each fully accepted asset. After a
           # failed network response, read back before deciding to retry.
@@ -157,20 +212,23 @@ jobs:
                 [[ "$starter" =~ ^[0-9]+$ ]]
                 gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$starter"
               fi
-              if gh release upload "$HELLOCHAT_RELEASE_TAG" "$file"; then break; fi
+              if gh release upload "$HELLOCHAT_RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY"; then break; fi
               [[ "$attempt" == 3 ]] || sleep 15
             done
             gh api "$asset_api" | jq -e --arg name "$name" --arg digest "$digest" \
               'any(.name == $name and .state == "uploaded" and .digest == $digest)' >/dev/null
           done
-          gh release edit "$HELLOCHAT_RELEASE_TAG" --draft=false
+          gh release edit "$HELLOCHAT_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
       - name: Verify published bytes
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/downloaded.noindex"
-          gh release download "$HELLOCHAT_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/downloaded.noindex"
           cd "$RUNNER_TEMP/downloaded.noindex"
+          for name in HelloChat-macOS-arm64.zip SHA256SUMS appcast.xml release-manifest.json; do
+            curl --fail --silent --show-error --location --retry 3 --connect-timeout 20 --max-time 900 \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/$HELLOCHAT_RELEASE_TAG/$name" -o "$name"
+          done
           shasum -a 256 -c SHA256SUMS
           cmp appcast.xml "$HELLOCHAT_BUILD_DIR/appcast.xml"
           cmp release-manifest.json "$RUNNER_TEMP/release-manifest.json"
