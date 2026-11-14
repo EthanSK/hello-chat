@@ -60,6 +60,7 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/CodexDiscoveryTests"
 python3 scripts/test-transcript-backup.py
 python3 scripts/test-release.py
+python3 scripts/test-fetch-speech-models.py
 swiftc -swift-version 5 -parse-as-library Sources/GateCore.swift Sources/UpdateSafety.swift Tests/UpdateSafetyTests.swift -o "$build_dir/UpdateSafetyTests" -framework ApplicationServices
 "$build_dir/UpdateSafetyTests"
 swiftc -swift-version 5 -parse-as-library Sources/StartupOwnership.swift Tests/StartupOwnershipTests.swift -o "$build_dir/StartupOwnershipTests"

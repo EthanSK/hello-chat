@@ -1,5 +1,9 @@
 # Hello Chat engineering notes
 
+## 2026-11-14 — Keep model download recovery pinned
+
+A release reached a model checksum mismatch after successful tests and compilation. That rejection proves the downloaded bytes differed, not whether the cause was truncation, transport corruption or the upstream response. Keep the existing manifest hashes authoritative: verify response length when supplied, retry transfer/validation failures at most three times, and replace a model file only after its exact checksum passes. Do not retry authentication/rate-limit responses, bypass a server-requested wait, add settling sleeps, or treat a failed download as grounds to change the model pin. Injected corrupt, incomplete and interrupted responses verify recovery and bounded failure without microphone or live-call tests.
+
 
 ## 2026-11-14 — Local updates precede public qualification
 
