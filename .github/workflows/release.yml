@@ -12,7 +12,9 @@ concurrency:
 jobs:
   release:
     runs-on: [self-hosted, macOS, ARM64, hello-chat-release]
-    timeout-minutes: 90
+    # The signed archive is about 1 GB. Leave room for Apple notarization
+    # and GitHub uploads from the signing Mac's connection.
+    timeout-minutes: 180
     permissions:
       contents: write
     env:
