@@ -18,6 +18,19 @@ private final class Probe {
     @MainActor static func main() async throws {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
+        var nativeRequests = 0, axRequests = 0, identityReads = 0
+        check(RunningAppActivation.request(identityMatches: { true }, native: { nativeRequests += 1; return true },
+            accessibility: { axRequests += 1; return true }) && nativeRequests == 1 && axRequests == 0,
+              "An accepted native activation never adds a second request")
+        check(RunningAppActivation.request(identityMatches: { true }, native: { false },
+            accessibility: { axRequests += 1; return true }) && axRequests == 1,
+              "A refused native activation permits one Accessibility request")
+        check(!RunningAppActivation.request(identityMatches: { identityReads += 1; return identityReads == 1 }, native: { false },
+            accessibility: { axRequests += 1; return true }) && axRequests == 1,
+              "An exited or replaced process between attempts cannot receive the fallback")
+        check(!RunningAppActivation.request(identityMatches: { false }, native: { nativeRequests += 1; return true },
+            accessibility: { axRequests += 1; return true }) && nativeRequests == 1 && axRequests == 1,
+              "A stale target receives no activation request")
         func failureText(_ decision: AppCommandDecision) -> String? { if case .failure(let text) = decision { return text }; return nil }
 
         // Slots: four new canonical preferences after the unchanged Voice and Browser fields.

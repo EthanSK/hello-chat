@@ -2,43 +2,42 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key>
-	<string>Hello Chat</string>
-	<!-- Finder matches this base value to the on-disk bundle before localizing it. -->
-	<key>CFBundleDisplayName</key>
-	<string>HelloChat</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
-	<key>CFBundleIdentifier</key>
-	<string>com.ethansk.HeyChat</string>
+	<key>CFBundleDisplayName</key>
+	<string>HelloChat</string>
 	<key>CFBundleExecutable</key>
 	<string>HelloChat</string>
 	<key>CFBundleIconFile</key>
 	<string>HelloChat.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.ethansk.HeyChat</string>
+	<key>CFBundleName</key>
+	<string>Hello Chat</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0.11</string>
 	<key>CFBundleVersion</key>
-	<string>1033</string>
+	<string>1034</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Listen locally for your wake and end phrases while turned on.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Lower Spotify volume during chat and restore it when chat ends.</string>
 	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Listen locally for your wake and end phrases while turned on.</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://github.com/EthanSK/hello-chat/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>bgXj7u09TpTtfYMaTDFGaA09p/jACpUSlov2FiPSDgQ=</string>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
-	<key>SUAllowsAutomaticUpdates</key>
-	<true/>
-	<key>SUAutomaticallyUpdate</key>
-	<true/>
 	<key>SUSendProfileInfo</key>
 	<false/>
 </dict>

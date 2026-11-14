@@ -55,6 +55,18 @@ struct DesktopCommandResult: Equatable {
     let diagnostic: String // Never contains spoken words or app names.
 }
 
+// A background speech command may be refused by AppKit's activation policy.
+// Fall back once to the native Accessibility frontmost attribute, addressing
+// the same live process. Never launch an app or retry a changed identity.
+enum RunningAppActivation {
+    static func request(identityMatches: () -> Bool, native: () -> Bool, accessibility: () -> Bool) -> Bool {
+        guard identityMatches() else { return false }
+        if native() { return true }
+        guard identityMatches() else { return false }
+        return accessibility()
+    }
+}
+
 // Carries out app and zoom commands. Every dependency is injectable; tests never switch, open
 // or type. Switch reads running apps only. Open reads a cached catalog of installed apps that is
 // built on demand, never on every audio frame and never in the background.
@@ -174,10 +186,27 @@ struct DesktopCommandResult: Equatable {
 
     // Activation only: a quit app is never relaunched by Switch.
     nonisolated static func activateRunning(_ app: AppCandidate) -> Bool {
-        guard let pid = app.pid, let running = NSRunningApplication(processIdentifier: pid),
-              !running.isTerminated, running.activationPolicy == .regular,
-              (running.bundleIdentifier ?? "pid:\(pid)") == app.id, running.bundleURL == app.url else { return false }
-        return running.activate(options: [])
+        guard let pid = app.pid else { return false }
+        func current() -> NSRunningApplication? {
+            guard let running = NSRunningApplication(processIdentifier: pid),
+                  !running.isTerminated, running.activationPolicy == .regular,
+                  (running.bundleIdentifier ?? "pid:\(pid)") == app.id, running.bundleURL == app.url else { return nil }
+            return running
+        }
+        return RunningAppActivation.request(identityMatches: { current() != nil }, native: {
+            let accepted = current()?.activate(options: []) ?? false
+            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid)],
+                info: ["method": "appkit", "accepted": String(accepted)])
+            return accepted
+        }, accessibility: {
+            guard AXIsProcessTrusted() else { return false }
+            let target = AXUIElementCreateApplication(pid)
+            AXUIElementSetMessagingTimeout(target, 1)
+            let result = AXUIElementSetAttributeValue(target, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid), "ax_result": Double(result.rawValue)],
+                info: ["method": "accessibility", "accepted": String(result == .success)])
+            return result == .success
+        })
     }
 
     nonisolated static func scanInstalled() async -> [AppCandidate] {

@@ -28,7 +28,7 @@ Each phrase has its own short sound. Wake and End play at detection. Voice audio
 
 For safe conversation about the app, call the helper **H Chat** and its End command **B Chat**. These are discussion names, not extra voice commands. The default dictionary no longer accepts the old UI-name alias or B/Be/Bee spellings as End. End commands use the same mention and negation filter as the other controls, so discussing a command is not treated as issuing it. Matching and transcript highlighting share the dictionary.
 
-Speech recognition runs on your Mac with a bundled Parakeet model through Core ML, using CPU and Neural Engine with GPU off. Hello Chat then drives Codex through its own Voice shortcut and End Voice control. There's no Agent Flow, proxy, server, account or API key involved in detection.
+Speech recognition runs on your Mac, by default with the bundled Nemotron model through Core ML, using CPU and Neural Engine with GPU off. Hello Chat then drives Codex through its own Voice shortcut and End Voice control. There's no Agent Flow, proxy, server, account or API key involved in detection.
 
 ## Requirements
 
@@ -46,6 +46,14 @@ Speech recognition runs on your Mac with a bundled Parakeet model through Core M
 4. Choose your microphone on the home page or in **Settings → Microphone**. **System default** follows macOS's default input. Codex Voice keeps its own input setting.
 5. Turn on **Listen for wake phrase**. Hello Chat prepares the local model, then shows **Listening**.
 6. Say **Hello Chat**. When you're done, say **Bye Chat**.
+
+## Siri and Apple Vocal Shortcuts
+
+Hello Chat provides seven native actions in Apple's Shortcuts app: Start chat, End chat, Mute chat microphone, Unmute chat microphone, Silence chat speakers, Restore chat speakers and Get chat status. They use the same Codex controls as the app. Start can work while local listening is off; it does not turn the local speech model on. Get chat status only reads the current state.
+
+On a supported Mac, **System Settings → Accessibility → Vocal Shortcuts** can map a personally trained phrase to one of those actions or a saved shortcut containing it. Apple processes Vocal Shortcuts audio on the device. Train it with your own voice; this app cannot supply your enrollment. Siri is another way to invoke the preconfigured app shortcuts.
+
+Vocal Shortcuts is optional. It does not automatically replace Hello Chat's detector, and enabling both means both can hear the same request. Compare them separately before choosing. Fixed trained phrases also do not replace the variable app-name commands, ongoing transcripts or startup speech capture. Apple does not publish a head-to-head accuracy or energy comparison with Nemotron. See [Apple's Vocal Shortcuts guide](https://support.apple.com/en-mt/guide/mac-help/mchlf4548bb6/27/mac/27).
 
 ## Build From Source
 

@@ -374,13 +374,15 @@ import SwiftUI
             while !Task.isCancelled, let self, self.desktopCommandGeneration == token,
                   let candidate = self.pendingAppCommands.first {
                 self.pendingAppCommands.removeFirst()
+                let dispatchedAt = Diagnostics.now
                 // The cue marks an accepted switch/open request, before front-app confirmation.
                 // Ordinary speech, unresolved names and cancelled work stay silent.
                 let result = await self.desktopCommands.perform(candidate) {
                     if !self.quitting, self.desktopCommandGeneration == token { self.feedback.play(candidate.kind.slot.cue) }
                 }
                 guard !Task.isCancelled, self.desktopCommandGeneration == token else { return }
-                Diagnostics.shared.record("desktop.app", info: ["kind": candidate.kind.rawValue, "bare": String(candidate.bare), "outcome": result.diagnostic])
+                Diagnostics.shared.record("desktop.app", numbers: ["duration_ms": (Diagnostics.now - dispatchedAt) * 1000],
+                    info: ["kind": candidate.kind.rawValue, "bare": String(candidate.bare), "outcome": result.diagnostic])
                 if let message = result.message { self.desktopCommandStatus = message }
             }
             if self?.desktopCommandGeneration == token { self?.desktopTask = nil }
