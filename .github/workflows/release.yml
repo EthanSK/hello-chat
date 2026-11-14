@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      recover_run_id:
+        description: Failed Release run whose verified package is staged on the signing Mac
+        type: string
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -11,6 +16,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   release:
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64, hello-chat-release]
     # The signed archive is about 1 GB. Leave room for Apple notarization
     # and GitHub uploads from the signing Mac's connection.
@@ -53,6 +59,7 @@ jobs:
           actual=$("$HELLOCHAT_SPARKLE_TOOLS/generate_keys" --account "$HELLOCHAT_SPARKLE_ACCOUNT" -p)
           [[ "$actual" == "$expected" ]]
       - name: Allocate next version
+        if: ${{ !inputs.recover_run_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -60,6 +67,7 @@ jobs:
           tag=$(python3 scripts/prepare-release.py --releases "$RUNNER_TEMP/releases.json" --plist Info.plist --run-number "$GITHUB_RUN_NUMBER" --commit "$GITHUB_SHA" --output "$RUNNER_TEMP/release-manifest.json")
           echo "HELLOCHAT_RELEASE_TAG=$tag" >> "$GITHUB_ENV"
       - name: Run tests
+        if: ${{ !inputs.recover_run_id }}
         shell: bash
         run: |
           set -euo pipefail
@@ -67,9 +75,50 @@ jobs:
           trap 'rm -rf -- "$tests"' EXIT
           HELLOCHAT_BUILD_DIR="$tests" zsh scripts/test.sh
       - name: Build signed Apple Silicon app
+        if: ${{ !inputs.recover_run_id }}
         run: zsh scripts/build.sh
       - name: Notarize and sign update
+        if: ${{ !inputs.recover_run_id }}
         run: zsh scripts/package-release.sh
+      - name: Verify package from previous run
+        if: ${{ inputs.recover_run_id }}
+        shell: bash
+        env:
+          RECOVER_RUN_ID: ${{ inputs.recover_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RECOVER_RUN_ID" =~ ^[0-9]+$ ]]
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVER_RUN_ID")
+          source=$(jq -er 'select(.path == ".github/workflows/release.yml" and .head_branch == "main" and .status == "completed" and (.conclusion == "failure" or .conclusion == "cancelled")) | .head_sha' <<< "$run")
+          [[ "$source" =~ ^[a-f0-9]{40}$ ]]
+          jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVER_RUN_ID/jobs")
+          jq -e 'any(.jobs[]; any(.steps[]; .name == "Notarize and sign update" and .conclusion == "success"))' <<< "$jobs" >/dev/null
+          git fetch --no-tags --depth=1 origin "$source"
+          git diff --quiet "$source" "$GITHUB_SHA" -- . ':(exclude).github/workflows/release.yml' ':(exclude)RELEASE.md'
+          candidate="${RUNNER_TEMP%/*}/release-recovery.noindex/$RECOVER_RUN_ID"
+          mkdir -p "$HELLOCHAT_BUILD_DIR"
+          for name in HelloChat-macOS-arm64.zip SHA256SUMS appcast.xml; do
+            cp -c "$candidate/$name" "$HELLOCHAT_BUILD_DIR/$name"
+          done
+          cp "$candidate/release-manifest.json" "$RUNNER_TEMP/release-manifest.json"
+          receipt="$RUNNER_TEMP/release-manifest.json"
+          tag=$(jq -er --arg commit "$source" 'select(.commit == $commit and .tag == ("v" + .version)) | .tag' "$receipt")
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish)
+          jq -e --arg commit "$source" '.isDraft and .targetCommitish == $commit' <<< "$draft" >/dev/null
+          cd "$HELLOCHAT_BUILD_DIR"
+          shasum -a 256 -c SHA256SUMS
+          signature=$(python3 -c 'import xml.etree.ElementTree as ET; print(ET.parse("appcast.xml").find("channel/item/enclosure").attrib["{http://www.andymatuschak.org/xml-namespaces/sparkle}edSignature"])')
+          "$HELLOCHAT_SPARKLE_TOOLS/sign_update" --account "$HELLOCHAT_SPARKLE_ACCOUNT" --verify HelloChat-macOS-arm64.zip "$signature"
+          ditto -x -k HelloChat-macOS-arm64.zip .
+          codesign --verify --deep --strict HelloChat.app
+          codesign -dv --verbose=3 HelloChat.app 2>&1 | grep -Fx 'TeamIdentifier=T34G959ZG8'
+          xcrun stapler validate HelloChat.app
+          spctl --assess --type execute --verbose=2 HelloChat.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' HelloChat.app/Contents/Info.plist)" = com.ethansk.HeyChat
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' HelloChat.app/Contents/Info.plist)" = "${tag#v}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' HelloChat.app/Contents/Info.plist)" = "$(jq -er .build "$receipt")"
+          printf 'HELLOCHAT_RELEASE_TAG=%s\nHELLOCHAT_RELEASE_COMMIT=%s\n' "$tag" "$source" >> "$GITHUB_ENV"
       - name: Publish immutable release
         shell: bash
         run: |
@@ -78,11 +127,12 @@ jobs:
           # workflow edits; the existing Keychain login has workflow permission.
           unset GH_TOKEN GITHUB_TOKEN
           test "$(gh api --hostname github.com user --jq .login)" = EthanSK
+          release_commit="${HELLOCHAT_RELEASE_COMMIT:-$GITHUB_SHA}"
           display_name=$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$HELLOCHAT_BUILD_DIR/HelloChat.app/Contents/Info.plist")
           if release=$(gh release view "$HELLOCHAT_RELEASE_TAG" --json isDraft,targetCommitish); then
-            jq -e --arg commit "$GITHUB_SHA" '.isDraft and .targetCommitish == $commit' <<< "$release" >/dev/null
+            jq -e --arg commit "$release_commit" '.isDraft and .targetCommitish == $commit' <<< "$release" >/dev/null
           else
-            gh release create "$HELLOCHAT_RELEASE_TAG" --draft --target "$GITHUB_SHA" \
+            gh release create "$HELLOCHAT_RELEASE_TAG" --draft --target "$release_commit" \
               --title "$display_name ${HELLOCHAT_RELEASE_TAG#v}" --generate-notes \
               --notes 'Signed and notarized for Apple Silicon Macs running macOS 15 or later. Existing installations can use Check for Updates.'
           fi

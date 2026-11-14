@@ -23,6 +23,8 @@ Use the verified Sparkle distribution’s `generate_keys --account com.ethansk.H
 
 An offline runner, locked keychain, missing public key or rejected notarisation blocks publication. A configured workflow alone is not an operational release pipeline. The signing Mac must remain awake and connected while a release runs; locking the screen and putting the Mac to sleep are different states.
 
+If Apple returns HTTP 403 for a missing or expired agreement, open Agreements for the signing team in the developer account and check the acceptance date. Once the account shows acceptance, wait for `notarytool history` with the configured profile to succeed before starting another GitHub run.
+
 ## Version ownership
 
 `Info.plist` owns the requested major/minor version baseline and installed preview build floor. The serialized release job selects the next public patch above existing releases, starting with `1.0.0`. It assigns a build above the source floor, workflow counter offset and last published build. The generated `release-manifest.json` records the source commit, version and build; it is an immutable receipt, not another editable configuration file.
@@ -40,6 +42,10 @@ Do not bump a second version file or commit generated release metadata back to m
 For a change to Voice behavior, check both the ChatGPT and Codex presentations of the same desktop app. First use fixtures for the affected Start, existing-call, End, cancellation, and unavailable-Voice cases. Then obtain user-operated live acceptance in each supported presentation, without ending an existing call to make room for a test. Preserve custom bindings, keyboard layout, the complete modifier combination, and the chosen presentation. Record a native availability or registration blocker explicitly; a passing fixture or a working call in one presentation does not establish the other.
 
 The public download is `https://github.com/EthanSK/hello-chat/releases/latest`. Sparkle reads the latest release’s `appcast.xml` asset. That feed points to the exact immutable version ZIP and contains its Ed25519 signature and length.
+
+## Recover an interrupted upload
+
+When GitHub interrupts publication after successful notarization, preserve the original ZIP, `SHA256SUMS`, `appcast.xml` and `release-manifest.json` before the runner clears its temporary directory. On the signing Mac, stage them under `${RUNNER_TEMP%/*}/release-recovery.noindex/<failed-run-id>/`. Dispatch the Release workflow from `main` with `recover_run_id=<failed-run-id>`. It checks the original run and source, rechecks the package and resumes the matching draft. Recovery accepts workflow and release-guide edits since the original build. Clear the staged copy after the public download is verified.
 
 ## Package on the signing Mac
 
