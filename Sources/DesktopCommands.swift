@@ -1,3 +1,4 @@
+// Native desktop-command execution with injectable senders; parsing stays in AppCommands.swift.
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -50,6 +51,37 @@ struct ZoomShortcut {
     }
 }
 
+// Ethan's Play music / Pause music both mean the hardware toggle, not a directional Spotify or
+// browser API. This is the same system-defined NSEvent pair as toggle-current-media, kept native
+// and self-contained in the public app. Build both halves before sending; never retry or add a delay.
+struct MediaPlayPauseShortcut {
+    enum Failure: Error, Equatable {
+        case desktopUnavailable(DesktopSessionState), accessibilityPermissionMissing, eventCreationFailed
+    }
+    var session: () -> DesktopSessionState = { .current }
+    var accessibilityTrusted: () -> Bool = { AXIsProcessTrusted() }
+    var makeEvents: () -> [CGEvent]? = MediaPlayPauseShortcut.events
+    var post: ([CGEvent]) -> Void = { events in events.forEach { $0.post(tap: .cghidEventTap) } }
+
+    func perform() -> Result<Void, Failure> {
+        let state = session()
+        guard state == .interactive else { return .failure(.desktopUnavailable(state)) }
+        guard accessibilityTrusted() else { return .failure(.accessibilityPermissionMissing) }
+        guard let events = makeEvents(), events.count == 2 else { return .failure(.eventCreationFailed) }
+        post(events)
+        return .success(()) // Submission only: macOS chooses the current media session.
+    }
+    static func events() -> [CGEvent]? {
+        let events = [0x0A, 0x0B].compactMap { state in
+            NSEvent.otherEvent(with: .systemDefined, location: .zero,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(state << 8)),
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+                subtype: 8, data1: (16 << 16) | (state << 8), data2: -1)?.cgEvent
+        }
+        return events.count == 2 ? events : nil
+    }
+}
+
 struct DesktopCommandResult: Equatable {
     let message: String?   // nil: ordinary speech, so the visible status stays unchanged.
     let diagnostic: String // Never contains spoken words or app names.
@@ -88,6 +120,7 @@ enum RunningAppActivation {
         var open: (AppCandidate) async -> Bool = DesktopCommands.openInstalled
         var sleep: (Double) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
         var zoom = ZoomShortcut()
+        var mediaPlayPause = MediaPlayPauseShortcut()
     }
     static let catalogLifetime: TimeInterval = 120
     static let confirmationChecks = 10
@@ -127,6 +160,20 @@ enum RunningAppActivation {
         case .failure(.accessibilityPermissionMissing):
             return DesktopCommandResult(message: "Allow Accessibility for Hello Chat, then try again.", diagnostic: "accessibility")
         case .failure(.eventCreationFailed): return DesktopCommandResult(message: "Couldn't send \(direction.title).", diagnostic: "event-failed")
+        }
+    }
+
+    func toggleCurrentMedia(dispatched: () -> Void = {}) -> DesktopCommandResult {
+        switch environment.mediaPlayPause.perform() {
+        case .success:
+            dispatched()
+            return DesktopCommandResult(message: "Sent Play/Pause to the current media session", diagnostic: "sent")
+        case .failure(.desktopUnavailable(let state)):
+            return DesktopCommandResult(message: state.message, diagnostic: "session-\(state.rawValue)")
+        case .failure(.accessibilityPermissionMissing):
+            return DesktopCommandResult(message: "Allow Accessibility for Hello Chat, then try again.", diagnostic: "accessibility")
+        case .failure(.eventCreationFailed):
+            return DesktopCommandResult(message: "Couldn't send Play/Pause.", diagnostic: "event-failed")
         }
     }
 

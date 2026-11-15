@@ -2,7 +2,7 @@
 
 Ethan’s authorized local updates follow the local-first rule in `.agents/skills/hello-chat/SKILL.md`. Review, build and install a viable locally signed batch promptly; full tests, public notarisation and publication below follow afterward unless a demonstrated local platform requirement prevents it. Preserve the signing identity, permissions, updater trust and safe detach/flush behavior. User-corrected — 2026-11-14.
 
-Every push to `main` starts the Release workflow on a dedicated Apple Silicon signing runner. It tests, builds, verifies the Developer ID signature and microphone entitlement, notarises and staples the app, and signs the final ZIP for Sparkle. GitHub Actions transfers that package as an artifact, then a GitHub-hosted runner publishes the immutable release and verifies its downloadable bytes. The artifact contains only the signed public package and its release metadata. No signing private key is exported to GitHub.
+Runtime changes pushed to `main` start the Release workflow on a dedicated Apple Silicon signing runner. Website/reference-only changes to the explicitly excluded paths do not ship an unchanged app; Pages still publishes the website. A manual dispatch remains available. Bundled resources, scripts, tests and workflow changes still trigger a release. The job tests, builds, verifies the Developer ID signature and microphone entitlement, notarises and staples the app, and signs the final ZIP for Sparkle. GitHub Actions transfers that package as an artifact, then a GitHub-hosted runner publishes the immutable release and verifies its downloadable bytes. The artifact contains only the signed public package and its release metadata. No signing private key is exported to GitHub.
 
 ## One-time signing runner setup
 

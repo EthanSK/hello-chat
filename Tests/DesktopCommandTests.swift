@@ -1,4 +1,4 @@
-// Switch app, Open app and Zoom: detection, resolution, catalog and the zoom key contract.
+// App, zoom and music commands: parsing, resolution and native key contracts without dispatch.
 // Everything is injected: no app is switched or opened and no real key event is posted.
 import AppKit
 import CoreGraphics
@@ -18,6 +18,32 @@ private final class Probe {
     @MainActor static func main() async throws {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
+        var mediaPosts = 0, mediaCues = 0
+        var mediaEnvironment = DesktopCommands.Environment()
+        mediaEnvironment.mediaPlayPause.session = { .interactive }
+        mediaEnvironment.mediaPlayPause.accessibilityTrusted = { true }
+        mediaEnvironment.mediaPlayPause.post = { events in
+            mediaPosts += 1
+            let native = events.compactMap { NSEvent(cgEvent: $0) }
+            check(native.count == 2 && native.allSatisfy { $0.type == .systemDefined && $0.subtype.rawValue == 8 && $0.data2 == -1 },
+                  "Music uses one native system media-key pair, never a normal app shortcut")
+            check(native.map(\.data1) == [(16 << 16) | (0x0A << 8), (16 << 16) | (0x0B << 8)],
+                  "Music sends Play/Pause down then up, with no app-specific media command")
+        }
+        let media = DesktopCommands(environment: mediaEnvironment)
+        check(media.toggleCurrentMedia { mediaCues += 1 }.diagnostic == "sent" && mediaPosts == 1 && mediaCues == 1,
+              "One accepted music command submits exactly one pair and one dispatch cue")
+        mediaEnvironment.mediaPlayPause.session = { .locked }
+        check(DesktopCommands(environment: mediaEnvironment).toggleCurrentMedia { mediaCues += 1 }.diagnostic != "sent"
+              && mediaPosts == 1 && mediaCues == 1, "Locked desktop sends no media event or success cue")
+        mediaEnvironment.mediaPlayPause.session = { .interactive }
+        mediaEnvironment.mediaPlayPause.accessibilityTrusted = { false }
+        check(DesktopCommands(environment: mediaEnvironment).toggleCurrentMedia { mediaCues += 1 }.diagnostic == "accessibility"
+              && mediaPosts == 1 && mediaCues == 1, "Missing Accessibility sends nothing and reports recovery")
+        mediaEnvironment.mediaPlayPause.accessibilityTrusted = { true }
+        mediaEnvironment.mediaPlayPause.makeEvents = { nil }
+        check(DesktopCommands(environment: mediaEnvironment).toggleCurrentMedia { mediaCues += 1 }.diagnostic == "event-failed"
+              && mediaPosts == 1 && mediaCues == 1, "Event creation failure does not partially send or retry")
         var nativeRequests = 0, axRequests = 0, workspaceRequests = 0, identityReads = 0
         check(await RunningAppActivation.request(identityMatches: { true }, native: { nativeRequests += 1; return true },
             accessibility: { axRequests += 1; return true }, workspace: { workspaceRequests += 1; return true })

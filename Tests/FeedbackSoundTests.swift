@@ -53,7 +53,7 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
         typealias Cue = FeedbackSounds.Cue
-        let commandCues: Set<Cue> = [.silent, .videoPaused, .videoPlayed, .switchApp, .openApp, .zoomIn, .zoomOut]
+        let commandCues: Set<Cue> = [.silent, .videoPaused, .videoPlayed, .musicPause, .musicPlay, .switchApp, .openApp, .zoomIn, .zoomOut]
 
         // Each phrase slot owns a distinct sound, including the two ways to silence speakers.
         let slotCues = Set(PhraseSlot.allCases.map(\.cue))

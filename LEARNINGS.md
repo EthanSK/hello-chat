@@ -272,3 +272,8 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 
 - App-name spellings belong to bundle identities, separate from command-prefix dictionaries. Missing overrides use finite defaults; an explicit empty list uses native names only. New/custom aliases compare the full cached catalog before dispatch, so a running alias cannot mask a closed app's exact name. The legacy ordered ChatGPT family and Chrome-browser preference stay intact. Browsing the spelling catalog never opens apps.
 - Home owns phrase, dictionary and microphone editing. Settings retains automatic listening, recognition options/checks, resources, sounds, Spotify, archive, updates, diagnostics and appearance, with a navigation link to Home. Both views retain the same GateModel; removing duplicate editors must not migrate or reset their saved values.
+
+## Public references and media toggle
+
+- The website command and Settings tables are generated from README by `scripts/prepare-site.py`. Normal tests check freshness; update the canonical tables and regenerate rather than editing a second reference copy. Runtime resources, including bundled Markdown, still trigger a release even when website-only edits are excluded.
+- Play music and Pause music intentionally share one hardware Play/Pause action and one recognition occurrence counter. A changed Play/Pause hypothesis must not toggle twice. Keep browser video commands separate, inject the event poster in tests, and describe dispatch as dispatch rather than confirmed playback. Existing phrase ownership, custom dictionaries, extra rows, End cancellation and feedback gain apply to these slots too.

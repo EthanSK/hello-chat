@@ -6,6 +6,39 @@ import Foundation
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
         }
+        // Both music phrases share a single occurrence count because the hardware key is a toggle.
+        let music = PhraseSlot.musicSlots.map { PhrasePattern(slot: $0, text: $0.defaultText, similar: true, dictionaries: .init()) }
+        func musicPoll(_ detector: inout StandaloneWake, at time: Double = 1) -> Bool {
+            detector.poll(at: time, phrase: "Pause music", similar: true, rejectNegated: true, patterns: music, directOnly: true)
+        }
+        for text in ["Pause music", "Play music", "Please play music", "PAUSE, MUSIC!"] {
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)
+            expect(musicPoll(&detector), "A direct music phrase is accepted")
+            expect(!musicPoll(&detector, at: 2), "Polling the same occurrence never toggles twice")
+        }
+        for text in ["I said play music", "Don't pause music", "The pause music phrase", "Play video", "Pause video", "Play music later"] {
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)
+            expect(!musicPoll(&detector), "Music rejects discussion, negation, trailing plans and video commands: \(text)")
+        }
+        var revisedMusic = StandaloneWake()
+        revisedMusic.audio(level: 0.2, seconds: 0.1)
+        revisedMusic.update("Play music", at: 1)
+        expect(musicPoll(&revisedMusic), "First music recognition sends one toggle")
+        revisedMusic.update("Pause music", at: 2)
+        expect(!musicPoll(&revisedMusic, at: 2), "A revised Play/Pause hypothesis shares its consumed occurrence")
+        revisedMusic.update("Pause music. Play music", at: 3)
+        expect(musicPoll(&revisedMusic, at: 3), "A genuinely new second occurrence can send one more press")
+        var cancelledMusic = StandaloneWake()
+        cancelledMusic.audio(level: 0.2, seconds: 0.1); cancelledMusic.update("Play music. Bye chat", at: 1)
+        cancelledMusic.cancelPending(patterns: music, endPatterns: [PhrasePattern(text: "Bye chat", similar: true, ending: true)])
+        expect(!musicPoll(&cancelledMusic), "End consumes a pending music command rather than replaying it")
+        var customMusic = StandaloneWake()
+        customMusic.audio(level: 0.2, seconds: 0.1); customMusic.update("Resume tunes", at: 1)
+        expect(customMusic.poll(at: 1, phrase: "Resume tunes", similar: true, rejectNegated: true,
+            patterns: [PhrasePattern(slot: .playMusicPhrase, text: "Resume tunes", similar: true, dictionaries: .init())], directOnly: true),
+            "A custom music phrase uses the same detector")
         for text in ["by H chat", "the actions can be exposed by H chat, but Apple's phrase", "written by H chad", "handled by H chats", "B Y H C H A T"] {
             var detector = StandaloneWake()
             detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)

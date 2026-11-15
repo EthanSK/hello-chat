@@ -19,12 +19,13 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Mute Chat** / **Unmute Chat** | Mutes or unmutes the active Voice microphone. Repeating a command keeps that state. |
 | **Silent Chat**, **Silence Chat** / **Unsilence Chat** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
+| **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. No app is selected or launched. |
 | **Pause video** / **Play video** | Controls one Chrome video through [Agent Flow Bridge](https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install). Works with YouTube and standard web video players. |
 | **Switch app Chrome** / **Open app Chrome** | Both bring the app forward, opening it if it isn't running. Accepts common names and clear mishearings such as “BS Code” for VS Code. Say the full app name when two apps sound similar. |
 | **Open Safari** | The short form works the same way, with an exact app name or a known alias. |
 | **Zoom in** / **Zoom out** | Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does. |
 
-Each phrase has its own short sound. Wake and End play at detection. Ending a call directly in Codex also plays the End sound, without repeating one already played for that call. Voice audio commands play a short detection tone when the controls are available, followed by their phrase sound when the requested state is confirmed. Video sounds acknowledge a confirmed pause/play result; app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
+Each phrase has its own short sound. Wake and End play at detection. Ending a call directly in Codex also plays the End sound, without repeating one already played for that call. Voice audio commands play a short detection tone when the controls are available, followed by their phrase sound when the requested state is confirmed. Video sounds acknowledge a confirmed pause/play result; music, app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
 
 For safe conversation about the app, call the helper **H Chat** and its End command **B Chat**. These are discussion names, not extra voice commands. The default dictionary no longer accepts the old UI-name alias or B/Be/Bee spellings as End. End commands use the same mention and negation filter as the other controls, so discussing a command is not treated as issuing it. Matching and transcript highlighting share the dictionary.
 
@@ -62,9 +63,10 @@ git clone https://github.com/EthanSK/hello-chat.git
 cd hello-chat
 zsh scripts/build.sh
 zsh scripts/test.sh
-ditto .build.noindex/HelloChat.app /Applications/HelloChat.app
-open /Applications/HelloChat.app
+open .build.noindex
 ```
+
+Copy `HelloChat.app` from the opened build folder into `/Applications`, then open it. Quit an existing H Chat copy and move its old bundle out of `/Applications` before copying the replacement. Normal Quit preserves an independent Codex call.
 
 Release builds update through **Check for Updates…** or automatic updates. When replacing a source build manually, quit Hello Chat and move the old copy out of `/Applications` before copying the new build. `ditto` merges into an existing bundle rather than replacing it.
 
@@ -94,10 +96,10 @@ These checks use fixed recordings and text. They don't show how well Hello Chat 
 
 ## In the App
 
-The main window has two sections:
+The Help menu links to setup instructions and issue reporting. The main window has two sections:
 
 - **Heard (local model)** comes first, with **Start chat** / **End chat**, Refresh and the local transcript. Its height stays bounded while the current recognition batch remains available to scroll back through. New batches replace old text using the existing recognition reset and quiet-period rules; the Heard panel does not accumulate the entire listening session. The panel follows new words while you are at the bottom and lets you scroll back without being pulled down. Exact matches are green and alternate spellings are orange. Highlighting identifies matching text, not proof an action ran.
-- **Listening** comes below it, with the listening toggle, editable Voice, browser and desktop phrases, **Speech model** and the microphone level. Home is the only editing location for these phrases and the microphone. Settings keeps advanced options and a link back to Home. Mute and Unmute control the microphone, and Silent, Silence and Unsilence control Voice audio. Repeating an audio command keeps its requested state.
+- **Listening** comes below it, with the listening toggle, preparation or waiting messages when needed, editable Voice, music, browser and desktop phrases, **Speech model** and the microphone level. Home is the only editing location for these phrases and the microphone. Settings keeps advanced options and a link back to Home. Mute and Unmute control the microphone, and Silent, Silence and Unsilence control Voice audio. Repeating an audio command keeps its requested state.
 
 The **App prefix** setting combines the saved Switch and Open rows. Its defaults include **Switch app**, **Open app**, **Switch up**, **Switch to** and **Switch**, followed by an app name. Existing custom rows and dictionaries stay saved. The **+** beside a phrase adds another phrase for the same command below it. Typing phrases separated by **/**, such as “Open app / Launch app”, adds them as separate rows when you press Return or leave the field. Extra phrases match exactly and highlight like the main phrase. Default Wake rows include **Hey Chat**, and default End rows include **Goodbye Chat**. The new rows are added once to unchanged default sections; custom main phrases are preserved, and deleted extra rows are not added again. A phrase another command already uses is ignored for the new one, and its row says which command has it. Main phrases take priority, then extra rows in list order.
 
@@ -111,7 +113,7 @@ Audio commands act on an existing Voice chat. Microphone commands stay in the ba
 
 When Hello Chat starts a new call, it saves the locally recognised words heard after the wake while Voice was connecting in `~/Library/Application Support/HelloChat/VoiceStartup/pending.json`. On normal app startup, Hello Chat installs or updates its own `hello-chat-voice-startup` skill in the configured Codex skills directory (`~/.codex/skills` by default). The installed skill comes directly from the bundled [Voice startup instructions](Resources/VoiceStartup.md), which remain the single source of truth. It leaves unrelated skills and conflicting user-managed content untouched.
 
-A new local Voice coordinator can read and clear the file through that skill, then say “I'm reading the start of your request from H Chat.” Recognition keeps extending the opening utterance after the Voice window opens. An early reader gets `capturing` with a provisional snapshot of the words recognised so far, labelled incomplete and left intact. The first coordinator to read owns the request. The request becomes ready at the recognizer's utterance end, or once Voice has opened, after some opening words beyond repeated wake greetings arrive and stay unchanged for 2 seconds, or at most 30 seconds of audio. Stability, limit and interrupted cutoffs are marked potentially incomplete. It never becomes ready at window confirmation alone. A recognizer context reset doesn't end the opening. Hello Chat's microphone has no echo cancellation, so on speakers this local text can still include the assistant's own reply if it starts within that pause. It does not paste, switch chats or press Return. The file is private, bounded, separate from transcript backups and replaced at the next new-call start. A reused call publishes nothing. A call started with the button captures new words after the button press. The startup reader merges any overlap with native Voice instead of treating it as a second request. This read needs a Codex work turn: installing the skill does not make the conversational Voice model wait for the file before its first reply.
+This temporary startup file is independent of Save transcripts. A new local Voice coordinator can read and clear the file through that skill, then say “I'm reading the start of your request from H Chat.” Recognition keeps extending the opening utterance after the Voice window opens. An early reader gets `capturing` with a provisional snapshot of the words recognised so far, labelled incomplete and left intact. The first coordinator to read owns the request. The request becomes ready at the recognizer's utterance end, or once Voice has opened, after some opening words beyond repeated wake greetings arrive and stay unchanged for 2 seconds, or at most 30 seconds of audio. Stability, limit and interrupted cutoffs are marked potentially incomplete. It never becomes ready at window confirmation alone. A recognizer context reset doesn't end the opening. Hello Chat's microphone has no echo cancellation, so on speakers this local text can still include the assistant's own reply if it starts within that pause. It does not paste, switch chats or press Return. The file is private, bounded, separate from transcript backups and replaced at the next new-call start. A reused call publishes nothing. A call started with the button captures new words after the button press. The startup reader merges any overlap with native Voice instead of treating it as a second request. This read needs a Codex work turn: installing the skill does not make the conversational Voice model wait for the file before its first reply.
 
 Words within either command must be close together: no gap over 1.5 seconds, and a two-word phrase must fit within 3 seconds. Longer custom phrases have a proportionally larger total window. The app uses local model audio timestamps where available, with first-observed word times as a fallback. This does not limit the length of a Voice conversation or add a delay after a valid command.
 
@@ -156,7 +158,7 @@ defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<secondary b
 defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<primary bridge name>' role secondary
 ```
 
-Both machines need H Chat running from `/Applications/HelloChat.app` with Accessibility access and Agent Bridge at `~/bin/agent-bridge`. Restart H Chat after configuring the pair. A single call on either Mac works normally. When both calls can be identified, H Chat uses the secondary Mac's native End control for its exact session. This closes Voice and keeps the chat and its work. An unreachable peer or an ambiguous call leaves the calls open.
+Both machines need H Chat running from `/Applications/HelloChat.app` with Accessibility access and [Agent Bridge](https://github.com/EthanSK/agent-bridge) at `~/bin/agent-bridge`. This is an advanced, optional setup; it is not installed with H Chat. Restart H Chat after configuring the pair. A single call on either Mac works normally. When both calls can be identified, H Chat uses the secondary Mac's native End control for its exact session. This closes Voice and keeps the chat and its work. An unreachable peer or an ambiguous call leaves the calls open.
 
 For read-only diagnosis, run `/Applications/HelloChat.app/Contents/MacOS/HelloChat --voice-peer-status` locally or over the paired bridge. The command returns a status and, when verified, the current thread and session identifiers. To remove the pairing, delete the `voicePeerPriority` preference on both Macs and restart H Chat.
 
@@ -164,7 +166,11 @@ For read-only diagnosis, run `/Applications/HelloChat.app/Contents/MacOS/HelloCh
 
 Release-configured builds use Sparkle 2.10.1. **Check for Updates…** is in the app menu and Settings. Automatic checks/downloads use Sparkle’s saved preferences; the app does not overwrite your choices on launch. Updates are signed with Ed25519, as well as the app’s Developer ID signature.
 
-A requested update waits for Hello Chat's own in-flight actions and speech checks before relaunching. An active Codex Voice call or Agent Flow recording does not block the update. Normal Quit and update cleanup detach from Codex without ending its call. Development builds without the production public key leave update controls disabled. See [release setup and verification](RELEASE.md).
+A requested update waits for Hello Chat's own in-flight actions and speech checks before relaunching. An active Codex Voice call or Agent Flow recording does not block the update. Normal Quit and update cleanup detach from Codex without ending its call. Source builds retain the public update key and feed by default and can update to a newer public release. A change from an ad-hoc signature to the public Developer ID may require Microphone or Accessibility permission again. Builds with that key deliberately removed leave update controls disabled. See [release setup and verification](RELEASE.md).
+
+### Microphone and Voice audio shortcuts
+
+Missing microphone and Voice audio bindings use Command–Control–Shift–M and Command–Control–Shift–O, respectively. Existing custom bindings are preserved. Mute and Unmute use the microphone shortcut; Silent, Silence and Unsilence use the Voice audio shortcut. Shortcuts saved while Codex is running may still need applying in its native Keyboard shortcuts settings or a later restart. A saved key alone does not confirm live registration.
 
 ## Speech Models
 
@@ -186,7 +192,7 @@ The three Core ML models run with `cpuAndNeuralEngine`, so GPU is excluded. Befo
 - Hello Chat keeps listening while Voice is on, so it can hear Bye Chat. Transcripts can include your side of the conversation and anything else the microphone picks up.
 - **Logs** in `~/Library/Logs/HelloChat/` (`events.jsonl` and `events.previous.jsonl`, each capped at 512 KiB) contain timings and errors, never recognised words.
 - **Network**: listening makes no network requests, and models are never downloaded at runtime. The build, Sparkle update checks/downloads and the optional backup script use the network. Update checks do not include saved transcripts or audio.
-- **Codex**: Hello Chat reads Codex's Voice shortcut from `~/.codex/keybindings.json` and inspects Codex's accessibility tree during Start, End, Refresh, or while a downloaded update is waiting to relaunch. Startup speech is handed to the local Voice skill through the private file above; Hello Chat does not navigate to a chat or submit a message. Start uses the global native shortcut without first activating Codex. The conversation, its audio, network connection and sign-in all belong to Codex.
+- **Codex controls and call monitoring**: Hello Chat reads Codex's shortcuts in `~/.codex/keybindings.json` and fills missing Voice control bindings, preserving custom choices. It inspects native call controls for commands and, while sound effects, Spotify control or paired-Mac priority are enabled, observes call changes and reads saved call-start/end metadata. This supports the End cue when a call closes directly in Codex. It does not read conversation text or subscribe to a private server. Disable all three optional features to stop background call monitoring. Startup speech is handed to the local Voice skill through the private file above; Hello Chat does not navigate to a chat or submit a message. Start uses the global native shortcut without first activating Codex. The conversation, its audio, network connection and sign-in all belong to Codex.
 - **Optional Spotify control**: when enabled, native window/control notifications trigger read-only call checks in the background. Hello Chat also reads only saved call-start/end metadata from Codex's local timeline. Its private `SpotifyVolume/restore.json` receipt stores the original/applied volume values and an opaque call identifier. macOS Automation permission permits Spotify volume access; tracks and library contents are not read.
 
 ### Optional Google Drive Backup
@@ -265,19 +271,11 @@ Hello Chat started as Hey Chat, a private project. It was renamed because “Hey
 
 This repository previously held [HeyBoy](https://github.com/EthanSK/hello-chat/tree/archive/heyboy-before-hellochat), an older, unrelated Vosk and Deepgram voice assistant. Hello Chat replaces it; HeyBoy's history is preserved at the `archive/heyboy-before-hellochat` tag. HeyBoy's install instructions don't apply to Hello Chat.
 
-## Licence
-
-Hello Chat's first-party source is under [Apache 2.0 + Commons Clause v1.0](LICENSE). FluidAudio is under the Apache License 2.0, and the Parakeet and Nemotron models are under the NVIDIA Open Model License; see [`Resources/THIRD-PARTY-NOTICES.txt`](Resources/THIRD-PARTY-NOTICES.txt). Hello Chat isn't affiliated with OpenAI. Codex and ChatGPT are OpenAI's.
-
 ## Maintaining the Website
 
-The static GitHub Pages site lives in `docs/`. After changing its CSS, JavaScript, or the app icon, run `python3 scripts/prepare-site.py` on macOS to regenerate the sharing image and content-derived asset cache keys. `python3 scripts/prepare-site.py --check` verifies freshness without changing files.
+The static GitHub Pages site lives in `docs/`. The command and Settings references are generated from this README by `scripts/prepare-site.py`; do not edit those marked HTML blocks separately. After changing these tables, CSS, JavaScript, or the app icon, run `python3 scripts/prepare-site.py` on macOS to regenerate the sharing image and content-derived asset cache keys. `python3 scripts/prepare-site.py --check` verifies freshness without changing files and runs in the normal test suite.
 
 
 ## License
 
-Source-available under [Apache License 2.0 with Commons Clause v1.0](LICENSE). You may use and modify the covered software, including internally at work, and redistribute it under these terms. Commons Clause restricts selling products or services whose value derives entirely or substantially from the software's functionality; it does not prohibit every commercial use. Earlier licenses and third-party rights remain in force. See [scope and release policy](LICENSING.md).
-
-### Microphone and Voice audio shortcuts
-
-Missing microphone and Voice audio bindings use Command–Control–Shift–M and Command–Control–Shift–O, respectively. Existing custom bindings are preserved. Mute and Unmute use the microphone shortcut; Silent, Silence and Unsilence use the Voice audio shortcut. Shortcuts saved while Codex is running may still need applying in its native Keyboard shortcuts settings or a later restart. A saved key alone does not confirm live registration.
+Source-available under [Apache License 2.0 with Commons Clause v1.0](LICENSE). You may use and modify the covered software, including internally at work, and redistribute it under these terms. Commons Clause restricts selling products or services whose value derives entirely or substantially from the software's functionality; it does not prohibit every commercial use. Earlier licenses and third-party rights remain in force. FluidAudio uses Apache 2.0, and the Parakeet and Nemotron models use the NVIDIA Open Model License; see [third-party notices](Resources/THIRD-PARTY-NOTICES.txt) and [scope and release policy](LICENSING.md). Hello Chat is not affiliated with OpenAI; Codex and ChatGPT belong to OpenAI.

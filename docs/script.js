@@ -1,6 +1,6 @@
 // HelloChat website. A scripted demonstration of the app's two phrases: no microphone, audio,
-// speech recognition or network. Status, hint and event strings are the app's own
-// (HelloChatApp.swift MainView and GateModel.swift); timings are illustrative.
+// speech recognition or network. The statuses illustrate the app's behavior;
+// this is not a reproduction of Codex's live Voice window. Timings are illustrative.
 (() => {
   "use strict";
 
@@ -34,8 +34,8 @@
       hello: { words: ["Hello", "Chat"], from: 0, kind: "wake" },
       bye: { words: ["Bye", "Chat"], from: 0, kind: "end" },
       alias: {
-        words: ["Harlow", "Chat"], from: 0, kind: "alias",
-        note: "Harlow Chat counts as Hello Chat while Alternate spellings for default phrases is on.",
+        words: ["Hello", "Chad"], from: 0, kind: "alias",
+        note: "Hello Chad counts as Hello Chat while Alternate spellings for default phrases is on.",
       },
       mention: {
         words: ["I", "said", "Hello", "Chat"], from: 2, kind: "mention",
@@ -141,6 +141,7 @@
       window.clearTimeout(cueTimer);
       cueTimer = later(1600, () => {
         cue.classList.remove("show");
+        cue.textContent = "";
         meter.classList.remove("cue-wake", "cue-end");
       });
     }
@@ -209,6 +210,7 @@
         return;
       }
       setEvent(`Heard ${WAKE}`);
+      playCue("wake");
       if (voice === "on") {
         announce(`Heard ${said}. Codex Voice is on.`);
         return;
@@ -220,7 +222,6 @@
         openTimer = 0;
         busy = false;
         setVoice("on");
-        playCue("wake");
         announce("Codex Voice is on.");
       });
     }
@@ -260,6 +261,7 @@
       heard.replaceChildren(emptyState());
       note.textContent = "";
       cue.classList.remove("show");
+      cue.textContent = "";
       meter.classList.remove("cue-wake", "cue-end");
       setVoice("off");
       setEvent("");

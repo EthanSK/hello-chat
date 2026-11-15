@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import SwiftUI
 
@@ -101,6 +102,12 @@ import SwiftUI
     @Published var playVideoPhrase = PhraseSlot.playVideoPhrase.savedValue() {
         didSet { UserDefaults.standard.set(playVideoPhrase, forKey: "playVideoPhrase"); updatePhrases() }
     }
+    @Published var pauseMusicPhrase = PhraseSlot.pauseMusicPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(pauseMusicPhrase, forKey: "pauseMusicPhrase"); updatePhrases() }
+    }
+    @Published var playMusicPhrase = PhraseSlot.playMusicPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(playMusicPhrase, forKey: "playMusicPhrase"); updatePhrases() }
+    }
     @Published var switchAppPhrase = PhraseSlot.switchAppPhrase.savedValue() {
         didSet { UserDefaults.standard.set(switchAppPhrase, forKey: "switchAppPhrase"); updatePhrases() }
     }
@@ -133,6 +140,12 @@ import SwiftUI
     private let desktopCommands = DesktopCommands()
     func appSpellingChoices() async -> [AppCandidate] { await desktopCommands.spellingChoices() }
     private var zoomPhraseDetectors = CommandPhraseDetectors<ZoomDirection>()
+    // Both music phrases are one hardware action. Sharing the detector prevents a revised
+    // "Play music" -> "Pause music" hypothesis from sending the same toggle twice.
+    private var musicPhraseDetector = StandaloneWake()
+    private var musicPatterns: [(slot: PhraseSlot, pattern: PhrasePattern)] {
+        PhraseSlot.musicSlots.flatMap { slot in patterns(for: slot).map { (slot, $0) } }
+    }
     private var appCommandDetector = AppCommandDetector()
     private var desktopTask: Task<Void, Never>?
     private var pendingAppCommands: [AppCommandCandidate] = []
@@ -143,6 +156,7 @@ import SwiftUI
     }
     // Browser video control through Agent Flow Bridge. Independent of Codex Voice.
     let videoBridge = VideoBridge()
+    @Published private(set) var videoCommandStatus: String?
     private var videoPhraseDetectors = VideoPhraseDetectors()
     private var videoPatterns: [VideoCommand: [PhrasePattern]] {
         Dictionary(uniqueKeysWithValues: VideoCommand.allCases.map { ($0, patterns(for: $0.slot)) })
@@ -228,6 +242,8 @@ import SwiftUI
         case .unsilencePhrase: return \.unsilencePhrase
         case .pauseVideoPhrase: return \.pauseVideoPhrase
         case .playVideoPhrase: return \.playVideoPhrase
+        case .pauseMusicPhrase: return \.pauseMusicPhrase
+        case .playMusicPhrase: return \.playMusicPhrase
         case .switchAppPhrase: return \.switchAppPhrase
         case .openAppPhrase: return \.openAppPhrase
         case .zoomInPhrase: return \.zoomInPhrase
@@ -244,6 +260,8 @@ import SwiftUI
     @Published private(set) var shortcutNotice: String?
     @Published private(set) var lastEvent = ""
     @Published private(set) var micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    @Published private(set) var micPermissionDenied = [.denied, .restricted].contains(AVCaptureDevice.authorizationStatus(for: .audio))
+    @Published private(set) var accessibilityAllowed = AXIsProcessTrusted()
     let voice = NativeVoice(diagnostics: .shared)
     // Ethan calls this conversation "Chat" in the UI. It is still the same
     // native Codex Voice session; both menu and window use one action/state.
@@ -341,6 +359,7 @@ import SwiftUI
             for action in VoiceAudioAction.allCases { self?.audioPhraseDetectors[action, default: StandaloneWake()].audio(level: level, seconds: seconds, at: audioTime) }
             self?.videoPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.zoomPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
+            self?.musicPhraseDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
             // Raw speech can resume before its first text hypothesis arrives.
@@ -381,7 +400,7 @@ import SwiftUI
             self.computeDetail = "Encoder: \(Int((share * 100).rounded()))% estimated work assigned to Neural Engine; CPU also used. GPU excluded. This is a compiler estimate, not measured usage."
         }
         listener.inputDevice = { [weak self] in
-            guard let input = self?.inputs.selected else { throw BridgeError.message("Selected microphone is unavailable. Choose a microphone in Settings.") }
+            guard let input = self?.inputs.selected else { throw BridgeError.message("Selected microphone is unavailable. Choose a microphone on Home.") }
             return input.id
         }
         inputs.onRouteChange = { [weak self] in self?.restartMicrophone(settle: true) }
@@ -428,6 +447,7 @@ import SwiftUI
             Diagnostics.shared.record("video.command.result", info: ["action": command.rawValue, "outcome": outcome.diagnostic])
             guard let self, !self.quitting else { return }
             self.lastEvent = outcome.summary(for: command)
+            self.videoCommandStatus = outcome.summary(for: command)
             if outcome.confirms(command) { self.feedback.play(command.slot.cue) }
         }
     }
@@ -438,6 +458,12 @@ import SwiftUI
         let result = desktopCommands.zoom(direction) { feedback.play(direction.slot.cue) } // Only once the keys are sent.
         Diagnostics.shared.record("desktop.zoom", info: ["direction": direction.rawValue, "outcome": result.diagnostic])
         if let message = result.message { desktopCommandStatus = message }
+    }
+    private func requestMusic(_ slot: PhraseSlot) {
+        guard !quitting else { return }
+        let result = desktopCommands.toggleCurrentMedia { feedback.play(slot.cue) }
+        Diagnostics.shared.record("media.play_pause", info: ["phrase_slot": slot.rawValue, "outcome": result.diagnostic])
+        if let message = result.message { lastEvent = message; desktopCommandStatus = message }
     }
     // App commands run one after another in spoken order; each heard occurrence acts once.
     private func performAppCommands(_ candidates: [AppCommandCandidate]) {
@@ -620,6 +646,7 @@ import SwiftUI
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
         videoPhraseDetectors.reset()
         zoomPhraseDetectors.reset()
+        musicPhraseDetector.reset()
         appCommandDetector.reset()
     }
     private func updatePhrases() {
@@ -644,6 +671,8 @@ import SwiftUI
     func refreshPermissions() {
         shortcutNotice = VoiceBridge.shortcutSetupMessage() // A Codex restart can apply the saved keys while H Chat stays running.
         micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        micPermissionDenied = [.denied, .restricted].contains(AVCaptureDevice.authorizationStatus(for: .audio))
+        accessibilityAllowed = AXIsProcessTrusted()
     }
     func requestAudioPermissions() {
         Task {
@@ -1044,6 +1073,7 @@ import SwiftUI
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action, default: StandaloneWake()].update(text, at: Diagnostics.now, timings: timings) }
         videoPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         zoomPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
+        musicPhraseDetector.update(text, at: Diagnostics.now, timings: timings)
         appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
         // Keep collecting while a keyword waits for its audio pause. An accepted
@@ -1079,6 +1109,7 @@ import SwiftUI
             } // An explicit End wins over audio commands in the same transcript.
             videoPhraseDetectors.cancelPending(aliases: videoPatterns, endPatterns: endPatterns) // ...and over video commands.
             zoomPhraseDetectors.cancelPending(aliases: zoomPatterns, endPatterns: endPatterns) // ...and desktop commands.
+            musicPhraseDetector.cancelPending(patterns: musicPatterns.map(\.pattern), endPatterns: endPatterns)
             appCommandDetector.consumeAll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
             cancelStartupSpeech()
             standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: endPatterns)
@@ -1102,6 +1133,14 @@ import SwiftUI
                 standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: patterns(for: accepted.command.slot))
             }
             requestVideo(command)
+        }
+        let music = musicPatterns
+        if let first = music.first,
+           musicPhraseDetector.poll(at: Diagnostics.now, phrase: first.pattern.text, similar: first.pattern.similar,
+                rejectNegated: true, patterns: music.map(\.pattern), directOnly: true),
+           let index = musicPhraseDetector.acceptedPatternIndex, music.indices.contains(index) {
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: music.map(\.pattern))
+            requestMusic(music[index].slot)
         }
         // Zoom and app commands: same consumption rules, never busy-gated and never routed to
         // beginVoice. While an opening is being captured for Voice, its words belong to Voice.

@@ -94,6 +94,10 @@ write("VideoPaused", hits(0.22, (0.0, 0.12), (587.33, 587.33), SQUAREISH, 6, 0.0
 # Play video: one retro note that bends up a fifth and holds, like pressing play.
 write("VideoPlayed", voice(0.3, lambda t: 392.0 * 1.5 ** min(1, t / 0.08), SQUAREISH,
                            lambda t: math.exp(-max(0.0, t - 0.1) * 10)))
+# Music phrases acknowledge a hardware toggle, not a confirmed playing/paused state.
+# A short mellow double tap and rising three-note pluck distinguish them from video cues.
+write("MusicPause", hits(0.28, (0.0, 0.14), (261.63, 261.63), SPRING, 14, 0.12))
+write("MusicPlay", hits(0.32, (0.0, 0.08, 0.16), (261.63, 329.63, 392.0), SPRING, 16, 0.14))
 # Switch app: a high-low wooden tick-tock, flipping from one app to another.
 write("SwitchApp", hits(0.22, (0.0, 0.085), (1318.51, 987.77), WOOD, 50, 0.13))
 # Open app: a springy boing that pops up and wobbles.

@@ -343,6 +343,10 @@ struct HelloChatApp: App {
                     .keyboardShortcut("-", modifiers: .command).disabled(!zoom.canDecrease)
                 Button("Actual Size") { zoom.reset() }.keyboardShortcut("0", modifiers: .command)
             }
+            CommandGroup(replacing: .help) {
+                Link("Hello Chat Help", destination: URL(string: "https://ethansk.github.io/hello-chat/#setup")!)
+                Link("Report an Issue", destination: URL(string: "https://github.com/EthanSK/hello-chat/issues")!)
+            }
         }
         Window("Hello Chat Settings", id: "settings") {
             SettingsView(model: model, zoom: zoom, updater: updater)
@@ -451,8 +455,19 @@ struct MainView: View {
                     Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
                         .disabled(model.busy && !preparing && !model.enabled)
                         .accessibilityIdentifier("listeningToggle")
+                    // Preserve Ethan's removal of redundant always-visible status/instruction rows.
+                    // Explain only preparation, dock waiting or interrupted capture on Home.
+                    if preparing || model.status.hasPrefix("Waiting") || model.status == "Needs attention"
+                        || (model.enabled && !model.detectionRunning) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(model.status).accessibilityIdentifier("listeningStatus")
+                            Text(model.detail).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("listeningDetail")
+                        }
+                    }
                     PhraseFields(model: model)
                     VideoControls(model: model, bridge: model.videoBridge)
+                    PhraseFields(model: model, slots: PhraseSlot.musicSlots)
                     PhraseFields(model: model, slots: PhraseSlot.desktopSlots)
                     if let status = model.desktopCommandStatus {
                         Text(status).foregroundStyle(.secondary).accessibilityIdentifier("desktopCommandStatus")
@@ -470,7 +485,17 @@ struct MainView: View {
                     NativeMeter(meter: model.meter, active: model.detectionRunning)
                     Text(model.speechModel.detail).foregroundStyle(.secondary)
                     if !model.micAllowed {
-                        Button("Allow Microphone") { model.requestAudioPermissions() }
+                        if model.micPermissionDenied {
+                            Link("Microphone settings…", destination: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+                                .accessibilityIdentifier("microphoneSettingsLink")
+                        } else {
+                            Button("Allow Microphone") { model.requestAudioPermissions() }
+                        }
+                    }
+                    if !model.accessibilityAllowed {
+                        Link("Accessibility settings…", destination: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                            .accessibilityIdentifier("accessibilitySettingsLink")
+                        Text("Allow Hello Chat to send shortcuts and read Codex Voice controls.").foregroundStyle(.secondary)
                     }
                 }
 
@@ -763,6 +788,9 @@ private struct VideoControls: View {
         }
         .disabled(!available)
         .help(bridge.availability.detail)
+        if let result = model.videoCommandStatus {
+            Text(result).foregroundStyle(.secondary).accessibilityIdentifier("videoCommandStatus")
+        }
         if !available {
             HStack(spacing: 5) {
                 Image(systemName: "info.circle").foregroundStyle(.secondary).accessibilityHidden(true)
@@ -796,8 +824,8 @@ private struct PhraseField: View {
     private var available: Bool { slot.isDefault(text) }
     var body: some View {
         HStack(spacing: 5) { // Keep the button separate so Accessibility does not merge it into the field label.
-            Text(slot.label).fixedSize(horizontal: true, vertical: false)
-                .opacity(showsLabel ? 1 : 0).accessibilityHidden(!showsLabel)
+            Text(showsLabel ? slot.label : "or").fixedSize(horizontal: true, vertical: false)
+                .foregroundStyle(showsLabel ? .primary : .secondary).accessibilityHidden(!showsLabel)
             Button { showingSpellings = true } label: { Image(systemName: "info.circle") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
                 .disabled(!available)
@@ -986,9 +1014,13 @@ struct SettingsView: View {
                     }
                 }.disabled(!model.soundEffects)
                 // Every phrase has its own sound; preview them to learn which is which.
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180 * zoom.scale), alignment: .leading)], alignment: .leading) {
                     ForEach(PhraseSlot.allCases) { slot in
-                        Button("\(slot.soundTitle) sound") { model.previewSound(slot.cue) }
+                        Button { model.previewSound(slot.cue) } label: {
+                            Text("\(slot.soundTitle) sound")
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                             .accessibilityIdentifier("previewSound\(slot.cue.rawValue)")
                     }
                 }.disabled(!model.soundEffects)

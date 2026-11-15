@@ -1,8 +1,17 @@
-# Build every main push on the dedicated signing Mac; keys remain in its Keychain.
+# Build runtime changes on the dedicated signing Mac; keys remain in its Keychain.
 name: Release
 on:
   push:
     branches: [main]
+    # Website/reference-only edits still publish through Pages, without shipping
+    # another gigabyte of unchanged app models. Bundled Resources/*.md is runtime.
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'LEARNINGS.md'
+      - 'RELEASE.md'
+      - 'AGENTS.md'
+      - '.agents/**'
   workflow_dispatch:
     inputs:
       recover_run_id:

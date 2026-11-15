@@ -13,20 +13,20 @@
   <meta property="og:description" content="Say Hello Chat to start Codex Voice, and Bye Chat to end it. A native Mac app that hears both phrases with a local speech model.">
   <meta property="og:url" content="https://ethansk.github.io/hello-chat/">
   <meta property="og:locale" content="en_GB">
-  <meta property="og:image" content="https://ethansk.github.io/hello-chat/og.png?v=f82df76bec82">
+  <meta property="og:image" content="https://ethansk.github.io/hello-chat/og.png?v=e33fe7db57d9">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Hello Chat: Say Hello Chat to start Codex Voice, and Bye Chat to end it.">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Hello Chat">
   <meta name="twitter:description" content="Say Hello Chat to start Codex Voice, and Bye Chat to end it. A native Mac app that hears both phrases with a local speech model.">
-  <meta name="twitter:image" content="https://ethansk.github.io/hello-chat/og.png?v=f82df76bec82">
+  <meta name="twitter:image" content="https://ethansk.github.io/hello-chat/og.png?v=e33fe7db57d9">
   <link rel="canonical" href="https://ethansk.github.io/hello-chat/">
   <link rel="icon" href="./icon.svg?v=bdb5a0d73768" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./app-icon.png?v=4ee93a67d736">
   <link rel="manifest" href="./site.webmanifest?v=d0fa666601e5">
-  <link rel="stylesheet" href="./styles.css?v=b9b71f8778ef">
-  <script src="./script.js?v=69897d88d788" defer></script>
+  <link rel="stylesheet" href="./styles.css?v=8a0c2609d3ed">
+  <script src="./script.js?v=fcedaaccdd84" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -37,6 +37,7 @@
       <a href="#setup">Setup</a>
       <a href="#phrases">Phrases</a>
       <a href="#privacy">Privacy</a>
+      <a href="#help">Help</a>
       <a href="#build">Build</a>
       <a class="external" href="https://github.com/EthanSK/hello-chat">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
@@ -49,13 +50,14 @@
         <p class="lead">Hello Chat is a native Mac app that listens for both phrases with a local speech model, then opens or ends Voice in the Codex desktop app.</p>
         <div class="hero-actions">
           <p class="actions">
-            <a class="button" href="#build">Build from source</a>
+            <a class="button" href="https://github.com/EthanSK/hello-chat/releases/latest/download/HelloChat-macOS-arm64.zip">Download for Apple Silicon</a>
             <a class="button button-quiet" href="https://github.com/EthanSK/hello-chat">Source <span aria-hidden="true">↗</span></a>
           </p>
           <ul class="needs" aria-label="Requirements">
             <li>Apple Silicon</li>
             <li>macOS 15 or later</li>
             <li>Codex desktop app</li>
+            <li>About 1.09 GB installed</li>
           </ul>
         </div>
       </div>
@@ -92,7 +94,7 @@
           <span class="say-label" id="say-label">Say</span>
           <button type="button" class="say-button primary" data-say="hello" aria-keyshortcuts="H">Hello Chat <kbd aria-hidden="true">H</kbd></button>
           <button type="button" class="say-button primary" data-say="bye" aria-keyshortcuts="B">Bye Chat <kbd aria-hidden="true">B</kbd></button>
-          <button type="button" class="say-button" data-say="alias">Harlow Chat</button>
+          <button type="button" class="say-button" data-say="alias">Hello Chad</button>
           <button type="button" class="say-button" data-say="mention">I said Hello Chat</button>
           <button type="button" class="reset" id="reset">Reset</button>
         </div>
@@ -119,13 +121,13 @@
         </li>
         <li>
           <span class="step-num">2</span>
-          <p class="step-title">Build Hello Chat</p>
-          <p class="step-text"><a href="#build">Build from source</a>, then copy <code>HelloChat.app</code> to Applications.</p>
+          <p class="step-title">Download Hello Chat</p>
+          <p class="step-text"><a href="https://github.com/EthanSK/hello-chat/releases/latest">Download the signed, notarised app</a>, unzip it and move <code>HelloChat.app</code> to Applications. No developer tools are needed.</p>
         </li>
         <li>
           <span class="step-num">3</span>
           <p class="step-title">Allow Microphone and Accessibility</p>
-          <p class="step-text">Microphone is for local listening. Accessibility lets Hello Chat use Codex’s Voice shortcut and End Voice control.</p>
+          <p class="step-text">Microphone is for local listening. Accessibility lets Hello Chat use Codex’s Voice shortcut and End Voice control. If macOS does not ask, add Hello Chat in System Settings → Privacy &amp; Security → Accessibility.</p>
         </li>
         <li>
           <span class="step-num">4</span>
@@ -135,7 +137,7 @@
         <li>
           <span class="step-num">5</span>
           <p class="step-title">Turn on Listen for wake phrase</p>
-          <p class="step-text">Hello Chat prepares the local model, then shows Listening.</p>
+          <p class="step-text">Hello Chat prepares the local model, then shows Listening. Transcripts are saved on your Mac by default; turn off Save transcripts in Settings → Transcript Archive to stop saving.</p>
         </li>
         <li>
           <span class="step-num">6</span>
@@ -148,32 +150,56 @@
     <section class="section" id="phrases" aria-labelledby="phrases-title">
       <div class="section-head">
         <h2 id="phrases-title">Phrases</h2>
-        <p class="section-lead">Change the wake, end, microphone and Voice audio phrases on Home. For the current trial, commands run when the complete phrase is recognised, without a deliberate pause.</p>
+        <p class="section-lead">Edit command phrases on Home. Voice controls act on a complete phrase; app-name commands wait for a brief speech pause so recognition can finish the name.</p>
       </div>
-      <div class="pair">
-        <div class="pair-col">
-          <h3><span class="phrase">Hello Chat</span></h3>
-          <ul>
-            <li>Opens Voice in Codex. No need to turn it on first.</li>
-            <li>Works after other speech, such as “I stopped the video, Hello Chat”.</li>
-            <li>Ignores clear mentions, such as “I said Hello Chat”.</li>
-            <li>Also has an editable Hey Chat row by default. With alternate spellings on, a short list includes real-word mishearings such as Hello Chad and Hello Chance. Arbitrary letter edits are not generated.</li>
-            <li>Plays the Wake sound when the command is recognised.</li>
-          </ul>
+      <!-- README:commands:start -->
+<div class="reference-scroll"><table class="reference-table"><thead><tr><th scope="col">Say</th><th scope="col">What happens</th></tr></thead><tbody>
+<tr><td><strong>Hello Chat</strong></td><td>Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored.</td></tr>
+<tr><td><strong>Mute Chat</strong> / <strong>Unmute Chat</strong></td><td>Mutes or unmutes the active Voice microphone. Repeating a command keeps that state.</td></tr>
+<tr><td><strong>Silent Chat</strong>, <strong>Silence Chat</strong> / <strong>Unsilence Chat</strong></td><td>Silences or restores Voice speaker audio. The microphone and call remain independent.</td></tr>
+<tr><td><strong>Bye Chat</strong></td><td>Ends Voice, after checking Codex&#x27;s End Voice control is showing. Also cancels Voice while it&#x27;s opening, and ends a call you started yourself in Codex.</td></tr>
+<tr><td><strong>Pause music</strong> / <strong>Play music</strong></td><td>Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. No app is selected or launched.</td></tr>
+<tr><td><strong>Pause video</strong> / <strong>Play video</strong></td><td>Controls one Chrome video through <a href="https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install">Agent Flow Bridge</a>. Works with YouTube and standard web video players.</td></tr>
+<tr><td><strong>Switch app Chrome</strong> / <strong>Open app Chrome</strong></td><td>Both bring the app forward, opening it if it isn&#x27;t running. Accepts common names and clear mishearings such as “BS Code” for VS Code. Say the full app name when two apps sound similar.</td></tr>
+<tr><td><strong>Open Safari</strong></td><td>The short form works the same way, with an exact app name or a known alias.</td></tr>
+<tr><td><strong>Zoom in</strong> / <strong>Zoom out</strong></td><td>Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does.</td></tr>
+</tbody></table></div>
+<!-- README:commands:end -->
+      <p class="fine">Each command has its own short sound. Wake and End acknowledge detection; audio and video cues follow the confirmed result. Music, app and zoom cues acknowledge dispatch. Check the app’s status for the outcome.</p>
+      <details class="more">
+        <summary>Custom Phrases and App Spellings</summary>
+        <div class="more-body">
+          <p>Home owns phrase, microphone and model editing. Add another phrase with +, or enter phrases separated by /. Extra phrases match exactly. Default phrases have editable dictionaries behind their information buttons; exact matches are green and alternate spellings are orange.</p>
+          <p>App spellings beside App prefix lets you edit names the local model hears for each installed app. Switch and Open share them. Native app names always work. Save one spelling per line, leave the list blank for app names only, or restore the built-in alternatives.</p>
+          <p>For conversation about the app, use H Chat and B Chat. They are discussion names, not extra commands. Anyone or anything the microphone hears can still issue a real command.</p>
         </div>
-        <span class="pair-rule" aria-hidden="true"></span>
-        <div class="pair-col">
-          <h3><span class="phrase">Bye Chat</span></h3>
-          <ul>
-            <li>Ends Voice in Codex, after checking Codex’s End Voice control is showing.</li>
-            <li>Also has an editable Goodbye Chat row by default.</li>
-            <li>Cancels Voice while it’s still opening.</li>
-            <li>Ends a Voice call you started yourself in Codex too.</li>
-            <li>Plays the End sound when the command is recognised.</li>
-            <li>If Voice is already off, Hello Chat says so and does nothing else.</li>
-          </ul>
+      </details>
+      <details class="more">
+        <summary>Settings</summary>
+        <div class="more-body">
+          <p>Open Settings with the gear button or Command-comma. Resize either window normally; View → Zoom In, Zoom Out and Actual Size control the interface size.</p>
+<!-- README:settings:start -->
+<div class="reference-scroll"><table class="reference-table"><thead><tr><th scope="col">Section</th><th scope="col">Contents</th></tr></thead><tbody>
+<tr><td>Automatic Listening</td><td><strong>Listen automatically when docked</strong>, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts.</td></tr>
+<tr><td>Recognition</td><td><strong>Alternate spellings for default phrases</strong> and <strong>Check speech recognition</strong>. Phrase and microphone editors are on Home.</td></tr>
+<tr><td>Resources</td><td>Hello Chat&#x27;s own CPU and memory, and Core ML&#x27;s estimated encoder placement.</td></tr>
+<tr><td>Sounds</td><td><strong>Sound effects</strong> (on by default), <strong>Volume</strong>, and a preview button for each phrase&#x27;s short sound. Volume changes only H Chat&#x27;s cues.</td></tr>
+<tr><td>Spotify</td><td><strong>Lower volume during chat</strong>, off by default. Requires permission to control Spotify.</td></tr>
+<tr><td>Transcript Archive</td><td><strong>Save transcripts</strong> (on by default), the archive location, and this Mac’s optional backup configuration.</td></tr>
+<tr><td>Updates</td><td><strong>Check for Updates…</strong>, automatic checking and automatic downloads on release-configured builds.</td></tr>
+<tr><td>Diagnostics</td><td>Timing, errors and startup request/revision metadata, which exclude recognised words.</td></tr>
+<tr><td>Appearance</td><td><strong>Open windows on</strong> remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. <strong>View → Zoom In / Zoom Out / Actual Size</strong> works too.</td></tr>
+</tbody></table></div>
+<!-- README:settings:end -->
         </div>
-      </div>
+      </details>
+      <details class="more">
+        <summary>Speech During Voice Startup</summary>
+        <div class="more-body">
+          <p>H Chat keeps the opening words it hears while a new Voice call connects in a private local file. App startup installs its own Codex skill to read that file once. It preserves user-edited or conflicting skills.</p>
+          <p>The new local Voice coordinator needs a work turn to read the file. Installing the skill does not make the conversational model wait for it before replying. H Chat does not paste into the composer or switch chats. <a href="https://github.com/EthanSK/hello-chat#in-the-app">Read the capture and recovery details</a>.</p>
+        </div>
+      </details>
     </section>
 
     <section class="section" id="privacy" aria-labelledby="privacy-title">
@@ -193,6 +219,7 @@
             <li>Keeps transcripts on your Mac unless you set up the optional Google Drive backup.</li>
             <li>Writes timing and error logs that exclude recognised words.</li>
             <li>Each command has a short sound. Settings → Sounds controls their volume without changing your system volume or speakers.</li>
+            <li>Sound effects, optional Spotify control and paired-Mac priority observe Codex’s native call controls and read saved call-start/end metadata. This enables the End sound when you close Voice directly in Codex. No conversation text is read. Turn all three features off to stop background call monitoring.</li>
             <li>Optional Spotify control lowers its own volume during chat and restores it afterward, unless changed manually. It reads call controls and saved call-boundary metadata, never tracks or transcripts. This is off by default and needs macOS Automation permission.</li>
             <li>Never downloads models while listening. The Core ML models are bundled and pinned by SHA-256.</li>
           </ul>
@@ -201,6 +228,7 @@
         <div class="pair-col">
           <h3>In Codex</h3>
           <ul>
+            <li>H Chat fills missing Voice shortcuts in Codex’s local keybindings file and installs its app-owned startup skill. Custom shortcuts and user-edited skills are preserved. Speech captured during startup uses a separate private pending file even if transcript archiving is off.</li>
             <li>Runs the Voice conversation, including its audio and network connection.</li>
             <li>Uses your Codex sign-in and its own microphone setting.</li>
             <li>Needs internet, and Voice available on your account.</li>
@@ -213,7 +241,6 @@
         <div class="more-body">
           <p>Apple’s Shortcuts app includes seven Hello Chat actions: start, end, microphone mute and unmute, speaker silence and restore, and read-only chat status. They use the same native Codex controls. Starting through a shortcut does not turn local listening on.</p>
           <p>On a supported Mac, Accessibility → Vocal Shortcuts can connect a phrase trained with your own voice to an action or saved shortcut. Apple processes that recognition on the device. Setup is optional and does not switch off Hello Chat’s existing detector. Compare them separately before enabling a replacement.</p>
-          <p class="fine">App spellings beside App prefix lets you edit recognized names for each installed app. Home owns phrase and microphone editing; Settings keeps advanced options.</p>
           <p class="fine">Fixed phrases do not replace variable app names, continuous transcripts or startup speech capture. Accuracy and power use versus Nemotron are unmeasured. <a href="https://support.apple.com/en-mt/guide/mac-help/mchlf4548bb6/27/mac/27">Apple’s setup guide</a></p>
         </div>
       </details>
@@ -262,10 +289,9 @@
 cd hello-chat
 zsh scripts/build.sh
 zsh scripts/test.sh
-ditto .build.noindex/HelloChat.app /Applications/HelloChat.app
-open /Applications/HelloChat.app</code></pre>
+open .build.noindex</code></pre>
           </div>
-          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. Release builds update through Check for Updates in the app menu or Settings. When replacing a source build manually, quit Hello Chat and move the old copy to the Bin before copying the new one.</p>
+          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. Copy HelloChat.app from the opened build folder to Applications, then open it. Release builds update through Check for Updates in the app menu or Settings. When replacing a source build manually, quit Hello Chat and move the old copy to the Bin before copying the new one.</p>
         </div>
       </div>
 
@@ -273,6 +299,7 @@ open /Applications/HelloChat.app</code></pre>
         <summary>Signing and Build Options</summary>
         <div class="more-body">
           <p>The build signs with your first Developer ID Application certificate, or ad-hoc when there isn’t one. Set <code>HELLOCHAT_SIGNING_IDENTITY</code> to pick another identity. macOS ties Microphone and Accessibility permission to the signature, so with ad-hoc signing it may ask again after a rebuild.</p>
+          <p>Source builds use the public updater by default. An update from an ad-hoc signature to the public Developer ID may need fresh microphone or Accessibility permission. Remove the production public key only if you want a separate development build without updates.</p>
           <p>Set <code>HELLOCHAT_BUILD_DIR</code> to an absolute path to put all build output, models and test executables somewhere else.</p>
         </div>
       </details>
@@ -301,6 +328,35 @@ open /Applications/HelloChat.app</code></pre>
       </details>
     </section>
 
+    <section class="section" id="help" aria-labelledby="help-title">
+      <div class="section-head">
+        <h2 id="help-title">Help</h2>
+        <p class="section-lead">Check what H Chat heard and the status shown on Home before changing your setup.</p>
+      </div>
+      <details class="more">
+        <summary>Voice Does Not Open</summary>
+        <div class="more-body">
+          <p>After your current call ends, test the configured Voice chat hotkey in the same Codex or ChatGPT presentation. If it also fails manually, check native Voice availability and shortcut registration. H Chat cannot enable Voice for your account.</p>
+          <p>H Chat preserves existing shortcuts. Newly saved bindings may need a Codex restart; Home shows that notice. Keep Start, End and Toggle voice chat separate. <a href="https://github.com/EthanSK/hello-chat#how-codex-control-works">Shortcut and presentation details</a>.</p>
+        </div>
+      </details>
+      <details class="more">
+        <summary>No Words Are Heard</summary>
+        <div class="more-body">
+          <p>Check Home’s listening status, microphone choice and level bar. System default follows your Mac’s input; Codex Voice has its own microphone setting. Automatic listening is optional and waits 2 minutes after power and an external display connect. You can turn listening on yourself immediately.</p>
+          <p>Check Microphone and Accessibility in System Settings → Privacy &amp; Security. Settings → Recognition → Check speech recognition uses bundled recordings, so it checks the local pipeline without starting Voice. It does not test your microphone or room.</p>
+        </div>
+      </details>
+      <details class="more">
+        <summary>Updates and Optional Setup</summary>
+        <div class="more-body">
+          <p>Release builds have Check for Updates in the app menu and Settings, with automatic checking and downloads. Update installation waits for H Chat’s own work, then restarts the helper without ending an independent Codex call or Agent Flow recording.</p>
+          <p>Start at Login and Google Drive backup are optional scripts in the source repository; they are not installed automatically with the download. Paired-Mac Voice priority also needs manual setup and Agent Bridge. <a href="https://github.com/EthanSK/hello-chat#paired-macs-and-codex-voice">Pairing instructions</a>.</p>
+          <p><a href="https://github.com/EthanSK/hello-chat/issues">Report an issue</a> with your app version, macOS version, selected model and the error shown. Keep private transcripts out of public reports.</p>
+        </div>
+      </details>
+    </section>
+
     <section class="section" id="limits" aria-labelledby="limits-title">
       <div class="section-head">
         <h2 id="limits-title">Limits</h2>
@@ -309,7 +365,7 @@ open /Applications/HelloChat.app</code></pre>
         <li>It isn’t speaker-locked: anyone the microphone can hear, including a video, can wake or end Voice.</li>
         <li>Matching leans towards waking, so it can hear a phrase nobody said, or miss one.</li>
         <li>It works through Codex’s Voice shortcut and End Voice control, not an official wake-word API. A Codex update can change them, and Hello Chat then shows an error instead of guessing.</li>
-        <li>Codex’s Voice shortcut is Control-Shift-V by default. A custom one needs to end in V, F16, F17, F19 or F20.</li>
+        <li>H Chat fills missing Start and End shortcuts with Command-Control-Shift-V and Control-Option-Shift-V. Custom shortcuts are preserved, including character, function and navigation keys. If Codex was already running when a binding was added, restart Codex once to apply it. Toggle voice chat is a separate command.</li>
         <li>Listening always uses some CPU, because Core ML shares the work between CPU and Neural Engine. Settings → Resources shows Hello Chat’s own CPU and memory.</li>
         <li>Detection is local, but it isn’t an offline assistant: Codex Voice needs internet.</li>
         <li>So far it’s been used on Ethan’s own Mac, not tested across a range of fresh setups.</li>

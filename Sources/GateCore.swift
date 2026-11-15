@@ -54,10 +54,11 @@ struct MicrophoneOwnership {
 }
 
 // One list owns every default field, its saved key and its dictionary identity.
-// The two browser-video slots come last so Voice fields keep their order.
+// Voice, browser, music and desktop fields retain their own display groups.
 enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
     case pauseVideoPhrase, playVideoPhrase
+    case pauseMusicPhrase, playMusicPhrase
     case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase
     var id: String { rawValue }
     var label: String {
@@ -71,6 +72,8 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return "Unsilence phrase"
         case .pauseVideoPhrase: return "Pause video phrase"
         case .playVideoPhrase: return "Play video phrase"
+        case .pauseMusicPhrase: return "Pause music phrase"
+        case .playMusicPhrase: return "Play music phrase"
         case .switchAppPhrase, .openAppPhrase: return "App prefix"
         case .zoomInPhrase: return "Zoom in phrase"
         case .zoomOutPhrase: return "Zoom out phrase"
@@ -81,6 +84,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     var example: String? {
         switch self {
         case .switchAppPhrase: return "Say a prefix followed by an app name. Open brings it forward too."
+        case .pauseMusicPhrase: return "Both music phrases send one Play/Pause press to the current media session."
         default: return nil
         }
     }
@@ -95,6 +99,8 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return "Unsilence Chat"
         case .pauseVideoPhrase: return "Pause video"
         case .playVideoPhrase: return "Play video"
+        case .pauseMusicPhrase: return "Pause music"
+        case .playMusicPhrase: return "Play music"
         case .switchAppPhrase: return "Switch app"
         case .openAppPhrase: return "Open app"
         case .zoomInPhrase: return "Zoom in"
@@ -103,10 +109,12 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     }
     // Browser-video phrases go through Agent Flow Bridge and never reach Codex Voice.
     var controlsVideo: Bool { self == .pauseVideoPhrase || self == .playVideoPhrase }
+    var controlsMusic: Bool { self == .pauseMusicPhrase || self == .playMusicPhrase }
     // Desktop phrases act on Mac apps and never reach Codex Voice either.
     var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase].contains(self) }
-    static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsDesktop }
+    static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop }
     static let videoSlots = allCases.filter(\.controlsVideo)
+    static let musicSlots = allCases.filter(\.controlsMusic)
     static let desktopSlots = allCases.filter(\.controlsDesktop)
     // Ethan's "one setting" (15 November 2026): present Switch/Open as one list, while retaining
     // both saved keys, custom dictionaries, sounds and Open's existing short-form behavior.
@@ -135,6 +143,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return .unsilenceSpeakers
         case .pauseVideoPhrase: return .pauseVideo
         case .playVideoPhrase: return .playVideo
+        case .pauseMusicPhrase, .playMusicPhrase: return .mediaPlayPause
         case .switchAppPhrase, .openAppPhrase: return .app
         case .zoomInPhrase: return .zoomIn
         case .zoomOutPhrase: return .zoomOut
@@ -143,7 +152,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
 }
 
 enum PhraseAction: String, CaseIterable {
-    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, app, zoomIn, zoomOut
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, mediaPlayPause, app, zoomIn, zoomOut
     var slots: [PhraseSlot] { PhraseSlot.allCases.filter { $0.action == self } }
 }
 
