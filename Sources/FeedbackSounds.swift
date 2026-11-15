@@ -64,6 +64,9 @@ extension PhraseSlot {
         }
     }
     var soundTitle: String {
+        // The phrase editor groups these together; keep their existing sound choices distinct.
+        if self == .switchAppPhrase { return "Switch app" }
+        if self == .openAppPhrase { return "Open app" }
         for suffix in [" phrase", " prefix"] where label.hasSuffix(suffix) { return String(label.dropLast(suffix.count)) }
         return label
     }

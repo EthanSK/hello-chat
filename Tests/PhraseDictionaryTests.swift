@@ -6,6 +6,12 @@ import Foundation
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
         let alias = "custom lantern"
+        let oldInvented = "Hlelo Chta"
+        let explicit = PhrasePattern(slot: .wakePhrase, text: "Hello Chat", similar: true,
+                                     dictionaries: .init(["hellochat": [oldInvented]]))
+        check(explicit.kind(for: oldInvented) == .dictionary, "A user's explicit nonword spelling remains owned by the user")
+        check(PhrasePattern(slot: .wakePhrase, text: "Hello Chat", similar: true, dictionaries: .init()).kind(for: oldInvented) == nil,
+              "The same invented spelling is absent from the shipped dictionary")
         for slot in PhraseSlot.allCases {
             let key = PhraseMatcher.words(slot.defaultText).joined()
             let dictionaries = PhraseDictionaries([key: [alias]])
@@ -65,11 +71,11 @@ import Foundation
         }
         for slot in PhraseSlot.allCases {
             for other in PhraseSlot.allCases where other != slot {
-                let sameAction = Set([slot, other]) == Set([.silentPhrase, .silencePhrase])
+                let sameAction = slot.action == other.action
                 do {
                     _ = try PhraseDictionary.parse(other.defaultText, for: slot)
                     check(sameAction, "Other built-in commands cannot become an opposite dictionary alias")
-                } catch { check(!sameAction, "Silent/Silence retain their shared action") }
+                } catch { check(!sameAction, "Same-action app/speaker phrases can share aliases") }
             }
         }
         do { _ = try PhraseDictionary.parse("Valid\r\n!!!") ; preconditionFailure("Invalid CRLF line accepted") }

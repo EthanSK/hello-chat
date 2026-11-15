@@ -11,7 +11,7 @@ import Foundation
         let longTranscript = "Hello Chat. " + String(repeating: "Earlier speech. ", count: 100) + "Unsilenced Chat."
         check(runs(longTranscript).map(\.text).joined() == longTranscript, "The live transcript never drops its earlier characters")
         check(runs(longTranscript).first?.kind == .exact, "Earlier text remains highlighted beyond 600 characters")
-        check(runs("Unsilenced Chat. Unsilense Chad.").filter { $0.kind != nil }.map(\.kind) == [.dictionary, .dictionary], "Narrow one-edit audio spelling variants share dictionary orange")
+        check(runs("Unsilenced Chat. Unsilenced Chad.").filter { $0.kind != nil }.map(\.kind) == [.dictionary, .dictionary], "Observed real-word audio spellings share dictionary orange")
         check(runs("Unsilenced Chat", "Hello Chat", false).allSatisfy { $0.kind == nil }, "Exact-only mode does not accept added audio variants")
         let microphoneText = "Mute, CHAT! Silent Chat. Silence Chat. mute charts."
         let microphoneRuns = runs(microphoneText)
@@ -19,7 +19,7 @@ import Foundation
         check(microphoneRuns.filter { $0.kind != nil }.map(\.text) == ["Mute, CHAT", "Silent Chat", "Silence Chat"], "All microphone commands highlight without fuzzy lookalikes")
         check(microphoneRuns.filter { $0.kind != nil }.allSatisfy { $0.kind == .exact }, "Microphone commands use the existing exact-match green classification")
         check(runs("Silent Chat", "Start Lantern", false, end: "End Lantern").first?.kind == .exact, "Microphone commands are independent of custom wake/end phrases and similar-word mode")
-        check(runs("Mute Chad. Silent Chatt. Silence Chad.").filter { $0.kind != nil }.map(\.kind) == [.dictionary, .dictionary, .dictionary], "Controlled microphone mishearings use dictionary orange")
+        check(runs("Mute Chad. Silent Chad. Silence Chad.").filter { $0.kind != nil }.map(\.kind) == [.dictionary, .dictionary, .dictionary], "Controlled microphone mishearings use dictionary orange")
         check(runs("Mute Chad", "Hello Chat", false).allSatisfy { $0.kind == nil }, "Exact-only mode disables the microphone dictionary")
         check(runs("mute charts. silent cat.").allSatisfy { $0.kind == nil }, "The microphone dictionary does not accept other actions or broad lookalikes")
         let customMicrophone = PhraseHighlights.runs(in: "Quiet Lantern. Mute Chat.", phrase: "Hello Chat", similar: true, controlPhrases: ["Quiet Lantern"])

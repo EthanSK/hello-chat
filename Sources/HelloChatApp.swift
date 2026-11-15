@@ -528,12 +528,16 @@ private struct PhraseFields: View {
     var slots: [PhraseSlot] = PhraseSlot.voiceSlots
     @FocusState private var focus: PhraseFocus?
     var body: some View {
-        ForEach(slots) { slot in
+        ForEach(PhraseSlot.fieldGroups(slots), id: \.first) { group in
+          VStack(alignment: .leading, spacing: 8) {
+           ForEach(group) { slot in
             PhraseField(slot: slot, text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
                 set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }), similar: model.similarPhrases,
                 dictionary: Binding(get: { model.phraseDictionaries[slot.rawValue] },
                     set: { model.phraseDictionaries[slot.rawValue] = $0 }),
-                commit: PhraseCommit(field: .main(slot), focus: $focus, commit: commit), add: { add(slot) })
+                commit: PhraseCommit(field: .main(slot), focus: $focus, commit: commit),
+                showsLabel: slot == group.first, showsAdd: slot == group.first,
+                add: { add(group.first ?? slot) })
             PhraseIssueText(issue: model.phraseIssue(slot, id: nil), identifier: slot.identifier + "Issue")
             ForEach(Array((model.phraseAliases[slot] ?? []).enumerated()), id: \.element.id) { index, row in
                 ExtraPhraseField(slot: slot, number: index + 2,
@@ -543,9 +547,11 @@ private struct PhraseFields: View {
                     remove: { model.removePhraseRow(slot, id: row.id) })
                 PhraseIssueText(issue: model.phraseIssue(slot, id: row.id), identifier: "\(slot.identifier)\(index + 2)Issue")
             }
-            if let example = slot.example {
-                Text(example).foregroundStyle(.secondary).accessibilityIdentifier("\(slot.rawValue)Example")
-            }
+           }
+           if let slot = group.first, let example = slot.example {
+               Text(example).foregroundStyle(.secondary).accessibilityIdentifier("\(slot.rawValue)Example")
+           }
+          }
         }
     }
     private func commit(_ field: PhraseFocus) {
@@ -671,12 +677,15 @@ private struct PhraseField: View {
     let similar: Bool
     @Binding var dictionary: [String]?
     let commit: PhraseCommit
+    var showsLabel = true
+    var showsAdd = true
     let add: () -> Void
     @State private var showingSpellings = false
     private var available: Bool { slot.isDefault(text) }
     var body: some View {
         HStack(spacing: 5) { // Keep the button separate so Accessibility does not merge it into the field label.
             Text(slot.label).fixedSize(horizontal: true, vertical: false)
+                .opacity(showsLabel ? 1 : 0).accessibilityHidden(!showsLabel)
             Button { showingSpellings = true } label: { Image(systemName: "info.circle") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
                 .disabled(!available)
@@ -695,10 +704,11 @@ private struct PhraseField: View {
                     .accessibilityLabel("Restore default \(slot.label.lowercased())")
                     .accessibilityIdentifier(slot.identifier + "Reset")
             }
-            Button(action: add) { Image(systemName: "plus.circle") }
+            if showsAdd { Button(action: add) { Image(systemName: "plus.circle") }
                 .buttonStyle(.plain).help("Add phrase")
                 .accessibilityLabel("Add \(slot.label.lowercased())")
                 .accessibilityIdentifier(slot.identifier + "Add")
+            }
         }.accessibilityElement(children: .contain)
     }
 }
@@ -764,10 +774,6 @@ private struct PhraseSpellings: View {
             } else {
                 Text(similar ? (dictionary == nil ? "Built-in dictionary" : "Custom dictionary") : (dictionary == nil ? "Built-in dictionary (off)" : "Saved custom dictionary (off)"))
                     .font(.caption).foregroundStyle(.secondary)
-                if PhraseMatcher.hasOpenEndedWakeVariants(phrase, similar: similar, ending: slot.ending, dictionaries: dictionaries) {
-                    Text("Also accepts “hello” followed by a word starting with “ch”. The list shows known spellings.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 TextField("Find a spelling", text: $search).textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("phraseSpellingSearch").focused($focus, equals: .search)
                 if !loaded {

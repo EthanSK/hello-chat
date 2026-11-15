@@ -283,6 +283,8 @@ import SwiftUI
     // it must not start the optional Spotify side effect.
     init(enableSpotifyControl: Bool = true) {
         spotifyVolume = SpotifyVoiceVolume(monitor: voiceCalls)
+        PhraseList.seedDefaults(in: .standard)
+        phraseAliases = PhraseList.decode(UserDefaults.standard.object(forKey: PhraseList.defaultsKey)).mapValues { $0.map { PhraseRow($0) } }
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
         desktopSession.onChange = { [weak self] state in
             guard let self else { return }

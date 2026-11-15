@@ -1,12 +1,44 @@
 // Extra phrases per section (Ethan, 14 November 2026): + rows and slash entry share one store, and
 // every listed phrase reaches the same detector, occurrence count, sound section and startup capture.
-// Pure inputs only: no defaults, microphone, Voice call or key event.
+// Pure inputs and a disposable defaults suite only: no microphone, Voice call or key event.
 import Foundation
 
 @main enum PhraseListTests {
     static func main() {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
+
+        let suite = "HelloChat-PhraseDefaults-\(UUID().uuidString)"
+        let savedDefaults = UserDefaults(suiteName: suite)!
+        defer { savedDefaults.removePersistentDomain(forName: suite) }
+        savedDefaults.set(["switchAppPhrase": ["Jump to"], "openAppPhrase": ["Launch app"], "futurePhrase": ["Keep me"]], forKey: PhraseList.defaultsKey)
+        PhraseList.seedDefaults(in: savedDefaults)
+        var seeded = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
+        check(seeded[.wakePhrase] == ["Hey Chat"] && seeded[.sleepPhrase] == ["Goodbye Chat"], "New default wake and End rows are editable saved rows")
+        check(seeded[.switchAppPhrase] == ["Jump to", "Switch up", "Switch to", "Switch"] && seeded[.openAppPhrase] == ["Launch app"], "Both app families' saved custom rows survive")
+        for (slot, text) in [(PhraseSlot.wakePhrase, "Hey Chat"), (.sleepPhrase, "Goodbye Chat")] {
+            let patterns = ([slot.defaultText] + (seeded[slot] ?? [])).map { PhrasePattern(slot: slot, text: $0, similar: false, dictionaries: .init()) }
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)
+            check(detector.poll(at: 1, phrase: slot.defaultText, similar: false, rejectNegated: true, ending: slot.ending, patterns: patterns), "New default row works even with alternate spellings off")
+            check(!detector.poll(at: 2, phrase: slot.defaultText, similar: false, ending: slot.ending, patterns: patterns), "New default row cannot replay")
+            detector.reset(); detector.audio(level: 0.2, seconds: 0.1); detector.update("I said " + text, at: 1)
+            check(!detector.poll(at: 1, phrase: slot.defaultText, similar: false, rejectNegated: true, ending: slot.ending, patterns: patterns), "New default row preserves the mention guard")
+        }
+        check((savedDefaults.dictionary(forKey: PhraseList.defaultsKey)?["futurePhrase"] as? [String]) == ["Keep me"], "Future-build preferences survive seeding")
+        seeded[.wakePhrase] = nil
+        savedDefaults.set(PhraseList.encode(seeded, preserving: savedDefaults.object(forKey: PhraseList.defaultsKey)), forKey: PhraseList.defaultsKey)
+        PhraseList.seedDefaults(in: savedDefaults)
+        check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))[.wakePhrase] == nil, "Removing a seeded row is respected on later launches")
+        savedDefaults.removePersistentDomain(forName: suite)
+        savedDefaults.set("Listen Lantern", forKey: "wakePhrase")
+        savedDefaults.set("Goodnight Lantern", forKey: "sleepPhrase")
+        savedDefaults.set("Jump to", forKey: "switchAppPhrase")
+        PhraseList.seedDefaults(in: savedDefaults)
+        check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey)).isEmpty, "Custom primary phrases don't silently gain the new defaults")
+        check(savedDefaults.string(forKey: "wakePhrase") == "Listen Lantern" && savedDefaults.string(forKey: "switchAppPhrase") == "Jump to", "Custom main text is untouched")
+        let groups = PhraseSlot.fieldGroups(PhraseSlot.desktopSlots)
+        check(groups == [[.switchAppPhrase, .openAppPhrase], [.zoomInPhrase], [.zoomOutPhrase]], "One app setting includes both legacy fields without duplicating or losing rows")
 
         // Slash entry: trimmed pieces, empty pieces ignored, applied only at submit or focus loss.
         check(PhraseList.pieces("Open app / Switch app") == ["Open app", "Switch app"], "Typed example becomes two phrases")

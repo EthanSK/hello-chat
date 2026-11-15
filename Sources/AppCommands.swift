@@ -198,14 +198,18 @@ struct AppCommandDetector {
     }
     private func prefixes(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern]) -> [(start: Int, end: Int, kind: AppCommandKind, bare: Bool)] {
         var found: [(start: Int, end: Int, kind: AppCommandKind, bare: Bool)] = []
-        for pattern in switchPrefixes {
-            for match in pattern.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, .switchApp, false)) }
+        // The unified setting may list Open in either saved family. Its short form and Switch's
+        // optional "to" follow the actual prefix; custom legacy prefixes retain their old family.
+        let patterns = switchPrefixes.map { ($0, AppCommandKind.switchApp) } + openPrefixes.map { ($0, AppCommandKind.openApp) }
+        let classified = patterns.map { pattern, fallback in
+            let first = PhraseMatcher.words(pattern.text).first
+            return (pattern, first == "open" ? AppCommandKind.openApp : (first == "switch" ? .switchApp : fallback))
         }
-        for pattern in openPrefixes {
-            for match in pattern.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, .openApp, false)) }
+        for (pattern, kind) in classified {
+            for match in pattern.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, kind, false)) }
         }
         let full = found
-        for pattern in openPrefixes {
+        for (pattern, kind) in classified where kind == .openApp {
             guard let bare = Self.barePrefix(for: pattern) else { continue }
             for match in bare.matches(in: context, timings: wordTimings) where !full.contains(where: { $0.start == match.start }) {
                 found.append((match.start, match.end, .openApp, true))

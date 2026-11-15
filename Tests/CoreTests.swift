@@ -17,9 +17,9 @@ import CoreGraphics
             check(PhraseMatcher.knownSpellings(for: phrase, similar: false, ending: ending) == [phrase], "Exact-only dictionary shows only the saved phrase")
         }
         check(PhraseMatcher.knownSpellings(for: "", similar: true, ending: false).isEmpty, "Empty phrase has no dictionary")
-        check(PhraseMatcher.hasOpenEndedWakeVariants("Hello Chat", similar: true, ending: false), "Default wake discloses its open-ended matching rule")
+        check(!PhraseMatcher.hasOpenEndedWakeVariants("Hello Chat", similar: true, ending: false), "Default wake is a finite real-word dictionary")
         check(!PhraseMatcher.hasOpenEndedWakeVariants("Hey Lantern", similar: true, ending: false), "Custom phrase does not claim the default wake rule")
-        check(PhraseMatcher.knownSpellings(for: "Unsilence Chat", similar: true, ending: false).contains("unsilencedchat"), "Dictionary includes the archived ending-D variant")
+        check(PhraseMatcher.knownSpellings(for: "Unsilence Chat", similar: true, ending: false).contains("unsilenced chat"), "Dictionary includes the archived ending-D variant")
         check(!PhraseMatcher.knownSpellings(for: "Mute Chat", similar: true, ending: false).contains("unmutechat"), "Dictionary cannot cross audio directions")
         check(PhraseMatcher.knownSpellings(for: "Bye Lantern", similar: true, ending: true) == ["Bye Lantern"], "Custom End phrases no longer generate homophones")
         for (positive, inverse, variants) in [("Mute Chat", "Unmute Chat", ["un mute chat", "un-mute chat"]),
@@ -73,18 +73,20 @@ import CoreGraphics
         }
         check(!PhraseMatcher.equivalent("Byte Chat", to: "Bye Chat", similar: false, allowEndAddressEdit: true), "Exact mode still excludes homophones")
         check(!PhraseMatcher.equivalent("Byte Chat", to: "Bye Chat", similar: true), "End homophones must not broaden wake matching")
-        for phrase in ["by chad", "bye chaz",
-                       "buy chatt", "bai charts", "bi chat", "boy chat", "good bye chat", "goodbye chad",
-                       "good buy charts", "B Y E C H A T", "Bye bye Chat", "byee chat"] {
+        for phrase in ["by chad", "boy chat", "good bye chat", "goodbye chad", "good buy charts", "B Y E C H A T", "Bye bye Chat"] {
             var end = PhraseMatcher()
-            check(end.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .sleep, "Broad end spelling: \(phrase)")
+            let accepted = phrase != "boy chat"
+            check((end.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .sleep) == accepted, "Curated End spelling: \(phrase)")
             check(end.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "No repeated end from same words")
         }
-        for phrase in ["Helo Chat", "Hallo Chad", "Hullo Chart", "Hello chats", "Helloo Chatt",
-                       "Hlelo Chta", "Halo Chat", "Yellow Chat", "Yello Chad", "Ello Chat", "A low Chat",
-                       "Hey low Chat", "HelloChat", "Hiya Chat", "H E L L O C H A T"] {
+        for phrase in ["Hallo Chad", "Hullo Chart", "Hello chats", "Halo Chat", "Yellow Chat", "HelloChat", "H E L L O C H A T"] {
             var wake = PhraseMatcher()
-            check(wake.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "Broad wake spelling: \(phrase)")
+            check(wake.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "Curated wake spelling: \(phrase)")
+        }
+        for phrase in ["Helo Chat", "Helloo Chatt", "Hlelo Chta", "Yello Chad", "Ello Chat", "hey low chat", "bai charts", "byee chat", "bye chaz", "gudbuychat", "azwellchat", "unsilense chad"] {
+            check(!PhraseMatcher.equivalent(phrase, to: "Hello Chat", similar: true)
+                  && !PhraseMatcher.equivalent(phrase, to: "Bye Chat", similar: true, allowEndAddressEdit: true)
+                  && !PhraseMatcher.equivalent(phrase, to: "Unsilence Chat", similar: true), "Generated/nonword spellings removed: \(phrase)")
         }
         for text in ["Hi Chat", "High Chat", "Hi Chad", "High charts", "H I Chat", "H I G H C H A T", "Oh hi chat"] {
             check(!PhraseMatcher.equivalent(text, to: "Hello Chat", similar: true), "Hi/High must not substitute for Hello: \(text)")
@@ -93,18 +95,17 @@ import CoreGraphics
             check(PhraseMatcher.equivalent(phrase, to: phrase, similar: true), "Explicit custom greeting still works")
             check(PhraseMatcher.equivalent(phrase, to: phrase, similar: false), "Exact custom greeting still works")
         }
-        for phrase in ["Hello chads", "Holla Chat", "Hola Chat", "Yelloo Chet", "Oh hello Chat",
-                       "Hello charts", "Hello chance", "hello charity", "hello chatter", "Hello chocolate",
-                       "hello ch", "HelloChance", "As well chat", "aswellchat", "azwellchat"] {
+        for phrase in ["Oh hello Chat", "Hello charts", "Hello chance", "HelloChance", "As well chat", "aswellchat"] {
             var wake = PhraseMatcher()
-            check(wake.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake,
-                  "Sensitivity-first default wake: \(phrase)")
+            check(wake.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "Observed real-word wake spelling: \(phrase)")
         }
-        for phrase in ["Pie Chat", "Bite Chat", "Good boy charts", "Buoy Chat", "buh bye chat",
-                       "good bye chads", "gudbuychat", "B Y E C H A T", "by the charts"] {
+        for phrase in ["Bite Chat", "good bye chat", "B Y E C H A T", "by the charts"] {
             var end = PhraseMatcher()
-            check(end.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .sleep,
-                  "Sensitivity-first default end: \(phrase)")
+            check(end.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .sleep, "Curated real-word end: \(phrase)")
+        }
+        for phrase in ["hello charity", "hello chatter", "Hello chocolate", "hello ch", "Pie Chat", "Good boy charts", "Buoy Chat"] {
+            check(!PhraseMatcher.equivalent(phrase, to: "Hello Chat", similar: true)
+                  && !PhraseMatcher.equivalent(phrase, to: "Bye Chat", similar: true, allowEndAddressEdit: true), "Unlisted real words aren't arbitrary aliases: \(phrase)")
         }
         var contextual = PhraseMatcher()
         check(contextual.consume("as well chat", wake: "", sleep: "Bye Chat", similar: true) == nil,
@@ -122,7 +123,7 @@ import CoreGraphics
         check(!PhraseMatcher.equivalent("as well chat", to: "Computer Listen", similar: true), "Custom phrases keep their scope")
         check(!PhraseMatcher.isWeakWakeVariant("aswellthat"), "Ordinary as well that must not become a weak command")
         let variants = PhraseMatcher.defaultVariantCounts
-        check(variants.wake > 5000 && variants.end > 5000, "Large dictionaries are composed from bounded components")
+        check(variants.wake < 100 && variants.end < 100, "Default dictionaries stay small instead of generating letter permutations")
         check(!PhraseMatcher.defaultVariantsOverlap, "Wake and end dictionaries must be disjoint")
         print("Default dictionary: \(variants.wake) wake, \(variants.end) end, \(variants.weakWake) weak-wake compact spellings")
         for phrase in ["he'll chat", "he’ll chat", "hell chat", "hellchat", "he'll chats", "he'll chad", "he'll chart",
@@ -149,8 +150,8 @@ import CoreGraphics
         check(PhraseMatcher.matches(in: PhraseMatcher.words("good bye chat"), phrase: "Bye Chat", similar: true, ending: true).count == 1, "No overlapping command occurrences")
         var revised = PhraseMatcher()
         check(revised.consume("hello chance", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "Observed mishearing wakes")
-        check(revised.consume("hello change", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "A CH-word revision must not replay the wake")
-        check(revised.consume("hello change hello chocolate", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "A later CH-word greeting remains a new wake")
+        check(revised.consume("hello chad", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "A dictionary revision must not replay the wake")
+        check(revised.consume("hello chad hello charts", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "A later dictionary greeting remains a new wake")
         revised.reset()
         check(revised.consume("ok hello chat", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake, "Initial progressive wake")
         check(revised.consume("okay hello chat", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "A revised prefix must not replay wake")

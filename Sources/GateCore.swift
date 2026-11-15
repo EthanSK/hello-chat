@@ -71,8 +71,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return "Unsilence phrase"
         case .pauseVideoPhrase: return "Pause video phrase"
         case .playVideoPhrase: return "Play video phrase"
-        case .switchAppPhrase: return "Switch app prefix"
-        case .openAppPhrase: return "Open app prefix"
+        case .switchAppPhrase, .openAppPhrase: return "App prefix"
         case .zoomInPhrase: return "Zoom in phrase"
         case .zoomOutPhrase: return "Zoom out phrase"
         }
@@ -81,8 +80,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     // opening it if needed (Ethan, 14 November 2026: "open should switch ... make it interchangeable").
     var example: String? {
         switch self {
-        case .switchAppPhrase: return "Say “Switch app Chrome” to bring Chrome forward, opening it if needed."
-        case .openAppPhrase: return "Say “Open app Safari”, or just “Open Safari”."
+        case .switchAppPhrase: return "Say a prefix followed by an app name. Open brings it forward too."
         default: return nil
         }
     }
@@ -110,6 +108,13 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsDesktop }
     static let videoSlots = allCases.filter(\.controlsVideo)
     static let desktopSlots = allCases.filter(\.controlsDesktop)
+    // Ethan's "one setting" (15 November 2026): present Switch/Open as one list, while retaining
+    // both saved keys, custom dictionaries, sounds and Open's existing short-form behavior.
+    static func fieldGroups(_ slots: [PhraseSlot]) -> [[PhraseSlot]] {
+        slots.filter { $0 != .openAppPhrase || !slots.contains(.switchAppPhrase) }.map { slot in
+            slot == .switchAppPhrase && slots.contains(.openAppPhrase) ? [.switchAppPhrase, .openAppPhrase] : [slot]
+        }
+    }
     var ending: Bool { self == .sleepPhrase }
     var identifier: String { self == .sleepPhrase ? "endPhrase" : rawValue }
     func isDefault(_ text: String) -> Bool { PhraseMatcher.words(text) == PhraseMatcher.words(defaultText) }
@@ -152,6 +157,21 @@ struct PhraseRow: Identifiable, Equatable {
 
 enum PhraseList {
     static let defaultsKey = "phraseAliases"
+    static let seededDefaultsKey = "phraseDefaults20261115"
+    // Add the new defaults once, only to an unchanged default section. A later deletion stays
+    // deleted, custom primary/extra phrases stay verbatim, and another command's ownership wins.
+    static func seedDefaults(in defaults: UserDefaults) {
+        guard !defaults.bool(forKey: seededDefaultsKey) else { return }
+        var rows = decode(defaults.object(forKey: defaultsKey))
+        let additions: [(PhraseSlot, [String])] = [(.wakePhrase, ["Hey Chat"]),
+            (.sleepPhrase, ["Goodbye Chat"]), (.switchAppPhrase, ["Switch up", "Switch to", "Switch"])]
+        var seen = Set(PhraseSlot.allCases.flatMap { slot in [slot.savedValue(in: defaults)] + (rows[slot] ?? []) }.map(key))
+        for (slot, phrases) in additions where slot.isDefault(slot.savedValue(in: defaults)) {
+            for phrase in phrases where seen.insert(key(phrase)).inserted { rows[slot, default: []].append(phrase) }
+        }
+        defaults.set(encode(rows, preserving: defaults.object(forKey: defaultsKey)), forKey: defaultsKey)
+        defaults.set(true, forKey: seededDefaultsKey)
+    }
     static func key(_ text: String) -> String { PhraseMatcher.words(text).joined() }
     // Trimmed, nonempty pieces in typed order.
     static func pieces(_ text: String) -> [String] {
@@ -263,8 +283,8 @@ enum PhraseDictionary {
             }
             let normalized = PhraseMatcher.words(value).joined()
             if let slot, let other = PhraseSlot.allCases.first(where: { PhraseMatcher.words($0.defaultText).joined() == normalized }),
-               slot != other, Set([slot, other]) != Set([.silentPhrase, .silencePhrase]) {
-                throw ValidationError.conflictingCommand(index + 1, other.label) // Keep explicit dictionaries from reversing another built-in command; Silent/Silence intentionally share an action.
+               slot.action != other.action {
+                throw ValidationError.conflictingCommand(index + 1, other.label) // Same-action aliases are safe; never reverse another built-in command.
             }
             if seen.insert(normalized).inserted { entries.append(value) }
             guard entries.count <= maximumEntries else { throw ValidationError.tooMany }
@@ -345,16 +365,23 @@ struct PhraseMatcher {
         playVideoPhrase: combinations(["play"], ["video", "thevideo", "thisvideo"]),
     ]
     private static let defaultEndings = Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { (words($0.defaultText).joined(), $0.ending) }) // Normalize defaults once; this lookup runs for every candidate span.
-    private static let audioDictionaryNames: Set<String> = ["chat", "chad", "chatt"] // Deliberately narrower than the wake dictionary; never turn "unmute" into "mute".
+    // Real-word speech substitutions only (Ethan, 15 November 2026). No generated letter edits.
+    // Explicit dictionaries and custom rows remain user-owned and are never pruned.
+    private static let audioVariants: [String: Set<String>] = [
+        mutePhrase: combinations(["mute", "muted"], ["chat", "chad"]),
+        unmutePhrase: combinations(["unmute", "unmuted"], ["chat", "chad"]),
+        silentPhrase: combinations(["silent", "silenced"], ["chat", "chad"]),
+        silencePhrase: combinations(["silence", "silenced"], ["chat", "chad"]),
+        unsilencePhrase: combinations(["unsilence", "unsilenced"], ["chat", "chad"]),
+    ]
 
     static func hasOpenEndedWakeVariants(_ phrase: String, similar: Bool, ending: Bool, dictionaries: PhraseDictionaries = .init()) -> Bool {
-        dictionaries[words(phrase).joined()] == nil && usesWakeDictionary(words(phrase), similar: similar, ending: ending)
+        false // The shipped dictionary is now finite; no unlisted CH-word or letter-edit expansion.
     }
     private static func usesWakeDictionary(_ expected: [String], similar: Bool, ending: Bool) -> Bool {
         similar && expected == ["hello", "chat"] && !ending
     }
-    // The information popover derives its known spellings from the matcher.
-    // It is not an exhaustive list of spacing or open-ended wake combinations.
+    // The popover derives its finite list from the matcher and displays ordinary word spacing.
     static func knownSpellings(for phrase: String, similar: Bool, ending: Bool, dictionaries: PhraseDictionaries = .init()) -> [String] {
         let expected = words(phrase), compact = expected.joined()
         guard !compact.isEmpty else { return [] }
@@ -368,8 +395,8 @@ struct PhraseMatcher {
             candidates = wakeVariants.union(weakWakeVariants)
         } else if ending, expected == ["bye", "chat"] {
             candidates = endVariants.union(observedEndVariants)
-        } else if controlPhrases.contains(expected.joined(separator: " ")) {
-            candidates = combinations(oneEdits(expected[0]), audioDictionaryNames)
+        } else if let variants = audioVariants[expected.joined(separator: " ")] {
+            candidates = variants
         } else if let variants = videoVariants[expected.joined(separator: " ")] {
             candidates = variants
         } else {
@@ -378,7 +405,18 @@ struct PhraseMatcher {
         candidates.remove(compact)
         return [phrase] + candidates.filter {
             equivalentCompact($0, expected: expected, compact: compact, similar: similar, allowEndAddressEdit: ending)
-        }.sorted()
+        }.sorted().map { spelling in
+            if let full = wakeSpellings.union(endSpellings).first(where: { words($0).joined() == spelling }) { return full }
+            if spelling == "aswellchat" { return "as well chat" }
+            for name in ["chad", "chat"] where spelling.hasSuffix(name) {
+                return String(spelling.dropLast(name.count)) + " " + name
+            }
+            for name in ["thevideo", "thisvideo", "video"] where spelling.hasSuffix(name) {
+                let tail = name == "video" ? name : String(name.dropLast(5)) + " video"
+                return String(spelling.dropLast(name.count)) + " " + tail
+            }
+            return spelling
+        }
     }
 
     // Presentation uses the same acceptance rules as command detection. A
@@ -397,129 +435,36 @@ struct PhraseMatcher {
         }
         return .fuzzy
     }
-    // Shared local command dictionary. Ethan calls the helper H Chat and
-    // discusses the End command as B Chat; those names must stay inert.
-    // Normalize spacing first so joined words and spelled-out letters work too.
-    // Ethan now says "Hey Chat" when talking about the app, so Hey/Hay/Hei
-    // addresses are deliberately absent; "Hey Chat" must never wake (1 Nov).
-    private static let helloAddresses: Set<String> = [
-        "hello", "helo", "hellow", "helloh", "hellou", "hallo", "halloo", "hullo", "hulo",
-        "halo", "hollow", "yellow", "yello", "ello", "alo", "allo", "alow", "heylow",
-        "hiya", "ohhello",
-        "helow", "helloo", "hellooo", "helllo", "heello", "heelo", "helloe", "hella",
-        "halloh", "hallou", "hallooo", "halow", "halou", "haloo", "hollo", "hillo",
-        "hulloh", "hullooo", "hulow", "hullow", "herlo", "herlow", "hurlo", "hallow",
-        "heylo", "haylo", "haylow", "heylow", "hailo", "yelo", "yelloh", "yelloo",
-        "eloh", "elo", "elloh", "elloo", "elow", "alloh", "alloo", "aloo", "allow",
-        "ahlo", "ahllo", "ohlo", "hola", "ola", "ohla", "holla", "holler",
-        "hai", "heh", "hiyah", "haya", "hiyaa",
-        "ohello", "wellhello", "whyhello", "hellohello",
-        "hilo", "hilow", "hiloh", "hiloe", "uhlo", "uhlow", "ahlow", "helllow", "harlow",
-        "ullo", "ulow", "ulo", "ullow", "erlo", "arlo", "orlo", "arlow", "aloe", "ellough"
+    // Ethan replaced the huge combinatorial dictionary on 15 November 2026 with plausible
+    // real-word ASR substitutions. Spellings below are explicit full phrases, not arbitrary
+    // address/name cross-products. H Chat / B Chat discussion names remain absent. The older
+    // Hey-as-discussion rule is superseded by his explicit request to add Hey Chat as a default.
+    private static let wakeSpellings: Set<String> = [
+        "hello chat", "hello chad", "hello chats", "hello chart", "hello charts", "hello chance",
+        "hallo chat", "hallo chad", "hullo chat", "hullo chad", "hullo chart", "halo chat", "hollow chat",
+        "yellow chat", "hello chard", "hello chants", "oh hello chat",
     ]
-    private static let byeAddresses: Set<String> = [
-        "bye", "by", "buy", "byte", "bi", "bai", "bhai", "boy", "boi",
-        "byebye", "byby", "buybuy", "goodbye", "goodby", "goodbuy", "goodbi", "goodbai",
-        "byeey", "byee", "byeee", "byy", "baye", "bay", "bey", "bie",
-        "bei", "baye", "baai", "baay", "bahye", "beye", "bhy", "bii", "buyy",
-        "beye", "bigh", "bite", "bight", "bhye", "bhaiy", "baii", "boey",
-        "pie", "pye", "pai", "pi", "y", "vai", "vie", "vy",
-        "byebuy", "buybye", "byebai", "byeboy", "byebee", "byebye", "byebyebye",
-        "goodbyee", "goodbyeee", "goodbay", "goodboy", "goodbite", "goodbey", "goodbie",
-        "gudbye", "gudby", "gudbuy", "gudbai", "godbye", "godby", "godbuy",
-        "buoy", "bubye", "buhbye", "bubai", "bubuy", "buhby", "bah", "buh", "baibye", "byeby"
+    private static let endSpellings: Set<String> = [
+        "bye chat", "by chat", "buy chat", "byte chat", "bite chat",
+        "bye chad", "by chad", "bye chats", "by chats", "bye chart", "by chart",
+        "bye charts", "by charts", "buy charts", "byte charts", "by the charts",
+        "goodbye chat", "good bye chat", "goodbye chad", "good buy charts", "bye bye chat",
     ]
-    private static let chatNames: Set<String> = [
-        "chat", "chad", "chatt", "chats", "chart", "charts", "chet", "chit",
-        "chads", "chatts", "chard", "chards", "chaz", "chaat", "chaht", "chate",
-        "chett", "chut", "chutt", "chot", "chott", "chert", "chirt", "cheat",
-        "chatgpt", "chatgbt", "chatgpd", "chatgtp", "chants"
-    ]
-    // Build the large dictionary once, not on each audio frame: components
-    // cover joined/spelled words and phonetic names. Names must keep Chat's
-    // "ch" start. Ethan found the old sh/cat/hat/that names too lenient on
-    // 1 Nov: "UI shit" highlighted as Bye Chat, and one-edit names such as
-    // "what" let "by what" end a call. Don't re-add them. Exact mode and
-    // custom phrases retain their existing narrower rules.
-    private static let expandedNames = chatNames.union(oneEdits("chat").filter { $0.hasPrefix("ch") })
-    // Ethan heard "hello chance" when addressing Hello Chat. Keep this
-    // observed alias wake-only; "bye chance" must not end a conversation.
-    private static let observedWakeVariants: Set<String> = ["hellochance"]
-    private static let wakeVariants = combinations(
-        // "he'll chat" normalizes to hellchat. Ethan's unwanted launch at
-        // 21:49:34 on 27 October reproduced through the generated "hell"
-        // address. Exclude it here and reject the normalized phrases below:
-        // other generated component splits (hellc + hat) can produce them too.
-        helloAddresses.union(oneEdits("hello").filter { $0.hasPrefix("h") && $0 != "hell" }), expandedNames)
-        .union(observedWakeVariants)
-    // B Chat includes the likely "be" / "bee" recognition spellings. The old
-    // UI alias also matched ordinary references to a user-interface chat.
-    // Subtract after expansion so generated edits cannot reintroduce either.
-    private static let safeDiscussionVariants = combinations(["b", "be", "bee", "ui", "uai"], expandedNames)
-    private static let endVariants = combinations(
-        byeAddresses.union(oneEdits("bye").filter { $0.hasPrefix("b") && $0.count >= 2 }), expandedNames)
-        .subtracting(safeDiscussionVariants)
-        // "by H Chat" is ordinary discussion of the helper, not an End request. The generated
-        // one-edit address "byh" had rejoined those three words and ended a live call. Exclude
-        // that family here so detection, dictionary export and highlighting agree; "by chat"
-        // and the other intentional End spellings retain their existing acceptance.
-        .subtracting(combinations(["byh"], expandedNames))
-    // "as well chat" is Ethan's screenshot/log example. Opus's phonetic
-    // suggestion favours Hello, not Bye; a closing alias would interrupt
-    // ordinary "do that as well, Chat" requests. Keep this wake-only.
-    private static let weakWakeVariants = combinations(
-        ["aswell", "aswel", "azwell", "aswelll"],
-        ["chat", "chats", "chad", "chatt"])
-    private static let observedEndVariants: Set<String> = ["bythecharts"]
-    private static let ordinaryWakePhrases: Set<String> = [
-        "allowchat", "hihat", "hihats", "highhat", "highhats", "yellowhat", "yellowhats", "hellnochat",
-        // "High at" joins to highat, which the generated dictionary can split
-        // as hi + ghat (a one-letter Chat edit). Keep ordinary speech excluded
-        // here so wake detection and phrase highlighting use the same rule.
-        "highat",
-        "hellchat", "hellchats", "hellchad", "hellchatt", "hellchart", "hellcharts"]
-    // Ethan reported saying Bye Chat; recognition saved High Chat and opened Voice.
-    // Hi/High must not be implicit Hello aliases. Keep the guard in the shared
-    // matcher so highlighting agrees, while an explicit custom Hi/High phrase
-    // still follows the normal exact/custom rules below.
-    private static let excludedShortGreetings = combinations(["hi", "high", "ohhi", "hihi"], expandedNames)
-    private static let ordinaryEndPhrases: Set<String> = [
-        "piechart", "piecharts", "barchart", "barcharts", "bythat", "byethat", "buythat",
-        "mychat", "whychat", "viachat", "wechat", "buyhats", "bethat"]
+    private static let wakeVariants = Set(wakeSpellings.map { words($0).joined() })
+    private static let endVariants = Set(endSpellings.map { words($0).joined() })
+    // Retain this observed phrase's existing extra context checks; it is never an End alias.
+    private static let weakWakeVariants: Set<String> = ["aswellchat"]
+    private static let observedEndVariants: Set<String> = []
     static var defaultVariantCounts: (wake: Int, end: Int, weakWake: Int) {
-        (wakeVariants.union(weakWakeVariants).subtracting(ordinaryWakePhrases).subtracting(excludedShortGreetings).count,
-         endVariants.union(observedEndVariants).subtracting(ordinaryEndPhrases).count, weakWakeVariants.count)
+        (wakeVariants.union(weakWakeVariants).count, endVariants.count, weakWakeVariants.count)
     }
-    static var defaultVariantsOverlap: Bool {
-        !wakeVariants.union(weakWakeVariants).isDisjoint(with: endVariants.union(observedEndVariants))
-    }
+    static var defaultVariantsOverlap: Bool { !wakeVariants.union(weakWakeVariants).isDisjoint(with: endVariants) }
     private static let maximumDefaultSpan = max(
         wakeVariants.map(\.count).max() ?? 9, endVariants.map(\.count).max() ?? 9)
     private static func combinations(_ addresses: Set<String>, _ names: Set<String>) -> Set<String> {
         Set(addresses.flatMap { address in names.map { address + $0 } })
     }
-    private static func oneEdits(_ word: String) -> Set<String> {
-        let chars = Array(word), alphabet = Array("abcdefghijklmnopqrstuvwxyz")
-        var result: Set<String> = [word]
-        for index in chars.indices {
-            var deleted = chars; deleted.remove(at: index); result.insert(String(deleted))
-            for letter in alphabet {
-                var replaced = chars; replaced[index] = letter; result.insert(String(replaced))
-            }
-            if index + 1 < chars.count {
-                var swapped = chars; swapped.swapAt(index, index + 1); result.insert(String(swapped))
-            }
-        }
-        for index in 0...chars.count {
-            for letter in alphabet {
-                var inserted = chars; inserted.insert(letter, at: index); result.insert(String(inserted))
-            }
-        }
-        return result
-    }
-    static func isWeakWakeVariant(_ candidate: String) -> Bool {
-        weakWakeVariants.contains(candidate)
-    }
+    static func isWeakWakeVariant(_ candidate: String) -> Bool { weakWakeVariants.contains(candidate) }
     private var consumedWakes = 0
     private var consumedEnds = 0
     mutating func reset() { consumedWakes = 0; consumedEnds = 0 }
@@ -540,41 +485,15 @@ struct PhraseMatcher {
             return dictionaries.contains(actual, for: compact) // Explicit overrides replace generated alternatives, including the open-ended wake rule.
         }
         if usesWakeDictionary(expected, similar: similar, ending: allowEndAddressEdit) {
-            // Ethan wants "hello" followed by any word beginning C H to wake.
-            // The existing compact form also preserves joined/spelled variants.
-            return !ordinaryWakePhrases.contains(actual) && !excludedShortGreetings.contains(actual) &&
-                (wakeVariants.contains(actual) || weakWakeVariants.contains(actual) || actual.hasPrefix("helloch"))
+            return wakeVariants.contains(actual) || weakWakeVariants.contains(actual)
         }
         if similar, expected == ["bye", "chat"], allowEndAddressEdit {
-            return !ordinaryEndPhrases.contains(actual) && (endVariants.contains(actual) || observedEndVariants.contains(actual))
+            return endVariants.contains(actual)
         }
-        if similar, controlPhrases.contains(expected.joined(separator: " ")) {
-            return audioDictionaryNames.contains { name in
-                guard actual.hasSuffix(name) else { return false }
-                let verb = String(actual.dropLast(name.count)), expectedVerb = expected[0]
-                // The archive recorded "unsilenced chat". Allow one spelling
-                // edit in the verb while preserving its directional prefix and
-                // the narrow Chat dictionary; mute can never become unmute.
-                return verb == expectedVerb || (verb.hasPrefix(expectedVerb.prefix(3))
-                    && oneEditApart(Array(verb), Array(expectedVerb)))
-            }
-        }
+        if let variants = audioVariants[expected.joined(separator: " ")] { return variants.contains(actual) }
         // Ordinary variants such as "pause the video" work even without similar
         // spellings. Edited/custom phrases never acquire generated alternatives.
         return videoVariants[expected.joined(separator: " ")]?.contains(actual) == true
-    }
-    private static func oneEditApart(_ a: [Character], _ b: [Character]) -> Bool {
-        guard abs(a.count - b.count) <= 1 else { return false }
-        var i = 0, j = 0, edits = 0
-        while i < a.count, j < b.count {
-            if a[i] == b[j] { i += 1; j += 1; continue }
-            edits += 1; if edits > 1 { return false }
-            if a.count == b.count {
-                if i + 1 < a.count, j + 1 < b.count, a[i] == b[j + 1], a[i + 1] == b[j] { i += 2; j += 2 }
-                else { i += 1; j += 1 }
-            } else if a.count > b.count { i += 1 } else { j += 1 }
-        }
-        return edits + (a.count - i) + (b.count - j) <= 1
     }
     static func matches(in tokens: [String], phrase: String, similar: Bool, ending: Bool = false,
                         timings: [(word: String, start: Double, end: Double)]? = nil, dictionaries: PhraseDictionaries = .init()) -> [(start: Int, end: Int)] {

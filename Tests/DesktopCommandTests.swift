@@ -68,13 +68,31 @@ private final class Probe {
         check(PhraseSlot.desktopSlots == [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase], "Desktop fields follow them")
         check(PhraseSlot.desktopSlots.map(\.rawValue) == ["switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase"], "Canonical preference names")
         check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Switch app", "Open app", "Zoom in", "Zoom out"], "Defaults")
-        check(PhraseSlot.switchAppPhrase.example != nil && PhraseSlot.openAppPhrase.example != nil && PhraseSlot.zoomInPhrase.example == nil,
-              "Only the app prefixes carry an example")
+        check(PhraseSlot.switchAppPhrase.example != nil && PhraseSlot.openAppPhrase.example == nil && PhraseSlot.zoomInPhrase.example == nil,
+              "The combined app setting carries one example")
         check(PhraseSlot.switchAppPhrase.label.hasSuffix("prefix") && PhraseSlot.openAppPhrase.label.hasSuffix("prefix"), "App commands are labelled as prefixes")
 
         // App command detection.
         let switchPrefix = PhrasePattern(slot: .switchAppPhrase, text: "Switch app", similar: true, dictionaries: .init())
         let openPrefix = PhrasePattern(slot: .openAppPhrase, text: "Open app", similar: true, dictionaries: .init())
+        let combined = ["Switch app", "Open app", "Switch up", "Switch to", "Switch"].map {
+            PhrasePattern(slot: .switchAppPhrase, text: $0, similar: true, dictionaries: .init())
+        }
+        for text in ["Switch Chrome", "Switch to Chrome", "Switch up Chrome", "Switch app Chrome", "Open app Chrome", "Open Chrome"] {
+            var detector = AppCommandDetector()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)
+            detector.audio(level: 0, seconds: 1)
+            let heard = detector.poll(switchPrefixes: combined, openPrefixes: [])
+            check(heard.count == 1 && heard[0].name == "chrome", "Any unified app row resolves one app name: \(text)")
+            check(detector.poll(switchPrefixes: combined, openPrefixes: []).isEmpty, "Overlapping prefixes never dispatch twice")
+        }
+        for text in ["Don't switch Chrome", "I said switch to Chrome", "The switch app command is broken", "Open Chrome settings"] {
+            var detector = AppCommandDetector()
+            detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)
+            detector.audio(level: 0, seconds: 1)
+            let heard = detector.poll(switchPrefixes: combined, openPrefixes: [])
+            check(heard.isEmpty || heard.allSatisfy { AppCommandPlanner.decide($0, running: [], installed: []) == .ignore }, "App grouping preserves discussion/negation and strict bare Open")
+        }
         for (text, kind) in [("Switch app", AppCommandKind.switchApp), ("Open app", AppCommandKind.openApp)] {
             var detector = AppCommandDetector()
             let tokens = PhraseMatcher.words(text)
