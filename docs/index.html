@@ -57,7 +57,7 @@
             <li>Apple Silicon</li>
             <li>macOS 15 or later</li>
             <li>Codex desktop app</li>
-            <li>About 1.09 GB installed</li>
+            <li>About 1.1 GB installed</li>
           </ul>
         </div>
       </div>
@@ -127,7 +127,7 @@
         <li>
           <span class="step-num">3</span>
           <p class="step-title">Allow Microphone and Accessibility</p>
-          <p class="step-text">Microphone is for local listening. Accessibility lets Hello Chat use Codex’s Voice shortcut and End Voice control. If macOS does not ask, add Hello Chat in System Settings → Privacy &amp; Security → Accessibility.</p>
+          <p class="step-text">Microphone is for local listening. Accessibility lets Hello Chat use Codex’s Voice shortcut and End Voice control. If macOS does not ask, add Hello Chat in System Settings → Privacy &amp; Security → Accessibility. If H Chat says new shortcuts need a Codex restart, restart Codex once.</p>
         </li>
         <li>
           <span class="step-num">4</span>
@@ -291,7 +291,7 @@ zsh scripts/build.sh
 zsh scripts/test.sh
 open .build.noindex</code></pre>
           </div>
-          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. Copy HelloChat.app from the opened build folder to Applications, then open it. Release builds update through Check for Updates in the app menu or Settings. When replacing a source build manually, quit Hello Chat and move the old copy to the Bin before copying the new one.</p>
+          <p class="fine">The build verifies every model file’s SHA-256, then signs <code>.build.noindex/HelloChat.app</code>. The tests never use your microphone or start Voice. Copy HelloChat.app from the opened build folder to Applications, then open it. Normal builds update through Check for Updates in the app menu or Settings. When replacing a source build manually, quit Hello Chat and move the old copy to the Bin before copying the new one.</p>
         </div>
       </div>
 
