@@ -1,0 +1,12 @@
+{
+  "provider": "Codex desktop macOS Accessibility",
+  "operation": "AXButtonSearchKey in the floating Voice panel web area",
+  "observed_on": "2026-11-15",
+  "provenance": "Read-only native control inventory from an attended live call; field subset, not synthetic UI data.",
+  "redactions": "Only roles, subroles and action labels retained. No user content, process IDs or session identities.",
+  "controls": [
+    { "role": "AXCheckBox", "subrole": "AXToggleButton", "label": "Mute microphone" },
+    { "role": "AXButton", "label": "Stop voice chat" },
+    { "role": "AXCheckBox", "subrole": "AXToggleButton", "label": "Unmute voice chat" }
+  ]
+}

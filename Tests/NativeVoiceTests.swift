@@ -1,3 +1,5 @@
+// Check native Voice actions with injected snapshots and observed control
+// shapes. These tests never send shortcuts to a real Voice call.
 import Foundation
 
 @main enum NativeVoiceTests {
@@ -160,6 +162,41 @@ import Foundation
         precondition(VoiceBridge.outputMuteState(label: "Mute speakers") == false)
         precondition(VoiceBridge.outputMuteState(label: "Unmute speakers") == true)
         precondition(VoiceBridge.outputMuteState(label: "Mute microphone") == nil, "Microphone state cannot be mistaken for speaker state")
+        struct ObservedControl: Decodable { let role: String; let subrole: String?; let label: String }
+        struct ObservedPanel: Decodable { let controls: [ObservedControl] }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/CodexVoice/floating-controls-observed.json")
+        let floating = try JSONDecoder().decode(ObservedPanel.self, from: Data(contentsOf: fixture))
+        for control in floating.controls {
+            precondition(VoiceBridge.isVoiceControlRole(control.role), "Fallback traversal must inspect the observed floating controls")
+        }
+        let observedMicrophones = floating.controls.compactMap { MicrophoneState.accessibilityLabel($0.label) }
+        let observedOutputs = floating.controls.compactMap { VoiceBridge.outputMuteState(label: $0.label) }
+        precondition(observedMicrophones == [.listening] && observedOutputs == [true], "Read each channel from its own observed label")
+        for role in ["AXStaticText", "AXImage", "AXWindow", "AXWebArea", "AXToggleButton", ""] {
+            precondition(!VoiceBridge.isVoiceControlRole(role), "Unrelated elements are not audio controls")
+        }
+        precondition(!VoiceBridge.isVoiceControlRole(nil))
+        precondition(VoiceBridge.outputMuteState(label: "  MUTE VOICE CHAT\n") == false)
+        precondition(VoiceBridge.outputMuteState(label: "Mute voice chat for this app") == nil)
+        precondition(MicrophoneState.accessibilityLabel("Mute voice chat") == nil)
+        precondition(MicrophoneState.accessibilityLabel("Unmute voice chat") == nil)
+        var floatingState = state(observedMicrophones[0])
+        floatingState.outputMuted = observedOutputs[0]
+        var floatingSends = 0
+        let floatingAudio = NativeVoice(transport: .init(snapshot: { fatalError("Speaker actions need their output scan") },
+            send: { command, pid in
+                precondition(command == VoiceBridge.outputMuteCommand && pid == 123)
+                floatingSends += 1
+                floatingState.outputMuted = VoiceBridge.outputMuteState(label: floatingState.outputMuted == true ? "Mute voice chat" : "Unmute voice chat")
+            }, activate: { _ in fatalError("Readable controls need no focus recovery") }, outputSnapshot: { floatingState }))
+        for action in [VoiceAudioAction.unsilenceSpeakers, .silenceSpeakers] {
+            let before = floatingSends
+            try await floatingAudio.setAudio(action)
+            try await floatingAudio.setAudio(action)
+            precondition(floatingSends == before + 1 && floatingState.outputMuted == action.targetMuted)
+            precondition(floatingState.microphone == .listening, "Speaker restore/silence must preserve the microphone")
+        }
         var outputRead = 0
         var output = state(.listening); output.outputMuted = false
         let separatedReads = NativeVoice(transport: .init(snapshot: { fatalError("Speaker commands need an output-state scan") },

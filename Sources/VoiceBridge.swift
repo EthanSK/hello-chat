@@ -197,7 +197,7 @@ struct VoiceBridge {
         AXUIElementSetMessagingTimeout(element, 0.04)
         var owner: pid_t = 0
         guard AXUIElementGetPid(element, &owner) == .success, owner == pid,
-              attribute(kAXRoleAttribute, element) as? String == kAXButtonRole,
+              isVoiceControlRole(attribute(kAXRoleAttribute, element) as? String),
               attribute(kAXEnabledAttribute, element) as? Bool != false,
               attribute("AXHidden", element) as? Bool != true else { return false }
         return [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute]
@@ -251,10 +251,18 @@ struct VoiceBridge {
     }
     static func outputMuteState(label: String) -> Bool? {
         switch label.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "mute speakers": return false
-        case "unmute speakers": return true
+        // The floating panel calls its speaker checkbox "voice chat". Its
+        // separate microphone checkbox still says "microphone"; never merge
+        // these channels or interpret a speaker action as microphone state.
+        case "mute speakers", "mute voice chat": return false
+        case "unmute speakers", "unmute voice chat": return true
         default: return nil
         }
+    }
+    static func isVoiceControlRole(_ role: String?) -> Bool {
+        // Codex's floating audio controls are AXCheckBox (AXToggleButton subrole);
+        // integrated controls remain AXButton. Reuse the exact label checks.
+        role == kAXButtonRole || role == kAXCheckBoxRole
     }
     private static func voiceControls(_ pid: pid_t?, requireEnd: Bool = false, maximumDepth: Int = 96, requireOutput: Bool = false,
                                       requireUniqueEnd: Bool = false) -> Controls {
@@ -316,7 +324,7 @@ struct VoiceBridge {
             // A hung child must not bypass the traversal's overall deadline.
             AXUIElementSetMessagingTimeout(element, 0.04)
             let role = read(kAXRoleAttribute, element) as? String
-            if role == kAXButtonRole {
+            if isVoiceControlRole(role) {
                 inspectButton(element)
                 // Stop after the requested control is found. An End button alone
                 // proves a call exists but cannot tell an audio command its mic state.
@@ -351,7 +359,7 @@ struct VoiceBridge {
                 readFailed = true
                 if result.failure.isEmpty { result.failure = "button_search:\(status.rawValue)" }
             }
-            if [kAXStaticTextRole, kAXImageRole, kAXButtonRole].contains(role ?? "") { continue }
+            if [kAXStaticTextRole, kAXImageRole].contains(role ?? "") || isVoiceControlRole(role) { continue }
             let children = read("AXChildrenInNavigationOrder", element, required: false) as? [AXUIElement]
                 ?? read(kAXChildrenAttribute, element) as? [AXUIElement] ?? []
             if depth < maximumDepth {
