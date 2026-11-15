@@ -257,29 +257,121 @@ enum AppResolution: Equatable {
     case none
 }
 
-enum AppResolver {
-    // Tightly scoped spoken names, in preference order. "BS Code" is how recognition hears VS Code.
-    static let aliases: [String: [String]] = [
-        "chrome": ["com.google.Chrome"],
-        "chatgpt": ["com.openai.chat", "com.openai.codex"],
-        "codex": ["com.openai.codex"],
-        "vscode": ["com.microsoft.VSCode"],
-        "bscode": ["com.microsoft.VSCode"],
-        "vsc": ["com.microsoft.VSCode"],
+// Ethan's "app-specific spellings" are names after the app prefix, not extra wake phrases.
+// Bundle IDs keep them attached to the same app after a rename or move. Missing means built-in;
+// an empty saved list means app names only. Native app names always remain available.
+struct AppNameSpellings: Equatable, Sendable {
+    static let defaultsKey = "appNameSpellings"
+    static let maximumSpellings = 100
+    static let maximumLength = 120
+    static let defaults: [String: [String]] = [
+        "com.google.Chrome": ["Chrome"],
+        "com.openai.chat": ["Chat GPT"],
+        "com.openai.codex": ["Codex", "Chat GPT", "Code X", "Code ex"],
+        "com.microsoft.VSCode": ["VS Code", "BS Code", "VSC", "Vee Ess Code"],
+        "com.ethansk.VoiceInkPlusPlus": ["Agent Flow", "Agent Flo", "Agent Floor"],
+        "com.ethan.agentic-mouse": ["Agentic Mouse", "Agentic Mice"],
+        "com.spotify.client": ["Spotify", "Spot if I"],
+        "com.anthropic.claudefordesktop": ["Claude", "Claud", "Cloud"],
+        "notion.id": ["Notion", "No shun"],
+        "com.ethansk.obs-plus-plus": ["OBS", "OBS plus plus"],
+        "com.ethansk.OBScene": ["OB Scene"],
+        "com.pioneerdj.rekordboxdj": ["Record box", "Record books"],
     ]
+    var overrides: [String: [String]] = [:]
+
+    init(overrides: [String: [String]] = [:]) { self.overrides = overrides }
+    init(saved: Any?) {
+        overrides = (saved as? [String: [String]] ?? [:]).mapValues { Self.cleaned($0) }
+    }
+    func spellings(for id: String) -> [String] { Self.cleaned(overrides[id] ?? Self.defaults[id] ?? []) }
+
+    var aliases: [String: [String]] {
+        var result: [String: [String]] = [:]
+        // Preserve the existing ChatGPT preference, including its running-Codex fallback.
+        let ids = Set(Self.defaults.keys).union(overrides.keys).sorted {
+            func rank(_ id: String) -> Int { id == "com.openai.chat" ? 0 : (id == "com.openai.codex" ? 1 : 2) }
+            return rank($0) == rank($1) ? $0 < $1 : rank($0) < rank($1)
+        }
+        for id in ids {
+            for spelling in spellings(for: id) {
+                let key = AppResolver.key(spelling)
+                if !key.isEmpty, !(result[key] ?? []).contains(id) { result[key, default: []].append(id) }
+            }
+        }
+        return result
+    }
+    static func cleaned(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.compactMap { value in
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            let words = PhraseMatcher.words(text)
+            guard !text.isEmpty, text.count <= maximumLength,
+                  (1...AppCommandDetector.maximumNameWords).contains(words.count),
+                  seen.insert(words.joined()).inserted else { return nil }
+            return text
+        }.prefix(maximumSpellings).map { $0 }
+    }
+    static func parse(_ text: String) throws -> [String] {
+        let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard lines.count <= maximumSpellings else { throw ValidationError.tooMany }
+        guard lines.allSatisfy({ $0.count <= maximumLength && (1...AppCommandDetector.maximumNameWords).contains(PhraseMatcher.words($0).count) }) else {
+            throw ValidationError.tooLong
+        }
+        return cleaned(lines)
+    }
+    enum ValidationError: LocalizedError {
+        case tooMany, tooLong
+        var errorDescription: String? {
+            switch self {
+            case .tooMany: return "Use at most 100 spellings."
+            case .tooLong: return "Use 1–4 words per spelling, up to 120 characters."
+            }
+        }
+    }
+    // A custom collision cannot choose whichever app happens to be running. Compare the full
+    // installed catalog first; the old ordered ChatGPT family is the sole deliberate exception.
+    func needsCatalog(_ text: String) -> Bool {
+        let key = AppResolver.key(text)
+        let targets = aliases[key] ?? []
+        guard !targets.isEmpty else { return false }
+        // Keep the old six fast aliases' existing behavior. New/custom aliases must also compare
+        // closed apps' real names, so "Safari" cannot be repurposed to a running music player.
+        let custom = overrides.values.contains { $0.contains { AppResolver.key($0) == key } }
+        return custom || !["chrome", "chatgpt", "codex", "vscode", "bscode", "vsc"].contains(key) ||
+            (targets.count > 1 && !Self.isChatGPTFamily(key, ids: targets))
+    }
+    func conflicts(_ values: [String], for id: String, among apps: [AppCandidate]) -> [String] {
+        let keys = Set(values.map(AppResolver.key))
+        return apps.filter { app in
+            guard app.id != id else { return false }
+            let overlap = keys.intersection((app.names + spellings(for: app.id)).map(AppResolver.key))
+            return overlap.contains {
+                !Self.isChatGPTFamily($0, ids: [id, app.id]) && !(id == "com.google.Chrome" && $0 == "chrome")
+            }
+        }.map(\.displayName)
+    }
+    static func isChatGPTFamily(_ key: String, ids: [String]) -> Bool {
+        key == "chatgpt" && Set(ids).isSubset(of: ["com.openai.chat", "com.openai.codex"])
+    }
+}
+
+enum AppResolver {
     static let fuzzyThreshold = 0.8
     static let fuzzyMargin = 0.1
     static let minimumFuzzyLength = 4
 
     static func key(_ text: String) -> String { PhraseMatcher.words(text).joined() }
 
-    static func resolve(_ spoken: String, among candidates: [AppCandidate], allowFuzzy: Bool) -> AppResolution {
+    static func resolve(_ spoken: String, among candidates: [AppCandidate], allowFuzzy: Bool,
+                        spellings: AppNameSpellings = .init()) -> AppResolution {
         let target = key(spoken)
         guard !target.isEmpty else { return .none }
+        let aliases = spellings.aliases
         let preferred = aliases[target] ?? []
         // “Chrome” names the real browser even when a local Automator wrapper has that display name.
-        if target == "chrome", let browser = preferred.first {
-            let matches = candidates.filter { $0.id == browser }
+        if target == "chrome", preferred.contains("com.google.Chrome") {
+            let matches = candidates.filter { $0.id == "com.google.Chrome" }
             if !matches.isEmpty { return uniqueAlias(matches) }
         }
         let exact = candidates.filter { $0.names.contains { key($0) == target } }
@@ -287,13 +379,19 @@ enum AppResolver {
         if exact.count > 1 {
             // Two apps with the same name are reported, unless both belong to one alias family.
             let ids = Set(exact.map(\.id))
-            if ids.count > 1, ids.isSubset(of: preferred), let id = preferred.first(where: ids.contains) {
+            if ids.count > 1, AppNameSpellings.isChatGPTFamily(target, ids: Array(ids)),
+               ids.isSubset(of: preferred), let id = preferred.first(where: ids.contains) {
                 return uniqueAlias(exact.filter { $0.id == id })
             }
             return .ambiguous(exact.map(\.displayName))
         }
-        if let id = preferred.first(where: { id in candidates.contains { $0.id == id } }) {
-            return uniqueAlias(candidates.filter { $0.id == id })
+        let aliasMatches = candidates.filter { preferred.contains($0.id) }
+        if !aliasMatches.isEmpty {
+            if AppNameSpellings.isChatGPTFamily(target, ids: preferred),
+               let id = preferred.first(where: { id in aliasMatches.contains { $0.id == id } }) {
+                return uniqueAlias(aliasMatches.filter { $0.id == id })
+            }
+            return uniqueAlias(aliasMatches)
         }
         guard allowFuzzy, target.count >= minimumFuzzyLength else { return .none }
         let scored = candidates.map { app in
@@ -345,28 +443,29 @@ enum AppCommandDecision: Equatable {
 // Switch app. Only the bare "Open Safari" form stays stricter: it needs an exact name or alias.
 enum AppCommandPlanner {
     // An exact name or alias of a running app wins without reading the installed catalog.
-    static func decideRunning(_ candidate: AppCommandCandidate, running: [AppCandidate]) -> AppCommandDecision? {
-        switch AppResolver.resolve(candidate.name, among: running, allowFuzzy: false) {
+    static func decideRunning(_ candidate: AppCommandCandidate, running: [AppCandidate], spellings: AppNameSpellings = .init()) -> AppCommandDecision? {
+        guard !spellings.needsCatalog(candidate.name), !(candidate.alternateName.map(spellings.needsCatalog) ?? false) else { return nil }
+        switch AppResolver.resolve(candidate.name, among: running, allowFuzzy: false, spellings: spellings) {
         case .match(let app, _): return .activate(app)
         case .ambiguous(let names): return candidate.bare ? .ignore : .failure(ambiguity(candidate.name, names))
         case .none: break
         }
         if let alternate = candidate.alternateName,
-           case .match(let app, _) = AppResolver.resolve(alternate, among: running, allowFuzzy: false) { return .activate(app) }
+           case .match(let app, _) = AppResolver.resolve(alternate, among: running, allowFuzzy: false, spellings: spellings) { return .activate(app) }
         return nil
     }
     // Everything else compares running and verified installed apps together, so a close spelling of
     // a running app can't beat the exact name of an installed one. A running copy is preferred.
-    static func decide(_ candidate: AppCommandCandidate, running: [AppCandidate], installed: [AppCandidate]) -> AppCommandDecision {
-        if let decision = decideRunning(candidate, running: running) { return decision }
+    static func decide(_ candidate: AppCommandCandidate, running: [AppCandidate], installed: [AppCandidate], spellings: AppNameSpellings = .init()) -> AppCommandDecision {
+        if let decision = decideRunning(candidate, running: running, spellings: spellings) { return decision }
         let apps = merged(running: running, installed: installed)
-        let exact = AppResolver.resolve(candidate.name, among: apps, allowFuzzy: false)
+        let exact = AppResolver.resolve(candidate.name, among: apps, allowFuzzy: false, spellings: spellings)
         if case .none = exact, let alternate = candidate.alternateName,
-           case .match(let app, _) = AppResolver.resolve(alternate, among: apps, allowFuzzy: false) {
+           case .match(let app, _) = AppResolver.resolve(alternate, among: apps, allowFuzzy: false, spellings: spellings) {
             return target(app)
         }
         let resolution = exact == .none && !candidate.bare
-            ? AppResolver.resolve(candidate.name, among: apps, allowFuzzy: true) : exact
+            ? AppResolver.resolve(candidate.name, among: apps, allowFuzzy: true, spellings: spellings) : exact
         switch resolution {
         case .match(let app, _): return target(app)
         case .ambiguous(let names): return candidate.bare ? .ignore : .failure(ambiguity(candidate.name, names))

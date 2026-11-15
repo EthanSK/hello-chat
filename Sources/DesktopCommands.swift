@@ -100,13 +100,21 @@ enum RunningAppActivation {
     // `dispatched` runs once, when macOS accepts the switch/open request or the zoom keys are sent:
     // before front-app confirmation, and never for ignored, unresolved, blocked or cancelled work.
     // Switch app and Open app share this one action; the candidate's section only picks its sound.
-    func perform(_ candidate: AppCommandCandidate, dispatched: () -> Void = {}) async -> DesktopCommandResult {
+    func perform(_ candidate: AppCommandCandidate, spellings: AppNameSpellings = .init(), dispatched: () -> Void = {}) async -> DesktopCommandResult {
         if let unavailable = unavailable() { return unavailable }
-        if let decision = AppCommandPlanner.decideRunning(candidate, running: environment.running()) {
+        if let decision = AppCommandPlanner.decideRunning(candidate, running: environment.running(), spellings: spellings) {
             return await carry(decision, dispatched: dispatched)
         }
         let installed = await installedApps()
-        return await carry(AppCommandPlanner.decide(candidate, running: environment.running(), installed: installed), dispatched: dispatched)
+        return await carry(AppCommandPlanner.decide(candidate, running: environment.running(), installed: installed, spellings: spellings), dispatched: dispatched)
+    }
+
+    // The editor derives its app menu from the same bounded catalog as command execution.
+    // Group copies only for display; resolution keeps its ambiguity and verified-path checks.
+    func spellingChoices() async -> [AppCandidate] {
+        let apps = AppCommandPlanner.merged(running: environment.running(), installed: await installedApps())
+        var seen: Set<String> = []
+        return apps.filter { seen.insert($0.id).inserted }.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     func zoom(_ direction: ZoomDirection, dispatched: () -> Void = {}) -> DesktopCommandResult {

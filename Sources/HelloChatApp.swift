@@ -458,7 +458,7 @@ struct MainView: View {
                         Text(status).foregroundStyle(.secondary).accessibilityIdentifier("desktopCommandStatus")
                     }
                     // Ethan wants to change the microphone from the home page.
-                    // Reuse Settings' observed inputs and saved selection.
+                    // Home owns the only microphone editor; Settings keeps advanced options.
                     MicrophoneSettings(inputs: model.inputs)
                     Picker("Speech model", selection: $model.speechModel) {
                         ForEach(SpeechModel.allCases) { choice in
@@ -527,6 +527,7 @@ private struct PhraseFields: View {
     @ObservedObject var model: GateModel
     var slots: [PhraseSlot] = PhraseSlot.voiceSlots
     @FocusState private var focus: PhraseFocus?
+    @State private var showingAppSpellings = false
     var body: some View {
         ForEach(PhraseSlot.fieldGroups(slots), id: \.first) { group in
           VStack(alignment: .leading, spacing: 8) {
@@ -551,8 +552,13 @@ private struct PhraseFields: View {
            if let slot = group.first, let example = slot.example {
                Text(example).foregroundStyle(.secondary).accessibilityIdentifier("\(slot.rawValue)Example")
            }
+           if group.first == .switchAppPhrase {
+               Button("App spellings…") { showingAppSpellings = true }
+                   .accessibilityIdentifier("appSpellingsButton")
+           }
           }
         }
+        .sheet(isPresented: $showingAppSpellings) { AppSpellingsView(model: model) }
     }
     private func commit(_ field: PhraseFocus) {
         switch field {
@@ -563,6 +569,112 @@ private struct PhraseFields: View {
     private func add(_ slot: PhraseSlot) {
         let id = model.addPhraseRow(slot)
         Task { @MainActor in focus = .row(id) } // The new field exists only after this update.
+    }
+}
+
+// One editor beside App prefix. The native app catalog supplies choices; GateModel owns the one
+// saved spelling configuration used by both Switch and Open. Editing never opens the chosen app.
+private struct AppSpellingsView: View {
+    @ObservedObject var model: GateModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var apps: [AppCandidate] = []
+    @State private var loaded = false
+    @State private var selectedID: String?
+    @State private var search = ""
+    @State private var editing = false
+    @State private var draft = ""
+    @FocusState private var editorFocused: Bool
+    private var selected: AppCandidate? { apps.first { $0.id == selectedID } }
+    private var filtered: [AppCandidate] {
+        let key = AppResolver.key(search)
+        return key.isEmpty ? apps : apps.filter { $0.names.contains { AppResolver.key($0).contains(key) } }
+    }
+    private var validation: String? {
+        do {
+            let values = try AppNameSpellings.parse(draft)
+            guard let selected else { return nil }
+            let conflicts = model.appNameSpellings.conflicts(values, for: selected.id, among: apps)
+            return conflicts.isEmpty ? nil : "Already used by \(conflicts.joined(separator: ", "))."
+        } catch { return error.localizedDescription }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("App spellings").font(.headline)
+                Spacer()
+                Button("Close") { dismiss() }.disabled(editing)
+                    .accessibilityIdentifier("appSpellingsClose")
+            }
+            Text("Add names the local model hears for each app. Switch and Open use the same spellings.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Find an app", text: $search).textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("appSpellingSearch")
+                    List(filtered, id: \.id, selection: $selectedID) { app in
+                        Text(app.displayName).tag(app.id)
+                    }.accessibilityIdentifier("appSpellingApps")
+                }.frame(width: 180).disabled(editing)
+                if let selected {
+                    spellingDetail(selected)
+                } else {
+                    Group {
+                        if !loaded { ProgressView("Loading apps…") }
+                        else { Text(filtered.isEmpty ? "No apps found" : "Select an app").foregroundStyle(.secondary) }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }.padding(16).frame(width: 570, height: 440)
+            .interactiveDismissDisabled(editing)
+            .onExitCommand { if editing { editing = false } else { dismiss() } }
+            .task {
+                apps = await model.appSpellingChoices()
+                selectedID = apps.first { !model.appNameSpellings.spellings(for: $0.id).isEmpty }?.id ?? apps.first?.id
+                loaded = true
+            }
+    }
+    @ViewBuilder private func spellingDetail(_ app: AppCandidate) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(app.displayName).font(.headline).accessibilityIdentifier("appSpellingSelection")
+            Text("App names always work. Spaces, punctuation and capitalization may differ.")
+                .font(.caption).foregroundStyle(.secondary)
+            if editing {
+                Text("One spelling per line. Leave blank to use app names only.").font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $draft).font(.body.monospaced()).border(.separator)
+                    .accessibilityLabel("App spellings").accessibilityIdentifier("appSpellingEditor")
+                    .focused($editorFocused)
+                if let validation { Text(validation).font(.caption).foregroundStyle(.red).accessibilityIdentifier("appSpellingError") }
+                HStack {
+                    Button("Cancel") { editing = false }.accessibilityIdentifier("appSpellingCancel")
+                    Spacer()
+                    Button(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Use app names only" : "Save") {
+                        guard let values = try? AppNameSpellings.parse(draft), validation == nil else { return }
+                        model.appNameSpellings.overrides[app.id] = values
+                        editing = false
+                    }.disabled(validation != nil).accessibilityIdentifier("appSpellingSave")
+                }
+            } else {
+                Text(model.appNameSpellings.overrides[app.id] == nil ? "Built-in spellings" : "Custom spellings")
+                    .font(.caption).foregroundStyle(.secondary)
+                let values = model.appNameSpellings.spellings(for: app.id)
+                if values.isEmpty {
+                    Text("App names only").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(values, id: \.self) { Text($0).textSelection(.enabled) }
+                        .accessibilityIdentifier("appSpellingList")
+                }
+                HStack {
+                    Button("Edit spellings…") {
+                        draft = values.joined(separator: "\n"); editing = true; editorFocused = true
+                    }.accessibilityIdentifier("appSpellingEdit")
+                    Spacer()
+                    if model.appNameSpellings.overrides[app.id] != nil {
+                        Button("Restore built-in") { model.appNameSpellings.overrides[app.id] = nil }
+                            .accessibilityIdentifier("appSpellingRestore")
+                    }
+                }
+            }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -824,13 +936,11 @@ struct SettingsView: View {
     @ObservedObject var model: GateModel
     @ObservedObject var zoom: InterfaceZoom
     @ObservedObject var updater: AppUpdater
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
         Form {
             Section("About") {
                 LabeledContent("Version", value: AppVersion.display).accessibilityIdentifier("appVersion")
-            }
-            Section("Microphone") {
-                MicrophoneSettings(inputs: model.inputs)
             }
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
@@ -839,12 +949,9 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 DockStatus(dock: model.dock)
             }
-            Section("Phrases") {
-                PhraseFields(model: model)
-                VideoControls(model: model, bridge: model.videoBridge)
-                PhraseFields(model: model, slots: PhraseSlot.desktopSlots)
-                Text("Mute and Unmute control the microphone. Silent, Silence and Unsilence control Voice audio. Pause video and Play video control the browser video through Agent Flow Bridge. Repeating a command keeps its requested state. Say an app name after Switch app or Open app to bring it forward, opening it if needed. Zoom in and Zoom out send the standard zoom shortcut to the front app. Use + to add another phrase, or separate phrases with /.")
-                    .foregroundStyle(.secondary)
+            Section("Recognition") {
+                Button("Phrases and microphone on Home") { openWindow(id: "main") }
+                    .accessibilityIdentifier("phraseSettingsHome")
                 Toggle("Alternate spellings for default phrases", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
                 Text(model.similarPhrases ? "Custom phrases match exactly. Use each default phrase’s info button to view or replace its dictionary. Green is exact; orange is an alternate spelling." : "Alternate spellings are off. Saved phrases match exactly, ignoring capitalization, spacing and punctuation.")

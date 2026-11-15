@@ -301,6 +301,40 @@ private final class Probe {
         let codex = AppCandidate(id: "com.openai.codex", names: ["Codex"], pid: 13)
         let code = AppCandidate(id: "com.microsoft.VSCode", names: ["Code", "Visual Studio Code"], pid: 14)
         let running = [chrome, chatGPT, codex, code]
+        // App-name spellings are independent of command-prefix dictionaries and native names.
+        let spellingValues = try! AppNameSpellings.parse("  Coding room \nBS Code\nbs-code\n\n")
+        check(spellingValues == ["Coding room", "BS Code"], "App spellings trim and deduplicate normalized names")
+        let customNames = AppNameSpellings(overrides: [code.id: spellingValues])
+        check(AppNameSpellings(saved: customNames.overrides) == customNames, "Bundle-keyed spellings round-trip without changing other app defaults")
+        check(AppNameSpellings(saved: [code.id: []]).spellings(for: code.id).isEmpty, "Explicit empty means app names only")
+        check(!AppNameSpellings().spellings(for: code.id).isEmpty, "Missing means built-in spellings")
+        check(AppResolver.resolve("Coding room", among: running, allowFuzzy: false, spellings: customNames) == .match(code, .alias), "Custom spelling identifies the selected app")
+        check(AppResolver.resolve("VSC", among: running, allowFuzzy: false, spellings: customNames) == .none, "Custom spellings replace built-in alternatives")
+        check(AppResolver.resolve("Visual Studio Code", among: running, allowFuzzy: false, spellings: customNames) == .match(code, .exact), "Native names still work after dictionary replacement")
+        check(AppResolver.resolve("Coding room", among: running, allowFuzzy: false) == .none, "Restoring built-in removes the custom spelling")
+        check(AppNameSpellings().spellings(for: "com.ethansk.VoiceInkPlusPlus").contains("Agent Floor"), "Common Agent Flow speech substitution is provided")
+        let agentFlow = AppCandidate(id: "com.ethansk.VoiceInkPlusPlus", names: ["Agent Flow"], pid: 70)
+        let rekordbox = AppCandidate(id: "com.pioneerdj.rekordboxdj", names: ["rekordbox"], pid: 71)
+        check(AppResolver.resolve("agent floor", among: [agentFlow], allowFuzzy: false) == .match(agentFlow, .alias), "Default app-specific spelling uses bundle identity")
+        check(AppResolver.resolve("record books", among: [rekordbox], allowFuzzy: false) == .match(rekordbox, .alias), "Record books resolves to Rekordbox")
+        check(AppNameSpellings.cleaned(["A", "a!", "one two three four five", String(repeating: "x", count: 121)]) == ["A"], "Malformed saved entries are bounded without touching native names")
+        for bad in ["one two three four five", String(repeating: "x", count: 121), Array(repeating: "word", count: 101).joined(separator: "\n")] {
+            do { _ = try AppNameSpellings.parse(bad); check(false, "Invalid app spelling must not save") }
+            catch { check(true, "Invalid app spelling is rejected with a specific error") }
+        }
+        let sameSpelling = AppNameSpellings(overrides: [code.id: ["coding room"], chrome.id: ["Coding room"]])
+        check(sameSpelling.needsCatalog("coding room"), "Colliding app aliases require all installed targets")
+        check(AppCommandPlanner.decideRunning(command(.switchApp, "coding room"), running: [code], spellings: sameSpelling) == nil, "A running alias cannot hide a closed collision")
+        let closedChrome = AppCandidate(id: chrome.id, names: chrome.names, url: URL(fileURLWithPath: "/Applications/Google Chrome.app"))
+        if case .failure = AppCommandPlanner.decide(command(.switchApp, "coding room"), running: [code], installed: [closedChrome], spellings: sameSpelling) {
+            check(true, "An ambiguous custom name never dispatches")
+        } else { check(false, "An ambiguous custom name must be refused") }
+        let closedSafari = AppCandidate(id: "com.apple.Safari", names: ["Safari"], url: URL(fileURLWithPath: "/Applications/Safari.app"))
+        let nativeCollision = AppNameSpellings(overrides: [code.id: ["Safari"]])
+        check(AppCommandPlanner.decide(command(.openApp, "Safari", bare: true), running: [code], installed: [closedSafari], spellings: nativeCollision) == .open(closedSafari), "Closed app's native name wins over a running custom alias")
+        check(nativeCollision.conflicts(["Safari"], for: code.id, among: [code, closedSafari]) == ["Safari"], "Editor identifies a conflicting native app name")
+        check(sameSpelling.conflicts(["coding room"], for: code.id, among: [code, closedChrome]) == [chrome.displayName], "Editor identifies a competing app's spelling")
+        check(AppNameSpellings().conflicts(["Chat GPT"], for: codex.id, among: [codex, chatGPT]).isEmpty, "Existing ordered ChatGPT family remains editable")
         func decide(_ kind: AppCommandKind, _ name: String, bare: Bool = false, alternate: String? = nil,
                     running: [AppCandidate], installed: [AppCandidate] = []) -> AppCommandDecision {
             AppCommandPlanner.decide(command(kind, name, bare: bare, alternate: alternate), running: running, installed: installed)
@@ -559,6 +593,23 @@ private final class Probe {
         environment.sleep = { _ in probe.sleeps += 1 }
         environment.zoom = shortcut(KeyRecorder())
         let commands = DesktopCommands(environment: environment)
+
+        var spellingScans = 0
+        var spellingActivations: [String] = []
+        let spellingCommands = DesktopCommands(environment: .init(
+            running: { [code] },
+            activate: { spellingActivations.append($0.id); return true },
+            isFrontmost: { _ in true },
+            installed: { spellingScans += 1; return [closedChrome, AppCandidate(id: code.id, names: code.names)] }))
+        let spellingMenu = await spellingCommands.spellingChoices()
+        check(Set(spellingMenu.map(\.id)) == Set([chrome.id, code.id]) && spellingMenu.count == 2,
+              "App spelling choices group running/installed copies without activation")
+        check(spellingActivations.isEmpty, "Browsing spelling choices never opens or activates an app")
+        let spellingResult = await spellingCommands.perform(command(.switchApp, "coding room"), spellings: customNames)
+        check(spellingResult.diagnostic == "frontmost" && spellingActivations == [code.id], "Execution receives the current custom spelling configuration")
+        let restoredResult = await spellingCommands.perform(command(.openApp, "coding room", bare: true))
+        check(restoredResult.diagnostic == "ignored" && spellingActivations.count == 1, "A later restored configuration cannot reuse the previous alias")
+        check(spellingScans == 1, "The editor and commands share one bounded app catalog cache")
 
         var result = await commands.perform(command(.switchApp, "chrome"))
         check(result == DesktopCommandResult(message: "Switched to Google Chrome", diagnostic: "frontmost"), "Switch confirms the front app")

@@ -130,7 +130,7 @@
         <li>
           <span class="step-num">4</span>
           <p class="step-title">Choose your microphone</p>
-          <p class="step-text">Settings → Microphone. Codex Voice keeps its own input setting.</p>
+          <p class="step-text">Choose Microphone on Home. Codex Voice keeps its own input setting.</p>
         </li>
         <li>
           <span class="step-num">5</span>
@@ -148,7 +148,7 @@
     <section class="section" id="phrases" aria-labelledby="phrases-title">
       <div class="section-head">
         <h2 id="phrases-title">Phrases</h2>
-        <p class="section-lead">Change the wake, end, microphone and Voice audio phrases in Settings → Phrases. For the current trial, commands run when the complete phrase is recognised, without a deliberate pause.</p>
+        <p class="section-lead">Change the wake, end, microphone and Voice audio phrases on Home. For the current trial, commands run when the complete phrase is recognised, without a deliberate pause.</p>
       </div>
       <div class="pair">
         <div class="pair-col">
@@ -212,6 +212,7 @@
         <div class="more-body">
           <p>Apple’s Shortcuts app includes seven Hello Chat actions: start, end, microphone mute and unmute, speaker silence and restore, and read-only chat status. They use the same native Codex controls. Starting through a shortcut does not turn local listening on.</p>
           <p>On a supported Mac, Accessibility → Vocal Shortcuts can connect a phrase trained with your own voice to an action or saved shortcut. Apple processes that recognition on the device. Setup is optional and does not switch off Hello Chat’s existing detector. Compare them separately before enabling a replacement.</p>
+          <p class="fine">App spellings beside App prefix lets you edit recognized names for each installed app. Home owns phrase and microphone editing; Settings keeps advanced options.</p>
           <p class="fine">Fixed phrases do not replace variable app names, continuous transcripts or startup speech capture. Accuracy and power use versus Nemotron are unmeasured. <a href="https://support.apple.com/en-mt/guide/mac-help/mchlf4548bb6/27/mac/27">Apple’s setup guide</a></p>
         </div>
       </details>
@@ -293,7 +294,7 @@ open /Applications/HelloChat.app</code></pre>
       <details class="more">
         <summary>Recorded Checks</summary>
         <div class="more-body">
-          <p><code>.build.noindex/HelloChat.app/Contents/MacOS/HelloChat --check-speech</code> runs the bundled test recordings through the real model and matcher. Add <code>--model parakeet160</code>, <code>nemotron560</code> or <code>appleLocal</code> to try another model. Settings → Phrases → Check speech recognition does the same from the app.</p>
+          <p><code>.build.noindex/HelloChat.app/Contents/MacOS/HelloChat --check-speech</code> runs the bundled test recordings through the real model and matcher. Add <code>--model parakeet160</code>, <code>nemotron560</code> or <code>appleLocal</code> to try another model. Settings → Recognition → Check speech recognition does the same from the app.</p>
           <p class="fine">These use fixed recordings, so they don’t show how well it hears you in your room.</p>
         </div>
       </details>

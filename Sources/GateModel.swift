@@ -123,7 +123,11 @@ import SwiftUI
     // Detection, highlighting, cancellation and startup capture all read this one configuration.
     @Published private(set) var phraseConfiguration = PhraseConfiguration(rows: [:])
     // Mac app and zoom commands don't depend on a connected Voice call.
+    @Published var appNameSpellings = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)) {
+        didSet { UserDefaults.standard.set(appNameSpellings.overrides, forKey: AppNameSpellings.defaultsKey) }
+    }
     private let desktopCommands = DesktopCommands()
+    func appSpellingChoices() async -> [AppCandidate] { await desktopCommands.spellingChoices() }
     private var zoomPhraseDetectors = CommandPhraseDetectors<ZoomDirection>()
     private var appCommandDetector = AppCommandDetector()
     private var desktopTask: Task<Void, Never>?
@@ -439,7 +443,7 @@ import SwiftUI
                 let dispatchedAt = Diagnostics.now
                 // The cue marks an accepted switch/open request, before front-app confirmation.
                 // Ordinary speech, unresolved names and cancelled work stay silent.
-                let result = await self.desktopCommands.perform(candidate) {
+                let result = await self.desktopCommands.perform(candidate, spellings: self.appNameSpellings) {
                     if !self.quitting, self.desktopCommandGeneration == token { self.feedback.play(candidate.kind.slot.cue) }
                 }
                 guard !Task.isCancelled, self.desktopCommandGeneration == token else { return }
