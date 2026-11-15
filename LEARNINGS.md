@@ -4,6 +4,10 @@
 
 A release reached a model checksum mismatch after successful tests and compilation. That rejection proves the downloaded bytes differed, not whether the cause was truncation, transport corruption or the upstream response. Keep the existing manifest hashes authoritative: verify response length when supplied, retry transfer/validation failures at most three times, and replace a model file only after its exact checksum passes. Do not retry authentication/rate-limit responses, bypass a server-requested wait, add settling sleeps, or treat a failed download as grounds to change the model pin. Injected corrupt, incomplete and interrupted responses verify recovery and bounded failure without microphone or live-call tests.
 
+A subsequent read-only capture proved a failed large response was a shorter, byte-identical prefix of the trusted model. A separate HTTP range beyond that prefix returned the correct bytes. Use bounded 64 MiB range requests for large files, checking exact offsets, response lengths and a consistent total before the unchanged whole-file checksum. Reject ignored, reordered or inconsistent continuation ranges; never join unchecked pieces or infer that a successful HTTP response delivered the complete model.
+
+Preserve only complete ranges checked in the current invocation when a later transfer is interrupted. Truncate the unfinished range and retry from its boundary within the same three-attempt budget. Do not resume an old process's leftover partial file, discard all completed ranges after a short read, or publish before the whole-file hash passes.
+
 
 ## 2026-11-14 — Local updates precede public qualification
 
