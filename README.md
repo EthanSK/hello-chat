@@ -24,7 +24,7 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Open Safari** | The short form works the same way, with an exact app name or a known alias. |
 | **Zoom in** / **Zoom out** | Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does. |
 
-Each phrase has its own short sound. Wake and End play at detection. Voice audio commands play a short detection tone when the controls are available, followed by their phrase sound when the requested state is confirmed. Video, app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
+Each phrase has its own short sound. Wake and End play at detection. Ending a call directly in Codex also plays the End sound, without repeating one already played for that call. Voice audio commands play a short detection tone when the controls are available, followed by their phrase sound when the requested state is confirmed. Video sounds acknowledge a confirmed pause/play result; app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
 
 For safe conversation about the app, call the helper **H Chat** and its End command **B Chat**. These are discussion names, not extra voice commands. The default dictionary no longer accepts the old UI-name alias or B/Be/Bee spellings as End. End commands use the same mention and negation filter as the other controls, so discussing a command is not treated as issuing it. Matching and transcript highlighting share the dictionary.
 
@@ -128,7 +128,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
 | Recognition | **Alternate spellings for default phrases** and **Check speech recognition**. Phrase and microphone editors are on Home. |
 | Resources | Hello Chat's own CPU and memory, and Core ML's estimated encoder placement. |
-| Sounds | **Sound effects** (on by default). Every phrase has its own short sound, with a preview button for each. |
+| Sounds | **Sound effects** (on by default), **Volume**, and a preview button for each phrase's short sound. Volume changes only H Chat's cues. |
 | Spotify | **Lower volume during chat**, off by default. Requires permission to control Spotify. |
 | Transcript Archive | **Save transcripts** (on by default), the archive location, and this Mac’s optional backup configuration. |
 | Updates | **Check for Updates…**, automatic checking and automatic downloads on release-configured builds. |

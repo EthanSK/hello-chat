@@ -1,6 +1,55 @@
-import AppKit
+// Native app-audio playback for short command cues. Keep system alert volume and device routing
+// under macOS/user control; each cue has its own gain and a real completion receipt.
+import AVFoundation
+import Foundation
 
-@MainActor final class FeedbackSounds {
+enum FeedbackVolume {
+    static let defaultsKey = "soundEffectsVolume"
+    static let defaultLevel: Float = 0.7 // The existing audible Wake level, now shared by all cues.
+    static func level(_ saved: Any?) -> Float {
+        guard let value = saved as? Double, value.isFinite else { return defaultLevel }
+        return Float(min(1, max(0, value)))
+    }
+}
+
+// Reuse the existing, verified native-call observer. Unknown reads and initial inactivity are not
+// End events. A detection cue and a later confirmed End share one call epoch, without a timer.
+struct VoiceEndFeedback {
+    private var active = false
+    private var identity: String?
+    private var epoch = 0
+    private var acknowledged: Int?
+    private var endedEpoch: Int?
+    var activeEpoch: Int? { active ? epoch : nil }
+    mutating func observe(_ presence: VoiceCallPresence, callIdentifier: String?) -> Bool {
+        switch presence {
+        case .active:
+            if !active || (identity != nil && callIdentifier != nil && identity != callIdentifier) {
+                epoch += 1; acknowledged = nil
+            }
+            active = true
+            if let callIdentifier { identity = callIdentifier }
+            return false
+        case .unknown: return false
+        case .inactive:
+            guard active else { return false }
+            active = false; identity = nil; endedEpoch = epoch
+            return claimConfirmedEnd(for: epoch)
+        }
+    }
+    mutating func detectedEnd() { if active { acknowledged = epoch } }
+    mutating func claimConfirmedEnd(for expected: Int?) -> Bool {
+        // An asynchronous End for an older call must not acknowledge a newer call's eventual End.
+        guard let expected else { return true }
+        guard expected == epoch else { return false }
+        guard let target = active ? epoch : endedEpoch else { return true }
+        guard acknowledged != target else { return false }
+        acknowledged = target
+        return true
+    }
+}
+
+@MainActor final class FeedbackSounds: NSObject, AVAudioPlayerDelegate {
     // One short, non-speech file per cue in Resources/Sounds (scripts/make-feedback-sounds.py).
     enum Cue: String, CaseIterable {
         case wake = "Wake", ended = "Ended"
@@ -10,12 +59,13 @@ import AppKit
         case videoPaused = "VideoPaused", videoPlayed = "VideoPlayed"
         case switchApp = "SwitchApp", openApp = "OpenApp", zoomIn = "ZoomIn", zoomOut = "ZoomOut"
     }
-    private var sounds: [Cue: NSSound] = [:]
+    private var sounds: [Cue: AVAudioPlayer] = [:]
     var loadedCues: Set<Cue> { Set(sounds.keys) }
     init(locate: (Cue) -> URL? = { Bundle.main.url(forResource: $0.rawValue, withExtension: "wav", subdirectory: "Sounds") }) {
+        super.init()
         for cue in Cue.allCases {
-            if let url = locate(cue), let sound = NSSound(contentsOf: url, byReference: false) {
-                sound.volume = cue == .wake ? 0.7 : 0.35; sounds[cue] = sound
+            if let url = locate(cue), let sound = try? AVAudioPlayer(contentsOf: url) {
+                sound.delegate = self; sounds[cue] = sound
             }
         }
     }
@@ -34,11 +84,17 @@ import AppKit
         // Every cue starts at its first sample, including a replay after a
         // previous cue was interrupted. No system volume or route is changed.
         sound.currentTime = 0
+        sound.volume = FeedbackVolume.level(UserDefaults.standard.object(forKey: FeedbackVolume.defaultsKey))
         let played = sound.play()
         Diagnostics.shared.record("feedback.play", numbers: [
             "play_call_ms": (Diagnostics.now - requestedAt) * 1000,
             "volume": Double(sound.volume), "duration_s": sound.duration
-        ], info: ["cue": cue.rawValue, "started": String(played)])
+        ], info: ["cue": cue.rawValue, "started": String(played), "player": "AVAudioPlayer"])
+    }
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        guard let cue = sounds.first(where: { $0.value === player })?.key else { return }
+        Diagnostics.shared.record("feedback.finished", numbers: ["duration_s": player.duration],
+            info: ["cue": cue.rawValue, "completed": String(flag), "player": "AVAudioPlayer"])
     }
 }
 

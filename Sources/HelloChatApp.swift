@@ -978,6 +978,13 @@ struct SettingsView: View {
             }
             Section("Sounds") {
                 Toggle("Sound effects", isOn: $model.soundEffects).accessibilityIdentifier("soundEffects")
+                LabeledContent("Volume") {
+                    HStack {
+                        Slider(value: $model.soundEffectsVolume, in: 0...1)
+                            .accessibilityLabel("Sound effects volume").accessibilityIdentifier("soundEffectsVolume")
+                        Text("\(Int((model.soundEffectsVolume * 100).rounded()))%").monospacedDigit().frame(minWidth: 38)
+                    }
+                }.disabled(!model.soundEffects)
                 // Every phrase has its own sound; preview them to learn which is which.
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading) {
                     ForEach(PhraseSlot.allCases) { slot in

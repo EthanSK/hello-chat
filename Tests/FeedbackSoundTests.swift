@@ -158,10 +158,50 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
             }
         }
 
-        // Loading uses the same files; a missing file is skipped rather than crashing.
+        // Loading uses the same files without starting playback; missing resources stay harmless.
         let sounds = FeedbackSounds(locate: { directory.appendingPathComponent("\($0.rawValue).wav") })
-        check(sounds.loadedCues == Set(Cue.allCases), "Every cue loads with NSSound")
+        check(sounds.loadedCues == Set(Cue.allCases), "Every cue loads with native app-audio playback")
         check(FeedbackSounds(locate: { _ in nil }).loadedCues.isEmpty, "Missing resources load nothing")
+
+        check(FeedbackVolume.level(nil) == 0.7, "All cues default to the existing Wake gain, independent of alert settings")
+        check(FeedbackVolume.level(0.4) == 0.4 && FeedbackVolume.level(0.0) == 0, "User sound-effect level is preserved, including explicit silence")
+        check(FeedbackVolume.level(2.0) == 1 && FeedbackVolume.level(-1.0) == 0, "Player gain is bounded")
+        check(FeedbackVolume.level(Double.nan) == 0.7 && FeedbackVolume.level("invalid") == 0.7, "Invalid saved level uses the sane default")
+        var nativeEnd = VoiceEndFeedback()
+        check(!nativeEnd.observe(.inactive, callIdentifier: nil), "Initial no-call state is silent")
+        check(!nativeEnd.observe(.active, callIdentifier: "call-a"), "Opening is not an End cue")
+        check(!nativeEnd.observe(.unknown, callIdentifier: nil), "An incomplete read cannot sound like an End")
+        check(nativeEnd.observe(.inactive, callIdentifier: nil), "A verified native call End gets a cue")
+        check(!nativeEnd.observe(.inactive, callIdentifier: nil), "Repeated inactive observations stay silent")
+        check(!nativeEnd.claimConfirmedEnd(for: 1), "A late successful button callback cannot duplicate the observer's cue")
+        var spokenEnd = VoiceEndFeedback()
+        _ = spokenEnd.observe(.active, callIdentifier: nil)
+        spokenEnd.detectedEnd()
+        _ = spokenEnd.observe(.active, callIdentifier: "call-a")
+        check(!spokenEnd.observe(.inactive, callIdentifier: nil), "A later saved identity cannot replay a spoken End cue")
+        _ = spokenEnd.observe(.active, callIdentifier: "call-b")
+        check(spokenEnd.observe(.inactive, callIdentifier: nil), "An earlier acknowledged End cannot suppress a different call")
+        var buttonEnd = VoiceEndFeedback()
+        _ = buttonEnd.observe(.active, callIdentifier: "call-a")
+        let buttonEpoch = buttonEnd.activeEpoch
+        check(buttonEnd.claimConfirmedEnd(for: buttonEpoch), "A confirmed button End owns one cue before the observer")
+        check(!buttonEnd.observe(.inactive, callIdentifier: nil), "The observer cannot repeat the confirmed button cue")
+        _ = buttonEnd.observe(.active, callIdentifier: "call-b")
+        check(!buttonEnd.claimConfirmedEnd(for: buttonEpoch), "A stale asynchronous End cannot acknowledge a newer call")
+        check(buttonEnd.observe(.inactive, callIdentifier: nil), "The newer call retains its own End cue")
+        var idleDetection = VoiceEndFeedback()
+        idleDetection.detectedEnd()
+        _ = idleDetection.observe(.active, callIdentifier: "later-call")
+        check(idleDetection.observe(.inactive, callIdentifier: nil), "An End said while already off cannot suppress a future call")
+
+        for command in VideoCommand.allCases {
+            check(VideoCommandOutcome.changed.confirms(command), "Changed video reply owns its result cue")
+            check(VideoCommandOutcome.unchanged(command == .pause ? "already-paused" : "already-playing").confirms(command), "Already-requested state still acknowledges the command")
+            for outcome: VideoCommandOutcome in [.unavailable, .rejected, .unconfirmed, .unchanged("no-video"), .unchanged("play-blocked"), .unchanged("video-ended")] {
+                check(!outcome.confirms(command), "A failed/unconfirmed video action cannot emit a success cue")
+            }
+            check(!VideoCommandOutcome.unchanged(command == .pause ? "already-playing" : "already-paused").confirms(command), "Opposite state is not a confirmed video result")
+        }
 
         print("Passed \(checks) feedback sound checks")
     }

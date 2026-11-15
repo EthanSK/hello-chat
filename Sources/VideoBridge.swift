@@ -36,6 +36,15 @@ enum VideoCommandOutcome: Equatable {
     case unavailable
     case rejected          // Too old or malformed; nothing ran in Chrome.
     case unconfirmed       // No reply in time. Never retried.
+    // A paused/playing cue states a confirmed result, including an idempotent repeat. A timeout,
+    // missing video or rejected play must not sound like success.
+    func confirms(_ command: VideoCommand) -> Bool {
+        switch self {
+        case .changed: return true
+        case .unchanged(let reason): return reason == (command == .pause ? "already-paused" : "already-playing")
+        case .unavailable, .rejected, .unconfirmed: return false
+        }
+    }
     func summary(for command: VideoCommand) -> String {
         switch self {
         case .changed: return command == .pause ? "Paused the browser video" : "Playing the browser video"

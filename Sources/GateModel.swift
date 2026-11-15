@@ -8,8 +8,12 @@ import SwiftUI
     @Published private(set) var status = "Off"
     @Published private(set) var detail = "Start listening for Hello Chat."
     @Published var soundEffects = UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(soundEffects, forKey: "soundEffects") }
+        didSet { UserDefaults.standard.set(soundEffects, forKey: "soundEffects"); updateVoiceCallMonitoring() }
     }
+    @Published var soundEffectsVolume = Double(FeedbackVolume.level(UserDefaults.standard.object(forKey: FeedbackVolume.defaultsKey))) {
+        didSet { UserDefaults.standard.set(soundEffectsVolume, forKey: FeedbackVolume.defaultsKey) }
+    }
+    private var endFeedback = VoiceEndFeedback()
     private let voiceCalls = VoiceCallMonitor()
     private let voicePeerPriority = VoicePeerPriority()
     private let voicePeerMailbox = VoicePeerMailbox(handler: VoicePeerControl.respond)
@@ -397,8 +401,12 @@ import SwiftUI
         updatePhrases()
         if enableSpotifyControl {
             voiceCalls.onChange = { [weak self] state in
-                self?.spotifyVolume.observe(state)
-                self?.voicePeerPriority.observe(state)
+                guard let self, !self.quitting else { return }
+                self.spotifyVolume.observe(state)
+                self.voicePeerPriority.observe(state)
+                if self.endFeedback.observe(state.presence, callIdentifier: state.callIdentifier) {
+                    self.feedback.play(PhraseSlot.sleepPhrase.cue)
+                }
             }
             spotifyVolume.setEnabled(lowerSpotifyDuringChat)
             if voicePeerPriority.enabled { voicePeerMailbox.start() }
@@ -407,8 +415,8 @@ import SwiftUI
     }
 
     private func updateVoiceCallMonitoring() {
-        if lowerSpotifyDuringChat || voicePeerPriority.enabled { voiceCalls.start() }
-        else { voiceCalls.stop() }
+        if soundEffects || lowerSpotifyDuringChat || voicePeerPriority.enabled { voiceCalls.start() }
+        else { voiceCalls.stop(); endFeedback = VoiceEndFeedback() }
     }
     // Spoken or button video control. Sent once; Agent Flow Bridge picks the browser video and
     // answers with the outcome. Nothing here changes Voice, the microphone or the busy state.
@@ -420,8 +428,8 @@ import SwiftUI
             Diagnostics.shared.record("video.command.result", info: ["action": command.rawValue, "outcome": outcome.diagnostic])
             guard let self, !self.quitting else { return }
             self.lastEvent = outcome.summary(for: command)
+            if outcome.confirms(command) { self.feedback.play(command.slot.cue) }
         }
-        feedback.play(command.slot.cue) // Submission cue. The reply reports what Chrome did.
     }
     func refreshVideoBridge() { if !quitting { videoBridge.refresh() } }
     // One shortcut pair to the frontmost app. Reports dispatch, not whether the app zoomed.
@@ -1000,6 +1008,7 @@ import SwiftUI
         guard enabled || voice.connected || force, !busy || reserved else { return }
         cancelStartupSpeech()
         let token = generation
+        let feedbackEpoch = endFeedback.activeEpoch
         busy = true; endingVoice = true
         defer {
             endingVoice = false
@@ -1009,7 +1018,7 @@ import SwiftUI
             let ended = try await voice.endIfPresent()
             guard generation == token else { return }
             showListening(); lastEvent = ended ? event : "Heard \(spokenEndPhrase) · Codex Voice is already off"
-            if ended, !feedbackAlreadyPlayed { feedback.play(PhraseSlot.sleepPhrase.cue) }
+            if ended, !feedbackAlreadyPlayed, endFeedback.claimConfirmedEnd(for: feedbackEpoch) { feedback.play(PhraseSlot.sleepPhrase.cue) }
         } catch {
             Diagnostics.shared.failure("voice.end.failed", error)
             // NativeVoice already retried its exact End control. Starting a
@@ -1077,6 +1086,7 @@ import SwiftUI
             // Ethan's "buy chat" / Bye Chat gets its cue when recognized, even
             // while cancelling an opening or when Voice is already off. Native
             // status and errors still report the actual ending outcome separately.
+            endFeedback.detectedEnd()
             feedback.play(PhraseSlot.sleepPhrase.cue)
             if busy { manualMute(feedbackAlreadyPlayed: true) }
             else {
