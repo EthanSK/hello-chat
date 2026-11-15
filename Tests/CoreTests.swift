@@ -20,7 +20,7 @@ import CoreGraphics
         check(!PhraseMatcher.hasOpenEndedWakeVariants("Hello Chat", similar: true, ending: false), "Default wake is a finite real-word dictionary")
         check(!PhraseMatcher.hasOpenEndedWakeVariants("Hey Lantern", similar: true, ending: false), "Custom phrase does not claim the default wake rule")
         check(PhraseMatcher.knownSpellings(for: "Unsilence Chat", similar: true, ending: false).contains("unsilenced chat"), "Dictionary includes the archived ending-D variant")
-        check(!PhraseMatcher.knownSpellings(for: "Mute Chat", similar: true, ending: false).contains("unmutechat"), "Dictionary cannot cross audio directions")
+        check(!PhraseMatcher.knownSpellings(for: "Mute Chat", similar: true, ending: false).contains { PhraseList.key($0) == "unmutechat" }, "Dictionary cannot cross audio directions")
         check(PhraseMatcher.knownSpellings(for: "Bye Lantern", similar: true, ending: true) == ["Bye Lantern"], "Custom End phrases no longer generate homophones")
         for (positive, inverse, variants) in [("Mute Chat", "Unmute Chat", ["un mute chat", "un-mute chat"]),
                                                ("Silence Chat", "Unsilence Chat", ["un silence chat", "un-silence chat"])] {

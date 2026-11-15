@@ -53,7 +53,7 @@ private final class FakeTimers {
               "A custom video phrase matches exactly and drops the built-in spellings")
         let spellings = PhraseMatcher.knownSpellings(for: "Pause video", similar: true, ending: false)
         check(spellings.first == "Pause video", "Displayed spellings start with the saved phrase")
-        check(spellings.contains("pausethevideo"), "Displayed spellings include the natural form")
+        check(spellings.contains("pause the video"), "Displayed spellings use normal word spacing")
         let crossesDirection = spellings.contains { $0.hasPrefix("play") }
         check(!crossesDirection, "Displayed spellings never cross direction")
         check(spellings.allSatisfy { PhraseMatcher.equivalent($0, to: "Pause video", similar: true) }, "Every displayed spelling is accepted")
