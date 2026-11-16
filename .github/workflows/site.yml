@@ -1,0 +1,62 @@
+# Generate public references and artwork from their owning sources before every deployment.
+name: Website
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - 'scripts/prepare-site.py'
+      - 'scripts/test-prepare-site.py'
+      - 'scripts/make-icon.swift'
+      - 'scripts/render-site-image.swift'
+      - '.github/workflows/site.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - 'scripts/prepare-site.py'
+      - 'scripts/test-prepare-site.py'
+      - 'scripts/make-icon.swift'
+      - 'scripts/render-site-image.swift'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: hello-chat-website-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate and validate the website
+        run: |
+          set -euo pipefail
+          python3 scripts/test-prepare-site.py
+          python3 scripts/prepare-site.py
+          python3 scripts/prepare-site.py --check
+          node --check docs/script.js
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

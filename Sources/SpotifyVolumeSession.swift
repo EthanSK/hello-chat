@@ -19,6 +19,9 @@ struct VoiceCallObservation: Equatable {
     var verifiedCallIdentifier: String? = nil
     // Metadata-only explanation for diagnostics. Never a call or thread identifier.
     var evidence: String? = nil
+    // Monotonic start time of the native observation; UI must not apply a read
+    // begun before its own newer Start/End confirmation. Other consumers ignore it.
+    var observedAt: TimeInterval? = nil
 }
 
 // Saved boundaries read after the current Codex process launched. `ended`

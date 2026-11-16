@@ -493,7 +493,7 @@ struct MainView: View {
                         }
                     }
                     if !model.accessibilityAllowed {
-                        Link("Accessibility settings…", destination: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                        Button("Accessibility settings…") { model.requestAccessibilityPermission() }
                             .accessibilityIdentifier("accessibilitySettingsLink")
                         Text("Allow Hello Chat to send shortcuts and read Codex Voice controls.").foregroundStyle(.secondary)
                     }
@@ -985,7 +985,7 @@ struct SettingsView: View {
                 Text(model.similarPhrases ? "Custom phrases match exactly. Use each default phrase’s info button to view or replace its dictionary. Green is exact; orange is an alternate spelling." : "Alternate spellings are off. Saved phrases match exactly, ignoring capitalization, spacing and punctuation.")
                     .foregroundStyle(.secondary)
                 if !model.hasPhrase(.wakePhrase) || !model.hasPhrase(.sleepPhrase) {
-                    Text("Enter both phrases").foregroundStyle(.red)
+                    Text("Enter wake and end phrases on Home.").foregroundStyle(.red)
                 }
                 Button(model.checkingSpeech ? "Checking speech…" : "Check speech recognition") { model.checkSpeech() }
                     .disabled(model.speechCheckUnavailableReason != nil)

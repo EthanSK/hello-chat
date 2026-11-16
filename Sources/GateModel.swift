@@ -5,7 +5,9 @@ import SwiftUI
 
 @MainActor final class GateModel: ObservableObject {
     @Published private(set) var enabled = false
-    @Published private(set) var busy = false
+    @Published private(set) var busy = false {
+        didSet { if !busy { scheduleObservedVoiceEnd() } }
+    }
     @Published private(set) var status = "Off"
     @Published private(set) var detail = "Start listening for Hello Chat."
     @Published var soundEffects = UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true {
@@ -15,6 +17,8 @@ import SwiftUI
         didSet { UserDefaults.standard.set(soundEffectsVolume, forKey: FeedbackVolume.defaultsKey) }
     }
     private var endFeedback = VoiceEndFeedback()
+    private var voiceStatusRefresh = VoiceStatusRefresh()
+    private var voiceStatusTask: Task<Void, Never>?
     private let voiceCalls = VoiceCallMonitor()
     private let voicePeerPriority = VoicePeerPriority()
     private let voicePeerMailbox = VoicePeerMailbox(handler: VoicePeerControl.respond)
@@ -423,6 +427,8 @@ import SwiftUI
                 guard let self, !self.quitting else { return }
                 self.spotifyVolume.observe(state)
                 self.voicePeerPriority.observe(state)
+                self.voiceStatusRefresh.observe(state.presence, at: state.observedAt)
+                self.scheduleObservedVoiceEnd()
                 if self.endFeedback.observe(state.presence, callIdentifier: state.callIdentifier) {
                     self.feedback.play(PhraseSlot.sleepPhrase.cue)
                 }
@@ -680,6 +686,16 @@ import SwiftUI
             catch { self.error = error.localizedDescription; refreshPermissions() }
         }
     }
+    func requestAccessibilityPermission() {
+        // Only a user's button press requests the native prompt; never grant or
+        // reset access automatically. Returning to the app rechecks the grant.
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+        refreshPermissions()
+    }
     func previewSound(_ cue: FeedbackSounds.Cue) { feedback.play(cue) }
     var speechCheckUnavailableReason: String? {
         if checkingSpeech { return "Checking recorded speech locally…" }
@@ -694,6 +710,7 @@ import SwiftUI
         Task {
             _ = await voice.refresh() // An ended call must not leave this diagnostic disabled by a stale cached state.
             guard generation == requestedGeneration, !quitting else { checkingSpeech = false; speechCheckText = ""; return }
+            confirmedVoiceStatusRead()
             guard !voice.connected else {
                 speechCheckText = "End the Voice chat before checking speech recognition."
                 checkingSpeech = false; busy = false; return
@@ -884,6 +901,7 @@ import SwiftUI
                     let active = try await voice.setAudio(audio, onRecognized: { self.feedback.play(.microphoneDetected) })
                     guard generation == token else { return }
                     guard active else { throw BridgeError.message("Codex Voice is off.") }
+                    confirmedVoiceStatusRead()
                     if !audio.controlsSpeakers {
                         microphone = audio.targetMuted ? .muted : .listening
                         spotifyVolume.confirmMicrophoneMute(audio.targetMuted, in: call)
@@ -958,10 +976,36 @@ import SwiftUI
             defer { if generation == token { busy = false; voiceTask = nil } }
             let found = await voice.refresh()
             guard generation == token else { return }
+            confirmedVoiceStatusRead()
             microphone = found
             showListening()
             if voice.connected { voiceText = "Chat is on" }
             lastEvent = voice.connected ? "Chat is on" : "Chat is off"
+        }
+    }
+    private func confirmedVoiceStatusRead() {
+        // A fresh positive command/status result outranks an older queued observer read.
+        guard voice.connected else { return }
+        voiceStatusRefresh.confirmedLocalState(active: true, at: ProcessInfo.processInfo.systemUptime)
+    }
+    private func scheduleObservedVoiceEnd() {
+        guard voiceStatusRefresh.pending, voiceStatusTask == nil, !quitting else { return }
+        voiceStatusTask = Task { @MainActor [weak self] in
+            // One observer read can emit End(old) then Active(new). Coalesce that
+            // actor job before changing the cache, without a timer or busy window.
+            await Task.yield()
+            guard let self else { return }
+            self.voiceStatusTask = nil
+            guard !Task.isCancelled,
+                  self.voiceStatusRefresh.takeIfIdle(!self.busy && !self.endingVoice
+                    && self.voiceStartContext == nil && !self.quitting),
+                  self.voice.acceptObservedEnd() else { return }
+            self.voiceText = "Chat is off"
+            self.microphone = .muted
+            // A call ending must not replace an unrelated capture error or dock wait.
+            if ["Chat on", "Listening", "Off"].contains(self.status) { self.showListening() }
+            self.lastEvent = "Chat is off"
+            Diagnostics.shared.record("voice.status.observed_end")
         }
     }
     private func beginVoice(trigger: String, wakeRange: Range<Int>? = nil) {
@@ -1023,6 +1067,7 @@ import SwiftUI
             if openedMicrophone != nil, !context.requestedNewCall {
                 spotifyVolume.confirmMicrophoneMute(false, in: spotifyCall)
             }
+            voiceStatusRefresh.confirmedLocalState(active: true, at: ProcessInfo.processInfo.systemUptime)
             microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Chat is on"; status = "Chat on"
             detail = openedMicrophone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(spokenEndPhrase) to end chat."; lastEvent = trigger
         } catch {
@@ -1046,6 +1091,7 @@ import SwiftUI
         do {
             let ended = try await voice.endIfPresent()
             guard generation == token else { return }
+            voiceStatusRefresh.confirmedLocalState(active: false, at: ProcessInfo.processInfo.systemUptime)
             showListening(); lastEvent = ended ? event : "Heard \(spokenEndPhrase) · Codex Voice is already off"
             if ended, !feedbackAlreadyPlayed, endFeedback.claimConfirmedEnd(for: feedbackEpoch) { feedback.play(PhraseSlot.sleepPhrase.cue) }
         } catch {
@@ -1190,6 +1236,7 @@ import SwiftUI
                         let active = try await voice.setAudio(action, onRecognized: { self.feedback.play(.microphoneDetected) }) // Inactive Voice gets no sound or key.
                         guard generation == token else { return }
                         guard active else { continue }
+                        confirmedVoiceStatusRead()
                         error = nil
                         if !action.controlsSpeakers {
                             microphone = action.targetMuted ? .muted : .listening
@@ -1266,6 +1313,7 @@ import SwiftUI
         if voicePeerPriority.enabled { voicePeerMailbox.start() }
         updateVoiceCallMonitoring()
         microphone = await voice.reattachAfterFailedUpdate()
+        confirmedVoiceStatusRead()
         showListening()
         // Re-evaluate the saved listening choice and current docking state.
         applyAutomaticListening()
@@ -1276,6 +1324,7 @@ import SwiftUI
         updateListeningDelay = dockDelay
         if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
+        voiceStatusTask?.cancel(); voiceStatusTask = nil
         voiceCalls.stop()
         voicePeerMailbox.stop()
         videoBridge.stop()

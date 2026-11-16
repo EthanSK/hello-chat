@@ -5,9 +5,17 @@ description: Read H Chat's pending startup speech only when a new actual local V
 
 # H Chat startup speech
 
-H Chat owns this skill and installs it from its bundled `VoiceStartup.md`. Keep that file as the single source of truth. Preserve useful corrections in the H Chat project for a future app update; do not edit this installed copy or change unrelated personal skills. Follow the host's skill-use announcement rules.
+## Continuous improvement
 
-Use **H Chat** for the helper and **B Chat** when discussing its End command. B Chat is a safe conversational name, not a spoken command. Never say or quote the actual spoken End phrase or its former unsafe alias in voice-facing output or reminders: ordinary discussion must not hang up the user's call. Keep any necessary actual identifiers inside implementation only. User-requested — 2026-11-08.
+H Chat owns this skill and installs it from its bundled `VoiceStartup.md`. Keep that file as the single source of truth. Preserve useful corrections in the H Chat project for a future app update; do not edit this installed copy or change unrelated personal skills.
+
+## Skill usage announcement
+
+Follow the host's skill-use announcement rules.
+
+## New Voice startup
+
+Use **H Chat** for the helper and **B Chat** when discussing its End command. B Chat is a safe conversational name, not a spoken command. Never say or quote the actual spoken End phrase or its former unsafe alias in voice-facing output or reminders: ordinary discussion must not hang up the user's call. Keep any necessary actual identifiers inside implementation only.
 
 Use this only at the startup of an actual new local Codex Voice coordinator, after its normal self-pinning. Do not consume this mailbox from an ordinary text chat, a subagent, a maintenance task, or an already-running unrelated call.
 
@@ -18,6 +26,8 @@ H Chat writes locally recognized words spoken after the accepted wake while the 
 `~/Library/Application Support/HelloChat/VoiceStartup/pending.json`
 
 This replaces text delivery by bringing Codex forward, switching chats, or pasting. Keep native Start/End controls separate. H Chat uses the existing microphone/model; no extra audio recorder or transcription service is involved.
+
+Leave standalone browser-video and music control commands to H Chat rather than sending a second action for them. Its music phrases both send the system Play/Pause toggle, so another press could undo the first. This ownership rule is not proof that a particular command ran: discussion and a separate request clearly addressed to Codex should still be handled normally. If configuration is unclear, inspect only the relevant `pauseVideoPhrase`, `playVideoPhrase`, `pauseMusicPhrase`, `playMusicPhrase` and their `phraseAliases` entries in `com.ethansk.HeyChat`; unset values use the app defaults.
 
 1. Resolve this Voice coordinator's exact thread ID and `createdAt` Unix timestamp with the supported chat metadata tool (`read_thread` in Codex). Do not substitute the newest chat or the current wall-clock time. If that metadata is unavailable, leave the mailbox untouched and report the handoff as unverified.
 2. Run the installed app's consumer, substituting those two verified metadata values:

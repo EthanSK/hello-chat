@@ -146,6 +146,7 @@ struct VoiceTimeline {
                 self.refreshAgain = false
                 let database = self.database
                 let evidence = await Task.detached(priority: .utility) {
+                    let observedAt = ProcessInfo.processInfo.systemUptime
                     let absent = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
                         .filter { !$0.isTerminated }.isEmpty
                     // Bound saved boundaries by the same verified process as
@@ -159,13 +160,16 @@ struct VoiceTimeline {
                         controlsComplete: state.controlsComplete, applicationAbsent: absent, process: state.pid,
                         ledger: launch.flatMap { VoiceTimeline.sessions(database: database, since: $0) },
                         ledgerResolved: launch != nil, accessibilityAllowed: state.accessibilityAllowed)
-                    return (read, state.pid, callElements)
+                    return (read, state.pid, callElements, observedAt)
                 }.value
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
                 let result = self.tracker.observe(evidence.0)
                 self.installAccessibilityObserver(pid: evidence.1, callElements: evidence.2)
                 self.installFileObservers()
-                for observation in result.observations { self.onChange?(observation) }
+                for var observation in result.observations {
+                    observation.observedAt = evidence.3
+                    self.onChange?(observation)
+                }
                 self.refreshAgain = self.refreshAgain || result.readAgain
             } while self.refreshAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.refreshTask = nil }

@@ -967,6 +967,10 @@ import Foundation
             activate: { _ in fatalError("Refresh must not activate Codex") }))
         let openedInCodex = await refreshing.refresh()
         precondition(openedInCodex == .listening && refreshing.connected, "Refresh adopts a call opened in Codex")
+        precondition(refreshing.acceptObservedEnd() && !refreshing.connected,
+                     "A confirmed observer End clears only the cache, with no key or activation")
+        _ = await refreshing.refresh()
+        precondition(refreshing.connected, "An actual active call can still be read after cache invalidation")
         refreshed = state()
         let closedInCodex = await refreshing.refresh()
         precondition(closedInCodex == nil && !refreshing.connected, "Refresh notices a call closed in Codex")

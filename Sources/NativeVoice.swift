@@ -454,6 +454,15 @@ import Foundation
         return state.microphone
     }
 
+    // The already-running native call observer has confirmed an End. This only
+    // invalidates the display cache: no scan, shortcut, detach or pending-call cleanup.
+    // GateModel defers it around its own Start/End and discards older observations.
+    @discardableResult func acceptObservedEnd() -> Bool {
+        guard !detachedForQuit, ending == nil else { return false }
+        connected = false
+        return true
+    }
+
     // A spoken end command may address a call opened directly in Codex. Adopt
     // only freshly identified Voice controls; cleanup never takes this path.
     @discardableResult func endIfPresent() async throws -> Bool {

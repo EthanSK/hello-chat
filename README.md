@@ -19,7 +19,7 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Mute Chat** / **Unmute Chat** | Mutes or unmutes the active Voice microphone. Repeating a command keeps that state. |
 | **Silent Chat**, **Silence Chat** / **Unsilence Chat** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
-| **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. No app is selected or launched. |
+| **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key. |
 | **Pause video** / **Play video** | Controls one Chrome video through [Agent Flow Bridge](https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install). Works with YouTube and standard web video players. |
 | **Switch app Chrome** / **Open app Chrome** | Both bring the app forward, opening it if it isn't running. Accepts common names and clear mishearings such as “BS Code” for VS Code. Say the full app name when two apps sound similar. |
 | **Open Safari** | The short form works the same way, with an exact app name or a known alias. |
@@ -68,7 +68,7 @@ open .build.noindex
 
 Copy `HelloChat.app` from the opened build folder into `/Applications`, then open it. Quit an existing H Chat copy and move its old bundle out of `/Applications` before copying the replacement. Normal Quit preserves an independent Codex call.
 
-Normal builds update through **Check for Updates…** or automatic updates. When replacing a source build manually, quit Hello Chat and move the old copy out of `/Applications` before copying the new build. `ditto` merges into an existing bundle rather than replacing it.
+Normal builds update through **Check for Updates…** or automatic updates.
 
 `scripts/build.sh`:
 
@@ -272,6 +272,8 @@ Hello Chat started as Hey Chat, a private project. It was renamed because “Hey
 This repository previously held [HeyBoy](https://github.com/EthanSK/hello-chat/tree/archive/heyboy-before-hellochat), an older, unrelated Vosk and Deepgram voice assistant. Hello Chat replaces it; HeyBoy's history is preserved at the `archive/heyboy-before-hellochat` tag. HeyBoy's install instructions don't apply to Hello Chat.
 
 ## Maintaining the Website
+
+The Website workflow regenerates the command and Settings tables from README and renders the icon/preview artwork before every Pages deployment. README-only changes update the site automatically without building the app or downloading speech models. The checked-in HTML is a generated preview, not a second editable reference.
 
 The static GitHub Pages site lives in `docs/`. The command and Settings references are generated from this README by `scripts/prepare-site.py`; do not edit those marked HTML blocks separately. After changing these tables, CSS, JavaScript, or the app icon, run `python3 scripts/prepare-site.py` on macOS to regenerate the sharing image and content-derived asset cache keys. `python3 scripts/prepare-site.py --check` verifies freshness without changing files and runs in the normal test suite.
 

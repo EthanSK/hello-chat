@@ -12,6 +12,7 @@ on:
       - 'RELEASE.md'
       - 'AGENTS.md'
       - '.agents/**'
+      - '.github/workflows/site.yml'
   workflow_dispatch:
     inputs:
       recover_run_id:
