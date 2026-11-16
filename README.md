@@ -45,7 +45,7 @@ Speech recognition runs on your Mac, by default with the bundled Nemotron model 
 2. [Download Hello Chat](https://github.com/EthanSK/hello-chat/releases/latest), unzip it and move `HelloChat.app` to `/Applications`.
 3. Open Hello Chat. It fills unset **Voice chat hotkey** (Command-Control-Shift-V) and **End voice chat** (Control-Option-Shift-V), preserving existing choices and leaving **Toggle voice chat** alone. If Codex is already running, restart it once to apply new shortcuts. If a default shortcut is already used, resolve the conflict in Codex settings. Allow **Microphone** for local listening and **Accessibility** for Codex's Voice shortcut and End Voice control. If macOS doesn't ask for Accessibility, add Hello Chat in System Settings → Privacy & Security → Accessibility.
 4. Choose your microphone on Home. **System default** follows macOS's default input. Codex Voice keeps its own input setting.
-5. Turn on **Listen for wake phrase**. Hello Chat prepares the local model, then shows **Listening**.
+5. Turn on **Listen for wake phrase**. Hello Chat prepares the local model, then shows the live microphone level. Listening status is also in the menu bar.
 6. Say **Hello Chat**. When you're done, say **Bye Chat**.
 
 ## Siri and Apple Vocal Shortcuts
@@ -275,7 +275,7 @@ This repository previously held [HeyBoy](https://github.com/EthanSK/hello-chat/t
 
 The Website workflow regenerates the command and Settings tables from README and renders the icon/preview artwork before every Pages deployment. README-only changes update the site automatically without building the app or downloading speech models. The checked-in HTML is a generated preview, not a second editable reference.
 
-The static GitHub Pages site lives in `docs/`. The command and Settings references are generated from this README by `scripts/prepare-site.py`; do not edit those marked HTML blocks separately. After changing these tables, CSS, JavaScript, or the app icon, run `python3 scripts/prepare-site.py` on macOS to regenerate the sharing image and content-derived asset cache keys. `python3 scripts/prepare-site.py --check` verifies freshness without changing files and runs in the normal test suite.
+The static GitHub Pages site lives in `docs/`. The command and Settings references are generated from this README by `scripts/prepare-site.py`; do not edit those marked HTML blocks separately. After changing these tables, CSS, JavaScript, or the app icon, run `python3 scripts/prepare-site.py` on macOS to regenerate the sharing image and content-derived asset cache keys. `python3 scripts/prepare-site.py --check` verifies freshness without changing files. The Website workflow runs it after generation; the general test suite checks the generator itself without requiring the committed preview to be current.
 
 
 ## License

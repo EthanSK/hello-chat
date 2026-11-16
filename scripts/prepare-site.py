@@ -2,8 +2,8 @@
 """Generate website references, PNG assets and content-derived cache keys.
 
 Run after editing README's command/settings tables or website assets. --check
-runs without writes in the normal test suite, so published references cannot
-silently drift from README. The icon generator remains authoritative for art.
+runs without writes after generation in the Website workflow, so published
+references cannot silently drift from README. The icon generator remains authoritative for art.
 """
 import argparse
 import hashlib

@@ -64,7 +64,6 @@ python3 scripts/test-transcript-backup.py
 python3 scripts/test-release.py
 python3 scripts/test-fetch-speech-models.py
 python3 scripts/test-prepare-site.py
-python3 scripts/prepare-site.py --check
 swiftc -swift-version 5 -parse-as-library Sources/GateCore.swift Sources/UpdateSafety.swift Tests/UpdateSafetyTests.swift -o "$build_dir/UpdateSafetyTests" -framework ApplicationServices
 "$build_dir/UpdateSafetyTests"
 swiftc -swift-version 5 -parse-as-library Sources/StartupOwnership.swift Tests/StartupOwnershipTests.swift -o "$build_dir/StartupOwnershipTests"
