@@ -116,12 +116,15 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     static let videoSlots = allCases.filter(\.controlsVideo)
     static let musicSlots = allCases.filter(\.controlsMusic)
     static let desktopSlots = allCases.filter(\.controlsDesktop)
-    // Ethan's "one setting" (15 November 2026): present Switch/Open as one list, while retaining
-    // both saved keys, custom dictionaries, sounds and Open's existing short-form behavior.
-    static func fieldGroups(_ slots: [PhraseSlot]) -> [[PhraseSlot]] {
-        slots.filter { $0 != .openAppPhrase || !slots.contains(.switchAppPhrase) }.map { slot in
-            slot == .switchAppPhrase && slots.contains(.openAppPhrase) ? [.switchAppPhrase, .openAppPhrase] : [slot]
+    // Refactor of fieldGroups: Ethan’s “one setting” for Switch/Open now applies to
+    // every command, retaining all saved slots, dictionaries and sounds. — GPT-6.1 Sol
+    static func settingsGroups(_ slots: [PhraseSlot]) -> [[PhraseSlot]] {
+        var groups: [[PhraseSlot]] = []
+        for slot in slots {
+            if let index = groups.firstIndex(where: { $0.first?.action == slot.action }) { groups[index].append(slot) }
+            else { groups.append([slot]) }
         }
+        return groups
     }
     var ending: Bool { self == .sleepPhrase }
     var identifier: String { self == .sleepPhrase ? "endPhrase" : rawValue }
@@ -153,6 +156,22 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
 
 enum PhraseAction: String, CaseIterable {
     case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, mediaPlayPause, app, zoomIn, zoomOut
+    var settingsTitle: String {
+        switch self {
+        case .wake: return "Wake phrases"
+        case .end: return "End phrases"
+        case .muteMicrophone: return "Mute microphone"
+        case .unmuteMicrophone: return "Unmute microphone"
+        case .silenceSpeakers: return "Silence speakers"
+        case .unsilenceSpeakers: return "Unsilence speakers"
+        case .pauseVideo: return "Pause video"
+        case .playVideo: return "Play video"
+        case .mediaPlayPause: return "Music"
+        case .app: return "App prefixes"
+        case .zoomIn: return "Zoom in"
+        case .zoomOut: return "Zoom out"
+        }
+    }
     var slots: [PhraseSlot] { PhraseSlot.allCases.filter { $0.action == self } }
 }
 

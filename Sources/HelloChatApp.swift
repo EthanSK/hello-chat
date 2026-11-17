@@ -640,61 +640,100 @@ private struct SpeakerOutputEditor: View {
     }
 }
 
-// Both windows edit the same saved phrases, using the existing native form fields. Extra phrases
-// sit directly below their section's main phrase (Ethan, 14 November 2026); + adds one.
+// Refactor of PhraseFields/PhraseField: Ethan’s “one settings panel per command” groups
+// every trigger and its spellings while retaining the existing saved rows. — GPT-6.1 Sol
 private enum PhraseFocus: Hashable { case main(PhraseSlot), row(UUID) }
 
 private struct PhraseFields: View {
     @ObservedObject var model: GateModel
     var slots: [PhraseSlot] = PhraseSlot.voiceSlots
+    @State private var selected: PhraseSlot?
+    var body: some View {
+        ForEach(PhraseSlot.settingsGroups(slots), id: \.first) { group in
+            if let slot = group.first {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(slot.action.settingsTitle)
+                        let phrases = group.flatMap { model.phraseConfiguration.phrases(for: $0) }
+                        Text(phrases.isEmpty ? "No phrases" : phrases.joined(separator: " · "))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    Button("Phrases…") { selected = slot }
+                        .accessibilityLabel(slot.action.settingsTitle)
+                        .accessibilityIdentifier(slot.identifier + "Settings")
+                }
+            }
+        }
+        .sheet(item: $selected) { slot in
+            CommandPhrasesView(model: model, slots: slots.filter { $0.action == slot.action })
+        }
+    }
+}
+
+// Refactor of the existing phrase-row editor. All changes still use GateModel’s
+// main keys, extra rows, validation and slash-entry commit path. — GPT-6.1 Sol
+private struct CommandPhrasesView: View {
+    @ObservedObject var model: GateModel
+    let slots: [PhraseSlot]
+    @Environment(\.dismiss) private var dismiss
     @FocusState private var focus: PhraseFocus?
     @State private var showingAppSpellings = false
     var body: some View {
-        ForEach(PhraseSlot.fieldGroups(slots), id: \.first) { group in
-          VStack(alignment: .leading, spacing: 8) {
-           ForEach(group) { slot in
-            PhraseField(slot: slot, text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
-                set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }), similar: model.similarPhrases,
-                dictionary: Binding(get: { model.phraseDictionaries[slot.rawValue] },
-                    set: { model.phraseDictionaries[slot.rawValue] = $0 }),
-                commit: PhraseCommit(field: .main(slot), focus: $focus, commit: commit),
-                showsLabel: slot == group.first, showsAdd: slot == group.first,
-                add: { add(group.first ?? slot) })
-            PhraseIssueText(issue: model.phraseIssue(slot, id: nil), identifier: slot.identifier + "Issue")
-            ForEach(Array((model.phraseAliases[slot] ?? []).enumerated()), id: \.element.id) { index, row in
-                ExtraPhraseField(slot: slot, number: index + 2,
-                    text: Binding(get: { model.phraseAliases[slot]?.first { $0.id == row.id }?.text ?? "" },
-                        set: { model.setPhraseRow(slot, id: row.id, text: $0) }),
-                    commit: PhraseCommit(field: .row(row.id), focus: $focus, commit: commit),
-                    remove: { model.removePhraseRow(slot, id: row.id) })
-                PhraseIssueText(issue: model.phraseIssue(slot, id: row.id), identifier: "\(slot.identifier)\(index + 2)Issue")
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(slots.first?.action.settingsTitle ?? "Phrases").font(.headline)
+                Spacer()
+                Button("Done") { commitFocused(); dismiss() }.keyboardShortcut(.cancelAction)
             }
-           }
-           if let slot = group.first, let example = slot.example {
-               Text(example).foregroundStyle(.secondary).accessibilityIdentifier("\(slot.rawValue)Example")
-           }
-           if group.first == .switchAppPhrase {
-               Button("App spellings…") { showingAppSpellings = true }
-                   .accessibilityIdentifier("appSpellingsButton")
-           }
-          }
+            Text("Changes save automatically. Spaces, punctuation and capitalization may differ.")
+                .font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(slots) { slot in
+                      VStack(alignment: .leading, spacing: 12) {
+                        TriggerPhraseEditor(model: model, slot: slot,
+                            text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
+                                          set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }),
+                            commit: PhraseCommit(field: .main(slot), focus: $focus, commit: commit), id: nil)
+                        ForEach(Array((model.phraseAliases[slot] ?? []).enumerated()), id: \.element.id) { index, row in
+                            TriggerPhraseEditor(model: model, slot: slot,
+                                text: Binding(get: { model.phraseAliases[slot]?.first { $0.id == row.id }?.text ?? "" },
+                                              set: { model.setPhraseRow(slot, id: row.id, text: $0) }),
+                                commit: PhraseCommit(field: .row(row.id), focus: $focus, commit: commit),
+                                id: row.id, number: index + 2)
+                        }
+                        Button("Add phrase") {
+                            let id = model.addPhraseRow(slot)
+                            Task { @MainActor in focus = .row(id) }
+                        }.accessibilityIdentifier(slot.identifier + "Add")
+                      }
+                    }
+                    if let example = slots.compactMap(\.example).first {
+                        Text(example).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if slots.contains(.switchAppPhrase) {
+                        Button("App spellings…") { showingAppSpellings = true }
+                            .accessibilityIdentifier("appSpellingsButton")
+                    }
+                }.padding(2)
+            }
         }
+        .padding(20).frame(width: 570, height: 560)
         .sheet(isPresented: $showingAppSpellings) { AppSpellingsView(model: model) }
     }
+    private func commitFocused() { if let field = focus { commit(field) } }
     private func commit(_ field: PhraseFocus) {
         switch field {
         case .main(let slot): model.commitPhraseRow(slot, id: nil)
         case .row(let id): if let slot = model.phraseSlot(containing: id) { model.commitPhraseRow(slot, id: id) }
         }
     }
-    private func add(_ slot: PhraseSlot) {
-        let id = model.addPhraseRow(slot)
-        Task { @MainActor in focus = .row(id) } // The new field exists only after this update.
-    }
 }
 
-// One editor beside App prefix. The native app catalog supplies choices; GateModel owns the one
-// saved spelling configuration used by both Switch and Open. Editing never opens the chosen app.
+// One editor within App prefixes. The native app catalog supplies choices; GateModel owns the
+// saved configuration shared by Switch and Open. Editing never opens an app. — GPT-6.1 Sol
 private struct AppSpellingsView: View {
     @ObservedObject var model: GateModel
     @Environment(\.dismiss) private var dismiss
@@ -838,33 +877,6 @@ private struct PhraseIssueText: View {
     }
 }
 
-private struct ExtraPhraseField: View {
-    let slot: PhraseSlot
-    let number: Int
-    @Binding var text: String
-    let commit: PhraseCommit
-    let remove: () -> Void
-    var body: some View {
-        HStack(spacing: 5) {
-            // The main row's label space, so the fields line up under it.
-            Group {
-                Text(slot.label).fixedSize(horizontal: true, vertical: false)
-                Image(systemName: "info.circle")
-            }
-            .hidden().accessibilityHidden(true)
-            Spacer(minLength: 8)
-            TextField(slot.label, text: $text).labelsHidden()
-                .multilineTextAlignment(.trailing).accessibilityLabel("\(slot.label) \(number)")
-                .accessibilityIdentifier("\(slot.identifier)\(number)")
-                .modifier(commit)
-            Button(action: remove) { Image(systemName: "minus.circle") }
-                .buttonStyle(.plain).help("Remove phrase")
-                .accessibilityLabel("Remove \(slot.label.lowercased()) \(number)")
-                .accessibilityIdentifier("\(slot.identifier)\(number)Remove")
-        }.accessibilityElement(children: .contain)
-    }
-}
-
 // Browser video control needs a connected Agent Flow Bridge. Its phrases and buttons stay visible
 // but greyed out until then; the install link below them stays active.
 private struct VideoControls: View {
@@ -907,152 +919,133 @@ private struct VideoControls: View {
     }
 }
 
-private struct PhraseField: View {
+// Refactor of PhraseField/ExtraPhraseField: spellings belong visibly to their trigger,
+// including a default phrase placed in an extra row. Recognition rules are unchanged. — GPT-6.1 Sol
+private struct TriggerPhraseEditor: View {
+    @ObservedObject var model: GateModel
     let slot: PhraseSlot
     @Binding var text: String
-    let similar: Bool
-    @Binding var dictionary: [String]?
     let commit: PhraseCommit
-    var showsLabel = true
-    var showsAdd = true
-    let add: () -> Void
-    @State private var showingSpellings = false
-    private var available: Bool { slot.isDefault(text) }
-    var body: some View {
-        HStack(spacing: 5) { // Keep the button separate so Accessibility does not merge it into the field label.
-            Text(showsLabel ? slot.label : "or").fixedSize(horizontal: true, vertical: false)
-                .foregroundStyle(showsLabel ? .primary : .secondary).accessibilityHidden(!showsLabel)
-            Button { showingSpellings = true } label: { Image(systemName: "info.circle") }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .disabled(!available)
-                .help(available ? "Recognized spellings" : "Spellings are only available for “\(slot.defaultText)”. Custom phrases match exactly.")
-                .accessibilityLabel("\(slot.label) spellings").accessibilityIdentifier(slot.identifier + "Info")
-                .popover(isPresented: $showingSpellings) {
-                    PhraseSpellings(slot: slot, phrase: text, similar: similar, dictionary: $dictionary)
-                }
-            Spacer(minLength: 8)
-            TextField(slot.label, text: $text).labelsHidden()
-                .multilineTextAlignment(.trailing).accessibilityLabel(slot.label).accessibilityIdentifier(slot.identifier)
-                .modifier(commit)
-            if !available {
-                Button { text = slot.defaultText } label: { Image(systemName: "arrow.counterclockwise") }
-                    .buttonStyle(.plain).help("Restore default phrase")
-                    .accessibilityLabel("Restore default \(slot.label.lowercased())")
-                    .accessibilityIdentifier(slot.identifier + "Reset")
-            }
-            if showsAdd { Button(action: add) { Image(systemName: "plus.circle") }
-                .buttonStyle(.plain).help("Add phrase")
-                .accessibilityLabel("Add \(slot.label.lowercased())")
-                .accessibilityIdentifier(slot.identifier + "Add")
-            }
-        }.accessibilityElement(children: .contain)
-    }
-}
-
-private struct PhraseSpellings: View {
-    let slot: PhraseSlot
-    let phrase: String
-    let similar: Bool
-    @Binding var dictionary: [String]?
-    @Environment(\.dismiss) private var dismiss
+    let id: UUID?
+    var number = 1
+    @State private var showingDictionary = false
     @State private var search = ""
-    @State private var spellings: [String] = []
-    @State private var editing = false
-    @State private var draft = ""
-    @State private var error: String?
-    @State private var importing = false
-    @State private var loaded = false
-    private enum Focus: Hashable { case search, editor }
-    @FocusState private var focus: Focus?
-    private struct Configuration: Equatable {
-        let phrase: String
-        let similar: Bool
-        let dictionary: [String]?
+    private var isDefault: Bool { slot.isDefault(text) }
+    private var dictionary: Binding<[String]?> {
+        Binding(get: { model.phraseDictionaries[slot.rawValue] }, set: { model.phraseDictionaries[slot.rawValue] = $0 })
     }
-    private var dictionaries: PhraseDictionaries {
-        PhraseDictionaries(dictionary.map { [PhraseMatcher.words(slot.defaultText).joined(): $0] } ?? [:])
+    private var spellings: [String] {
+        PhraseMatcher.knownSpellings(for: text, similar: model.similarPhrases && isDefault,
+                                    ending: slot.ending, dictionaries: model.matchingDictionaries)
     }
-    private var matching: [String] {
+    private var identifier: String { slot.identifier + (id == nil ? "" : String(number)) }
+    private var filteredSpellings: [String] {
         let query = PhraseMatcher.words(search).joined()
         return query.isEmpty ? spellings : spellings.filter { PhraseMatcher.words($0).joined().contains(query) }
     }
+    private var spellingStatus: String {
+        guard isDefault else { return spellings.count > 1 ? "Custom phrase · recognized spellings" : "Custom phrase · exact only" }
+        if spellings.count == 1 { return model.similarPhrases ? "Default phrase · exact only" : "Default phrase · alternate spellings off" }
+        return dictionary.wrappedValue == nil ? "Default phrase · built-in spellings" : "Default phrase · custom spellings"
+    }
     var body: some View {
-        let visible = matching
-        let emptyDraft = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(editing ? "Edit Dictionary" : "Recognized Spellings").font(.headline)
-                Spacer()
-                if !editing { Button("Close") { dismiss() }.keyboardShortcut(.cancelAction) }
-            }
-            Text(phrase).font(.subheadline)
-            Text("Spaces, punctuation and capitalization may differ.").font(.caption).foregroundStyle(.secondary)
-            if !similar {
-                Text("Alternate spellings are off in Settings. Only the saved phrase is recognized.").font(.callout)
-            }
-            if editing {
-                Text("One full spelling per line. Saving replaces the built-in alternatives. The default phrase always works; leave this blank to use only that phrase.")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextEditor(text: $draft).font(.body.monospaced()).disabled(!similar || !slot.isDefault(phrase))
-                    .border(.separator).accessibilityLabel("Custom dictionary")
-                    .accessibilityIdentifier("phraseDictionaryEditor").focused($focus, equals: .editor)
-                if let error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
-                HStack {
-                    Button("Import text file…") { importing = true }
-                        .disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionaryImport")
-                    Spacer()
-                    Button("Cancel") { editing = false; error = nil }.keyboardShortcut(.cancelAction)
-                    Button(emptyDraft ? "Use phrase only" : "Save") {
-                        do { dictionary = try PhraseDictionary.parse(draft, for: slot); editing = false; error = nil }
-                        catch { self.error = error.localizedDescription }
-                    }.disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionarySave")
+                TextField("Phrase", text: $text).textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("\(slot.label) \(number)").accessibilityIdentifier(identifier)
+                    .modifier(commit)
+                if let id {
+                    Button("Remove") { model.removePhraseRow(slot, id: id) }
+                        .accessibilityIdentifier(identifier + "Remove")
+                } else if !isDefault {
+                    Button("Restore default") { text = slot.defaultText }
+                        .accessibilityIdentifier(identifier + "Reset")
                 }
-            } else {
-                Text(similar ? (dictionary == nil ? "Built-in dictionary" : "Custom dictionary") : (dictionary == nil ? "Built-in dictionary (off)" : "Saved custom dictionary (off)"))
-                    .font(.caption).foregroundStyle(.secondary)
-                TextField("Find a spelling", text: $search).textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("phraseSpellingSearch").focused($focus, equals: .search)
-                if !loaded {
-                    ProgressView("Loading spellings…").frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if visible.isEmpty {
-                    Text("No spellings found").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List(visible, id: \.self) { Text($0).textSelection(.enabled) }
-                        .accessibilityIdentifier("phraseSpellingList")
-                }
-                Text(loaded ? (visible.count == 1 ? "1 spelling" : "\(visible.count) spellings") : "").font(.caption).foregroundStyle(.secondary)
+            }
+            PhraseIssueText(issue: model.phraseIssue(slot, id: id), identifier: identifier + "Issue")
+            if !PhraseMatcher.words(text).isEmpty {
                 HStack {
-                    Button("Edit dictionary…") { draft = (dictionary ?? []).joined(separator: "\n"); editing = true; error = nil }
-                        .disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionaryEdit")
+                    Text(spellingStatus)
+                        .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    if dictionary != nil {
-                        Button("Restore built-in") { dictionary = nil; search = "" }
-                            .disabled(!similar || !slot.isDefault(phrase)).accessibilityIdentifier("phraseDictionaryRestore")
+                    if isDefault {
+                        Button("Edit spellings…") { showingDictionary = true }
+                            .disabled(!model.similarPhrases)
+                            .accessibilityIdentifier(identifier + "EditSpellings")
                     }
                 }
-            }
-        }.padding().frame(width: 420, height: 470)
-            .interactiveDismissDisabled(editing)
-            .onExitCommand {
-                if editing { editing = false; error = nil }
-                else { dismiss() }
-            }
-            .task(id: Configuration(phrase: phrase, similar: similar, dictionary: dictionary)) { // nil means built-in; an empty dictionary means exact-only, so they must have different identities.
-                spellings = PhraseMatcher.knownSpellings(for: phrase, similar: similar, ending: slot.ending, dictionaries: dictionaries)
-                loaded = true
-            }
-            .task(id: editing) { focus = editing ? .editor : .search }
-            .onChange(of: draft) { error = nil }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
-                switch result {
-                case .success(let url):
-                    let access = url.startAccessingSecurityScopedResource()
-                    defer { if access { url.stopAccessingSecurityScopedResource() } }
-                    do { draft = try PhraseDictionary.read(url, for: slot).joined(separator: "\n"); error = nil }
-                    catch { self.error = error.localizedDescription }
-                case .failure(let failure): error = failure.localizedDescription
+                if spellings.count > 1 {
+                    DisclosureGroup("Recognized spellings (\(spellings.count))") {
+                        TextField("Find a spelling", text: $search).textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier(identifier + "SpellingSearch")
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 4) {
+                                if filteredSpellings.isEmpty { Text("No spellings found").foregroundStyle(.secondary) }
+                                ForEach(filteredSpellings, id: \.self) {
+                                    Text($0).textSelection(.enabled)
+                                }
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(maxHeight: 170)
+                    }.accessibilityIdentifier(identifier + "Spellings")
                 }
             }
+        }
+        .padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        .sheet(isPresented: $showingDictionary) {
+            PhraseDictionaryEditor(slot: slot, dictionary: dictionary, similar: model.similarPhrases)
+        }
+    }
+}
+
+// Refactor of PhraseSpellings’ existing dictionary editor. The owning command panel
+// now displays the recognized forms; this sheet only edits that trigger’s dictionary. — GPT-6.1 Sol
+private struct PhraseDictionaryEditor: View {
+    let slot: PhraseSlot
+    @Binding var dictionary: [String]?
+    let similar: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft = ""
+    @State private var error: String?
+    @State private var importing = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Edit Spellings").font(.headline)
+            Text(slot.defaultText).font(.subheadline)
+            Text("One full spelling per line. Saving replaces the built-in alternatives. The default phrase always works; leave this blank to use only that phrase.")
+                .font(.caption).foregroundStyle(.secondary)
+            TextEditor(text: $draft).font(.body.monospaced()).border(.separator)
+                .accessibilityLabel("Custom dictionary").accessibilityIdentifier("phraseDictionaryEditor")
+            if let error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
+            HStack {
+                Button("Import text file…") { importing = true }.accessibilityIdentifier("phraseDictionaryImport")
+                if dictionary != nil {
+                    Button("Restore built-in") { dictionary = nil; dismiss() }
+                        .accessibilityIdentifier("phraseDictionaryRestore")
+                }
+                Spacer()
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Use phrase only" : "Save") {
+                    do { dictionary = try PhraseDictionary.parse(draft, for: slot); dismiss() }
+                    catch { self.error = error.localizedDescription }
+                }.disabled(!similar).accessibilityIdentifier("phraseDictionarySave")
+            }
+        }
+        .padding(20).frame(width: 520, height: 420).interactiveDismissDisabled()
+        .onAppear { draft = (dictionary ?? []).joined(separator: "\n") }
+        .onChange(of: draft) { error = nil }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
+            switch result {
+            case .success(let url):
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                do { draft = try PhraseDictionary.read(url, for: slot).joined(separator: "\n"); error = nil }
+                catch { self.error = error.localizedDescription }
+            case .failure(let failure): error = failure.localizedDescription
+            }
+        }
     }
 }
 
@@ -1078,7 +1071,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier("phraseSettingsHome")
                 Toggle("Alternate spellings for default phrases", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
-                Text(model.similarPhrases ? "Custom phrases match exactly. Use each default phrase’s info button to view or replace its dictionary. Green is exact; orange is an alternate spelling." : "Alternate spellings are off. Saved phrases match exactly, ignoring capitalization, spacing and punctuation.")
+                Text(model.similarPhrases ? "Custom phrases match exactly. Open a command’s Phrases panel on Home to view or edit its spellings. Green is exact; orange is an alternate spelling." : "Alternate spellings are off. Saved phrases match exactly, ignoring capitalization, spacing and punctuation.")
                     .foregroundStyle(.secondary)
                 if !model.hasPhrase(.wakePhrase) || !model.hasPhrase(.sleepPhrase) {
                     Text("Enter wake and end phrases on Home.").foregroundStyle(.red)

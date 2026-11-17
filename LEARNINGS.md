@@ -277,6 +277,7 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 
 - App-name spellings belong to bundle identities, separate from command-prefix dictionaries. Missing overrides use finite defaults; an explicit empty list uses native names only. New/custom aliases compare the full cached catalog before dispatch, so a running alias cannot mask a closed app's exact name. The legacy ordered ChatGPT family and Chrome-browser preference stay intact. Browsing the spelling catalog never opens apps.
 - Home owns phrase, dictionary and microphone editing. Settings retains automatic listening, recognition options/checks, resources, sounds, Spotify, archive, updates, diagnostics and appearance, with a navigation link to Home. Both views retain the same GateModel; removing duplicate editors must not migrate or reset their saved values.
+- A command’s Phrases panel groups every saved slot for its action, including Silent/Silence, Pause/Play music and Switch/Open. Keep each slot’s Add action, dictionary and sound ownership. Recognized spellings belong visibly to their trigger; custom exact-only rows must not imply that a sibling default’s dictionary applies to them. A default entered in an extra row still needs its dictionary controls. Native checks covered all twelve panels and all fifteen Add/Remove families without changing saved preferences.
 
 ## Public references and media toggle
 

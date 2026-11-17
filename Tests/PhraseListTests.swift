@@ -37,8 +37,15 @@ import Foundation
         PhraseList.seedDefaults(in: savedDefaults)
         check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey)).isEmpty, "Custom primary phrases don't silently gain the new defaults")
         check(savedDefaults.string(forKey: "wakePhrase") == "Listen Lantern" && savedDefaults.string(forKey: "switchAppPhrase") == "Jump to", "Custom main text is untouched")
-        let groups = PhraseSlot.fieldGroups(PhraseSlot.desktopSlots)
+        let groups = PhraseSlot.settingsGroups(PhraseSlot.desktopSlots)
         check(groups == [[.switchAppPhrase, .openAppPhrase], [.zoomInPhrase], [.zoomOutPhrase]], "One app setting includes both legacy fields without duplicating or losing rows")
+        let settingsGroups = PhraseSlot.settingsGroups(PhraseSlot.allCases)
+        check(Set(settingsGroups.flatMap { $0 }) == Set(PhraseSlot.allCases)
+              && settingsGroups.flatMap { $0 }.count == PhraseSlot.allCases.count,
+              "Command panels retain each saved phrase slot exactly once")
+        check(settingsGroups.contains([.silentPhrase, .silencePhrase])
+              && settingsGroups.contains([.pauseMusicPhrase, .playMusicPhrase]),
+              "Equivalent speaker and music triggers share a command panel without dropping either family")
 
         // Slash entry: trimmed pieces, empty pieces ignored, applied only at submit or focus loss.
         check(PhraseList.pieces("Open app / Switch app") == ["Open app", "Switch app"], "Typed example becomes two phrases")
