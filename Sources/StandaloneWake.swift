@@ -42,9 +42,9 @@ struct CommandPhraseDetectors<Command: CaseIterable & Hashable> {
     static func admitted(_ accepted: [(command: Command, range: Range<Int>)]) -> Command? { accepted.last?.command }
 }
 
-// Ethan temporarily disabled the command pause on 8 November 2026 to try
-// immediate recognition. Keep the former timing path available for a requested
-// reversal, without changing the model's own utterance/reset timing.
+// Ethan removed the command pause: YouTube keeps supplying words, so waiting for
+// silence prevents commands during playback (reaffirmed 17 November 2026).
+// Explain that reason before proposing a delay again. Model utterance/reset timing is separate.
 struct StandaloneWake {
     static let commandPauseSeconds = 0.0
     private let requiredPause: TimeInterval
@@ -277,8 +277,12 @@ struct StandaloneWake {
     private func isDirectCommand(start: Int, end: Int) -> Bool {
         let (sentenceStart, sentenceEnd) = contextBounds(start: start, end: end, directOnly: true)
         let left = context[max(min(audioBoundary, start), sentenceStart)..<start]
-        let right = context[end..<sentenceEnd]
+        let right = context[end..<sentenceEnd].drop(while: { $0 == "please" || $0 == "now" })
         let politeOpeners: Set<String> = ["please", "can", "could", "would", "you", "okay", "ok", "now", "and", "then"]
-        return left.allSatisfy(politeOpeners.contains) && right.allSatisfy { $0 == "please" || $0 == "now" }
+        // A fixed command is complete at its last keyword. Requiring an empty tail made
+        // continued playback act like a silence gate. Preserve explicit plans and zoom's
+        // target-taking prose; ordinary mention/negation checks still run in isMention.
+        let deferredOrQualified: Set<String> = ["later", "tomorrow", "tonight", "after", "when", "if", "unless", "on", "into"]
+        return left.allSatisfy(politeOpeners.contains) && !(right.first.map(deferredOrQualified.contains) ?? false)
     }
 }

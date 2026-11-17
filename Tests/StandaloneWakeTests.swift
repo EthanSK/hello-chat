@@ -6,6 +6,24 @@ import Foundation
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
         }
+        // Synthetic ASR batches, not recorded YouTube: speech stays loud and narration keeps
+        // arriving after the command. No quiet frame or sentence-ending punctuation is supplied.
+        expect(StandaloneWake.commandPauseSeconds == 0, "Playback commands have no added silence wait")
+        for phrase in ["Hello Chat", "Bye Chat", "Mute Chat", "Unmute Chat", "Silence Chat", "Unsilence Chat", "Pause video", "Play video", "Pause music", "Play music", "Zoom in", "Zoom out", "Switch speakers kitchen"] {
+            var detector = StandaloneWake()
+            let direct = ["Pause music", "Play music", "Zoom in", "Zoom out", "Switch speakers kitchen"].contains(phrase)
+            let text = phrase + " the narrator keeps talking about the next scene"
+            detector.audio(level: 0.2, seconds: 0.1, at: 1)
+            detector.update(text, at: 1)
+            expect(detector.poll(at: 1, phrase: phrase, similar: false, rejectNegated: true,
+                ending: phrase == "Bye Chat", directOnly: direct), "Complete fixed command fires in its first batch despite continuing playback: \(phrase)")
+            for revision in 1...5 {
+                detector.audio(level: 0.2, seconds: 0.1, at: 1 + Double(revision) / 10)
+                detector.update(text + String(repeating: " more narration", count: revision), at: 1 + Double(revision) / 10)
+                expect(!detector.poll(at: 1 + Double(revision) / 10, phrase: phrase, similar: false,
+                    rejectNegated: true, ending: phrase == "Bye Chat", directOnly: direct), "Continuing playback cannot replay a consumed command")
+            }
+        }
         // Both music phrases share a single occurrence count because the hardware key is a toggle.
         let music = PhraseSlot.musicSlots.map { PhrasePattern(slot: $0, text: $0.defaultText, similar: true, dictionaries: .init()) }
         func musicPoll(_ detector: inout StandaloneWake, at time: Double = 1) -> Bool {
