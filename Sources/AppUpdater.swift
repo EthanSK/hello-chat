@@ -18,7 +18,8 @@ import Sparkle
     private lazy var installation = UpdateInstallation(mayInstall: { [weak self] in
         guard let model = self?.model else { return false }
         return UpdateSafety.canRelaunch(busy: model.busy, checkingSpeech: model.checkingSpeech,
-                                       capturingStartupSpeech: model.capturingStartupSpeech)
+                                       capturingStartupSpeech: model.capturingStartupSpeech,
+                                       switchingSpeakerOutput: model.switchingSpeakerOutput)
     }, prepare: { [weak self] in
         guard let prepare = self?.prepareToQuit else { return false }
         return await prepare()
@@ -47,8 +48,8 @@ import Sparkle
         configured = true
         controller.updater.publisher(for: \.canCheckForUpdates)
             .sink { [weak self] in self?.canCheck = $0 }.store(in: &observations)
-        model.$busy.combineLatest(model.$checkingSpeech)
-            .sink { [weak self] _, _ in
+        model.$busy.combineLatest(model.$checkingSpeech, model.$switchingSpeakerOutput)
+            .sink { [weak self] _, _, _ in
                 Task { @MainActor [weak self] in
                     // Published sends before its value changes; yield to read
                     // the resulting state, without adding a timed delay.

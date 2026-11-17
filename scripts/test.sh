@@ -45,6 +45,8 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/Transcr
 "$build_dir/TranscriptArchiveTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/StandaloneWake.swift Tests/StandaloneWakeTests.swift -o "$build_dir/StandaloneWakeTests"
 "$build_dir/StandaloneWakeTests"
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/StandaloneWake.swift Sources/SpeakerOutput.swift Tests/SpeakerOutputTests.swift -o "$build_dir/SpeakerOutputTests"
+"$build_dir/SpeakerOutputTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/StandaloneWake.swift Sources/StartupSpeech.swift Tests/PhraseListTests.swift -o "$build_dir/PhraseListTests"
 "$build_dir/PhraseListTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/StandaloneWake.swift Sources/VideoBridge.swift Tests/VideoBridgeTests.swift -o "$build_dir/VideoBridgeTests" -framework Combine

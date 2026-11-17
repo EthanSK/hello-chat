@@ -8,8 +8,11 @@ import Foundation
         for busy in [false, true] {
             for checkingSpeech in [false, true] {
                 for capturingStartupSpeech in [false, true] {
-                    precondition(UpdateSafety.canRelaunch(busy: busy, checkingSpeech: checkingSpeech,
-                        capturingStartupSpeech: capturingStartupSpeech) == !(busy || checkingSpeech || capturingStartupSpeech))
+                    for switchingSpeakerOutput in [false, true] {
+                        precondition(UpdateSafety.canRelaunch(busy: busy, checkingSpeech: checkingSpeech,
+                            capturingStartupSpeech: capturingStartupSpeech, switchingSpeakerOutput: switchingSpeakerOutput)
+                            == !(busy || checkingSpeech || capturingStartupSpeech || switchingSpeakerOutput))
+                    }
                 }
             }
         }

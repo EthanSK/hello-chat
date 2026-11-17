@@ -57,6 +57,9 @@ import Darwin
                 print("{\"status\":\"\(status)\"}"); exit(1)
             }
         }
+        if CommandLine.arguments.contains("--preview-speaker-settings") {
+            SpeakerOutputPreviewApp.main(); return // Isolated editor: no listening, routing or saved preferences.
+        }
         ModelHub.offlineMode = true
         if CommandLine.arguments.contains("--preview-phrase-highlights") || Bundle.main.object(forInfoDictionaryKey: "HelloChatPhrasePreview") as? Bool == true {
             // Shared view only: no GateModel, capture, archive, Voice or sound.
@@ -405,6 +408,7 @@ struct MainView: View {
     @Environment(\.openWindow) private var openWindow
     private var preparing: Bool { (model.busy && model.status == "Starting") || model.changingModel }
     private var connecting: Bool { model.status == "Connecting" }
+    @State private var showingSpeakerOutput = false
     var body: some View {
         GeometryReader { viewport in
             Form {
@@ -469,6 +473,18 @@ struct MainView: View {
                     VideoControls(model: model, bridge: model.videoBridge)
                     PhraseFields(model: model, slots: PhraseSlot.musicSlots)
                     PhraseFields(model: model, slots: PhraseSlot.desktopSlots)
+                    Button("Switch speakers…") { showingSpeakerOutput = true }
+                        .accessibilityIdentifier("speakerOutputSettings")
+                        .sheet(isPresented: $showingSpeakerOutput) {
+                            SpeakerOutputEditor(initial: model.speakerOutputSettings, otherPatterns: model.speakerOutputConflictingPhrases, save: model.saveSpeakerOutputSettings)
+                        }
+                    if let status = model.speakerOutputStatus {
+                        Text(status).foregroundStyle(.secondary).accessibilityIdentifier("speakerOutputStatus")
+                    }
+                    if let phrase = model.speakerOutputConflict {
+                        Text("Speaker phrases are off. Already used by another command: \(phrase)")
+                            .foregroundStyle(.red).accessibilityIdentifier("speakerOutputConflict")
+                    }
                     if let status = model.desktopCommandStatus {
                         Text(status).foregroundStyle(.secondary).accessibilityIdentifier("desktopCommandStatus")
                     }
@@ -541,6 +557,86 @@ struct OpenSettingsButton: View {
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Button("Settings…") { openWindow(id: "settings") }
+    }
+}
+
+private struct SpeakerOutputPreviewApp: App {
+    @State private var settings = SpeakerOutputSettings(destinations: [SpeakerDestination(names: "Studio", output: "Example output")])
+    var body: some Scene {
+        Window("Speaker settings preview", id: "speaker-preview") {
+            SpeakerOutputEditor(initial: settings, otherPatterns: []) { settings = $0; return true }
+        }
+    }
+}
+
+// One saved editor for speaker command prefixes and destination names. Editing the draft does
+// not reset live recognition until Save, and choosing a device never changes the current route.
+private struct SpeakerOutputEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: SpeakerOutputSettings
+    @State private var devices: [String] = []
+    @State private var saveError: String?
+    let otherPatterns: [PhrasePattern]
+    let save: (SpeakerOutputSettings) -> Bool
+    private var issue: String? {
+        draft.issue ?? draft.conflictingPhrase(with: otherPatterns).map { "Already used by another command: \($0)" }
+    }
+    init(initial: SpeakerOutputSettings, otherPatterns: [PhrasePattern], save: @escaping (SpeakerOutputSettings) -> Bool) {
+        _draft = State(initialValue: initial); self.otherPatterns = otherPatterns; self.save = save
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Switch speakers").font(.headline)
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") {
+                    if save(draft) { dismiss() }
+                    else { saveError = "Phrases changed elsewhere. Close and try again." }
+                }.disabled(issue != nil)
+                    .keyboardShortcut(.defaultAction).accessibilityIdentifier("speakerOutputSave")
+            }
+            Text("Say a prefix followed by a speaker name, such as ‘Switch speakers to Kitchen’.")
+                .foregroundStyle(.secondary)
+            ScrollView {
+              Form {
+                Section("Prefixes") {
+                    TextField("One prefix per line", text: $draft.prefixes, axis: .vertical)
+                        .lineLimit(2...5).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("speakerOutputPrefixes")
+                }
+                Section("Speakers") {
+                    ForEach($draft.destinations) { $destination in
+                        LabeledContent("Names, one per line") {
+                            HStack(alignment: .top) {
+                                TextField("Speaker names", text: $destination.names, axis: .vertical)
+                                    .labelsHidden().lineLimit(1...4).accessibilityLabel("Speaker names")
+                                Button { draft.destinations.removeAll { $0.id == destination.id } } label: {
+                                    Image(systemName: "minus.circle")
+                                }.buttonStyle(.plain).accessibilityLabel("Remove speaker")
+                            }
+                        }.accessibilityElement(children: .contain)
+                        LabeledContent("Output") {
+                            HStack {
+                                Menu(destination.output.isEmpty ? "Choose output…" : destination.output) {
+                                    ForEach(devices, id: \.self) { name in Button(name) { destination.output = name } }
+                                    if devices.isEmpty { Text("No configured outputs found") }
+                                }.accessibilityLabel("Output device")
+                                    .accessibilityValue(destination.output.isEmpty ? "No output selected" : destination.output)
+                                Image(systemName: "minus.circle").hidden().accessibilityHidden(true)
+                            }
+                        }.accessibilityElement(children: .contain)
+                    }
+                    Button("Add speaker") { draft.destinations.append(SpeakerDestination(names: "", output: "")) }
+                        .accessibilityIdentifier("speakerOutputAdd")
+                }
+                if let issue = issue ?? saveError { Text(issue).foregroundStyle(.red).accessibilityIdentifier("speakerOutputIssue") }
+              }.fixedSize(horizontal: false, vertical: true).padding(.trailing, 12)
+            }
+            Text("Choose an output configured in the audio switch helper. Disconnected speakers stay listed.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(16).frame(width: 600, height: 500)
+        .task { devices = await Task.detached { SpeakerOutput.available() }.value }
     }
 }
 

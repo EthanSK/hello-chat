@@ -104,6 +104,20 @@ private final class Probe {
         let combined = ["Switch app", "Open app", "Switch up", "Switch to", "Switch"].map {
             PhrasePattern(slot: .switchAppPhrase, text: $0, similar: true, dictionaries: .init())
         }
+        var speakerThenApp = AppCommandDetector()
+        speakerThenApp.audio(level: 0.2, seconds: 0.1)
+        speakerThenApp.update("Switch audio to kitchen. Switch app Chrome", at: 1)
+        speakerThenApp.consume(overlapping: 0..<4, switchPrefixes: combined, openPrefixes: [])
+        speakerThenApp.audio(level: 0, seconds: 1)
+        let laterApp = speakerThenApp.poll(switchPrefixes: combined, openPrefixes: [])
+        check(laterApp.count == 1 && laterApp[0].name == "chrome", "Speaker command cannot launch an app or swallow a later app command")
+        var appThenSpeaker = AppCommandDetector()
+        appThenSpeaker.audio(level: 0.2, seconds: 0.1)
+        appThenSpeaker.update("Open Safari. Switch audio to kitchen", at: 1)
+        appThenSpeaker.consume(overlapping: 2..<6, switchPrefixes: combined, openPrefixes: [])
+        appThenSpeaker.audio(level: 0, seconds: 1)
+        let earlierApp = appThenSpeaker.poll(switchPrefixes: combined, openPrefixes: [])
+        check(earlierApp.count == 1 && earlierApp[0].name == "safari", "Speaker command preserves an earlier pending app command")
         for text in ["Switch Chrome", "Switch to Chrome", "Switch up Chrome", "Switch app Chrome", "Open app Chrome", "Open Chrome"] {
             var detector = AppCommandDetector()
             detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)

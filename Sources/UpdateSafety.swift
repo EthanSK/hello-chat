@@ -3,7 +3,7 @@
 import Foundation
 
 enum UpdateSafety {
-    static func canRelaunch(busy: Bool, checkingSpeech: Bool, capturingStartupSpeech: Bool = false) -> Bool {
-        !busy && !checkingSpeech && !capturingStartupSpeech
+    static func canRelaunch(busy: Bool, checkingSpeech: Bool, capturingStartupSpeech: Bool = false, switchingSpeakerOutput: Bool = false) -> Bool {
+        !busy && !checkingSpeech && !capturingStartupSpeech && !switchingSpeakerOutput
     }
 }

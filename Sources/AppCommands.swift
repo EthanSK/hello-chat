@@ -51,6 +51,7 @@ struct AppCommandDetector {
     private static let maximumAudioBoundaries = 64
     private var consumedAudio: [Range<Double>] = []
     private var consumedCount = 0
+    private var suppressedStarts: Set<Int> = []
     private var revision = 0
     private var checkedRevision = -1
     private var waiting = false
@@ -87,8 +88,9 @@ struct AppCommandDetector {
         let left = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: 0.35)
         let ends = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: Self.finalizationSeconds)
         guard words != context || starts != sentenceStarts || left != leftBoundaries || ends != endBoundaries else { return }
+        let common = zip(context, words).prefix { $0 == $1 }.count
+        suppressedStarts = suppressedStarts.filter { $0 < common }
         if !audioBoundaries.isEmpty {
-            let common = zip(context, words).prefix { $0 == $1 }.count
             var clamped: [Int] = []
             for boundary in audioBoundaries.map({ min($0, common) }) where clamped.last != boundary { clamped.append(boundary) }
             audioBoundaries = clamped
@@ -104,6 +106,18 @@ struct AppCommandDetector {
         for (index, prefix) in found.enumerated() { consume(index: index, start: prefix.start, end: prefix.end) }
         waiting = false; checkedRevision = revision
     }
+    // A speaker command may start with the generic Switch app prefix. Consume only prefixes
+    // inside that accepted command, leaving later app commands in the transcript eligible.
+    mutating func consume(overlapping range: Range<Int>, switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern]) {
+        let found = prefixes(switchPrefixes: switchPrefixes, openPrefixes: openPrefixes)
+        let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
+        for prefix in found where (prefix.start..<prefix.end).overlaps(range) {
+            if let audio = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
+                if !consumedAudio.contains(where: { $0.overlaps(audio) }) { consumedAudio.append(audio) }
+            } else { suppressedStarts.insert(prefix.start) }
+        }
+        checkedRevision = -1
+    }
     mutating func poll(switchPrefix: PhrasePattern, openPrefix: PhrasePattern,
                        onDecision: ((AppCommandKind, String) -> Void)? = nil) -> [AppCommandCandidate] {
         poll(switchPrefixes: [switchPrefix], openPrefixes: [openPrefix], onDecision: { kind, decision, _ in onDecision?(kind, decision) })
@@ -117,6 +131,7 @@ struct AppCommandDetector {
         var result: [AppCommandCandidate] = []
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
         for (index, prefix) in prefixes(switchPrefixes: switchPrefixes, openPrefixes: openPrefixes).enumerated() {
+            if suppressedStarts.contains(prefix.start) { continue }
             if let range = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
                 if consumedAudio.contains(where: { $0.overlaps(range) }) { continue }
             } else if index < consumedCount { continue }

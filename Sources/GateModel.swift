@@ -141,6 +141,32 @@ import SwiftUI
     @Published var appNameSpellings = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)) {
         didSet { UserDefaults.standard.set(appNameSpellings.overrides, forKey: AppNameSpellings.defaultsKey) }
     }
+    @Published private(set) var speakerOutputSettings = SpeakerOutputSettings.load()
+    @Published private(set) var speakerOutputStatus: String?
+    private var speakerOutputDetector = StandaloneWake()
+    private var speakerOutputTask: Task<Void, Never>?
+    @Published private(set) var switchingSpeakerOutput = false
+    // App prefixes are handled by the overlapping-prefix suppression below. All other
+    // commands retain ownership even when they are contained inside a speaker phrase.
+    var speakerOutputConflictingPhrases: [PhrasePattern] {
+        PhraseSlot.allCases.filter { $0 != .switchAppPhrase && $0 != .openAppPhrase }.flatMap { patterns(for: $0) }
+    }
+    @Published private(set) var speakerOutputConflict: String?
+    private var activeSpeakerCommands: [(pattern: PhrasePattern, output: String)] = []
+    // Recognition checks each audio frame. Compile speaker combinations only when settings
+    // change, not on that hot path, and share the result with highlighting and cancellation.
+    private func rebuildSpeakerCommands() {
+        let conflict = speakerOutputSettings.conflictingPhrase(with: speakerOutputConflictingPhrases)
+        if speakerOutputConflict != conflict { speakerOutputConflict = conflict }
+        activeSpeakerCommands = conflict == nil ? speakerOutputSettings.commands : []
+    }
+    func saveSpeakerOutputSettings(_ settings: SpeakerOutputSettings) -> Bool {
+        guard settings.issue == nil, settings.conflictingPhrase(with: speakerOutputConflictingPhrases) == nil else { return false }
+        speakerOutputSettings = settings
+        settings.save()
+        updatePhrases()
+        return true
+    }
     private let desktopCommands = DesktopCommands()
     func appSpellingChoices() async -> [AppCandidate] { await desktopCommands.spellingChoices() }
     private var zoomPhraseDetectors = CommandPhraseDetectors<ZoomDirection>()
@@ -183,7 +209,7 @@ import SwiftUI
             PhrasePattern(slot: slot, text: $0, similar: similarPhrases, dictionaries: matchingDictionaries)
         }
     }
-    var phrasePatterns: [PhrasePattern] { PhraseSlot.allCases.flatMap { patterns(for: $0) } }
+    var phrasePatterns: [PhrasePattern] { PhraseSlot.allCases.flatMap { patterns(for: $0) } + activeSpeakerCommands.map(\.pattern) }
     // Every phrase for an audio action, with the section that owns it, so the cue follows the match.
     private func patterns(for action: VoiceAudioAction) -> [(slot: PhraseSlot, pattern: PhrasePattern)] {
         action.slots.flatMap { slot in patterns(for: slot).map { (slot, $0) } }
@@ -364,6 +390,7 @@ import SwiftUI
             self?.videoPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.zoomPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.musicPhraseDetector.audio(level: level, seconds: seconds, at: audioTime)
+            self?.speakerOutputDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
             // Raw speech can resume before its first text hypothesis arrives.
@@ -464,6 +491,19 @@ import SwiftUI
         let result = desktopCommands.zoom(direction) { feedback.play(direction.slot.cue) } // Only once the keys are sent.
         Diagnostics.shared.record("desktop.zoom", info: ["direction": direction.rawValue, "outcome": result.diagnostic])
         if let message = result.message { desktopCommandStatus = message }
+    }
+    private func requestSpeakerOutput(_ output: String) {
+        guard !quitting else { return }
+        guard speakerOutputTask == nil else { speakerOutputStatus = "Already switching speakers."; return }
+        speakerOutputStatus = "Switching speakers…"
+        switchingSpeakerOutput = true
+        speakerOutputTask = Task { [weak self] in
+            let message = await Task.detached { SpeakerOutput.switchTo(output) }.value
+            guard let self else { return }
+            self.speakerOutputTask = nil
+            self.switchingSpeakerOutput = false
+            if !self.quitting { self.speakerOutputStatus = message; self.lastEvent = message }
+        }
     }
     private func requestMusic(_ slot: PhraseSlot) {
         guard !quitting else { return }
@@ -653,12 +693,14 @@ import SwiftUI
         videoPhraseDetectors.reset()
         zoomPhraseDetectors.reset()
         musicPhraseDetector.reset()
+        speakerOutputDetector.reset()
         appCommandDetector.reset()
     }
     private func updatePhrases() {
         rebuildPhraseConfiguration()
+        rebuildSpeakerCommands()
         cancelAppCommands()
-        listener.contextualPhrases = phraseConfiguration.allPhrases
+        listener.contextualPhrases = phraseConfiguration.allPhrases + activeSpeakerCommands.map { $0.pattern.text }
         endPhrase.reset()
         standaloneWake.reset()
         resetAudioPhrases()
@@ -1120,6 +1162,7 @@ import SwiftUI
         videoPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         zoomPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         musicPhraseDetector.update(text, at: Diagnostics.now, timings: timings)
+        speakerOutputDetector.update(text, at: Diagnostics.now, timings: timings)
         appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
         // Keep collecting while a keyword waits for its audio pause. An accepted
@@ -1156,6 +1199,7 @@ import SwiftUI
             videoPhraseDetectors.cancelPending(aliases: videoPatterns, endPatterns: endPatterns) // ...and over video commands.
             zoomPhraseDetectors.cancelPending(aliases: zoomPatterns, endPatterns: endPatterns) // ...and desktop commands.
             musicPhraseDetector.cancelPending(patterns: musicPatterns.map(\.pattern), endPatterns: endPatterns)
+            speakerOutputDetector.cancelPending(patterns: activeSpeakerCommands.map(\.pattern), endPatterns: endPatterns)
             appCommandDetector.consumeAll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
             cancelStartupSpeech()
             standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: endPatterns)
@@ -1187,6 +1231,19 @@ import SwiftUI
            let index = musicPhraseDetector.acceptedPatternIndex, music.indices.contains(index) {
             standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: music.map(\.pattern))
             requestMusic(music[index].slot)
+        }
+        // A full prefix + destination is required. Consume matching app prefixes too: the
+        // generic "Switch" app prefix must not also open an app named after a speaker.
+        let speakerCommands = activeSpeakerCommands
+        if let first = speakerCommands.first,
+           speakerOutputDetector.poll(at: Diagnostics.now, phrase: first.pattern.text, similar: false,
+                rejectNegated: true, patterns: speakerCommands.map(\.pattern), directOnly: true),
+           let index = speakerOutputDetector.acceptedPatternIndex, speakerCommands.indices.contains(index) {
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: speakerCommands.map(\.pattern))
+            if let range = speakerOutputDetector.acceptedRange {
+                appCommandDetector.consume(overlapping: range, switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
+            }
+            if !quitting, !capturingStartupSpeech { requestSpeakerOutput(speakerCommands[index].output) }
         }
         // Zoom and app commands: same consumption rules, never busy-gated and never routed to
         // beginVoice. While an opening is being captured for Voice, its words belong to Voice.
@@ -1333,6 +1390,7 @@ import SwiftUI
         stopLocal()
         await voicePeerPriority.shutdown()
         await previous?.value
+        await speakerOutputTask?.value // Let the helper finish microphone recovery before exit.
         archive.flush()
         await startupSpeechFile.flush()
         await spotifyVolume.shutdown(preservingVolume: preservingSpotify)

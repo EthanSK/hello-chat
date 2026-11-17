@@ -287,3 +287,7 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 - A Pages source configured as legacy main/docs serves committed bytes; it does not run a custom README generator. Website publication now uses the dedicated Website workflow to generate canonical references and artwork before uploading the Pages artifact. The repository Pages setting must use workflow deployment. Keep signing credentials out of this hosted website job.
 
 - README-only publishing can intentionally leave the committed website preview stale. App regression tests therefore test the generator itself, while the Website workflow owns generation and artifact freshness. Requiring the committed preview to be fresh in app tests would break the next runtime release after a valid README-only deployment.
+
+## Speaker output commands
+
+- Speaker routing uses the existing local audio-switch helper as the source of protected output names and microphone-restoration policy. Do not offer arbitrary devices as equally protected: the helper recognises its configured speaker microphones and preserves a concurrent ordinary microphone choice. An unavailable helper or output is a reported failure, not a successful switch. Text recognition and a preview do not establish a physical route or a Voice app's actual stream.
