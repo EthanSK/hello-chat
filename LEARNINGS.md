@@ -1,5 +1,10 @@
 # Hello Chat engineering notes
 
+## Commands during continuous playback
+
+- User-requested,17November2026: do not wait for silence or the end of a recognition batch after a complete fixed command. YouTube supplies more words continuously, so such a wait can prevent commands while watching. If Ethan proposes a post-keyword delay again, explain that it was removed for this reason before agreeing on a new policy.
+- A zero `commandPauseSeconds` alone did not cover fixed music/zoom commands: `isDirectCommand` also required their trailing sentence to be empty or polite words only. A synthetic first ASR batch containing a complete command followed by narration reproduced rejection. Accept the completed command without that empty-tail condition; retain leading-context, explicit plan/qualification, mention/negation, timing and occurrence protections. Model/reset and startup-file boundaries are separate; no real media or Voice call is used by these tests.
+
 ## 2026-11-14 — Keep model download recovery pinned
 
 A release reached a model checksum mismatch after successful tests and compilation. That rejection proves the downloaded bytes differed, not whether the cause was truncation, transport corruption or the upstream response. Keep the existing manifest hashes authoritative: verify response length when supplied, retry transfer/validation failures at most three times, and replace a model file only after its exact checksum passes. Do not retry authentication/rate-limit responses, bypass a server-requested wait, add settling sleeps, or treat a failed download as grounds to change the model pin. Injected corrupt, incomplete and interrupted responses verify recovery and bounded failure without microphone or live-call tests.
