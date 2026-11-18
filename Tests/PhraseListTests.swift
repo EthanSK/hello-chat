@@ -26,11 +26,47 @@ import Foundation
             check(!detector.poll(at: 1, phrase: slot.defaultText, similar: false, rejectNegated: true, ending: slot.ending, patterns: patterns), "New default row preserves the mention guard")
         }
         check((savedDefaults.dictionary(forKey: PhraseList.defaultsKey)?["futurePhrase"] as? [String]) == ["Keep me"], "Future-build preferences survive seeding")
+        check(seeded[.mutePhrase] == ["Mute mic"] && seeded[.silentPhrase] == ["Mute speakers"], "New installs list both mute aliases")
+        let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map {
+            ($0, [$0.savedValue(in: savedDefaults)] + (seeded[$0] ?? []))
+        }))
+        for (utterance, expected) in [("mute mic", VoiceAudioAction.muteMicrophone), ("mute speakers", .silenceSpeakers),
+                                      ("mute chat", .muteMicrophone), ("silent chat", .silenceSpeakers), ("silence chat", .silenceSpeakers)] {
+            for similar in [false, true] {
+                let actions = VoiceAudioAction.allCases.filter { action in
+                    let patterns = action.slots.flatMap { slot in configuration.phrases(for: slot).map {
+                        PhrasePattern(slot: slot, text: $0, similar: similar, dictionaries: .init())
+                    } }
+                    var detector = StandaloneWake()
+                    detector.audio(level: 0.2, seconds: 0.1)
+                    detector.update(utterance, at: 1)
+                    return detector.poll(at: 1, phrase: patterns[0].text, similar: similar, rejectNegated: true, patterns: patterns)
+                }
+                check(actions == [expected], "Only the intended audio action accepts " + utterance)
+            }
+        }
+        seeded[.silentPhrase] = nil
         seeded[.wakePhrase] = nil
         savedDefaults.set(PhraseList.encode(seeded, preserving: savedDefaults.object(forKey: PhraseList.defaultsKey)), forKey: PhraseList.defaultsKey)
         PhraseList.seedDefaults(in: savedDefaults)
         check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))[.wakePhrase] == nil, "Removing a seeded row is respected on later launches")
         savedDefaults.removePersistentDomain(forName: suite)
+        savedDefaults.set(true, forKey: "phraseDefaults20261115")
+        savedDefaults.set(["zoomInPhrase": ["Mute-mic"]], forKey: PhraseList.defaultsKey)
+        PhraseList.seedDefaults(in: savedDefaults)
+        let upgraded = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
+        check(upgraded == [.zoomInPhrase: ["Mute-mic"], .silentPhrase: ["Mute speakers"]], "Upgrade respects existing ownership and deleted old defaults")
+        savedDefaults.set(["zoomInPhrase": ["Mute-mic"]], forKey: PhraseList.defaultsKey)
+        PhraseList.seedDefaults(in: savedDefaults)
+        check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))[.silentPhrase] == nil, "Removed mute alias stays removed")
+        savedDefaults.removePersistentDomain(forName: suite)
+        savedDefaults.set(["zoomOutPhrase": ["Mute mic"]], forKey: "phraseDictionaries")
+        PhraseList.seedDefaults(in: savedDefaults) { $0.text == "Mute speakers" }
+        let reserved = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
+        check(reserved[.mutePhrase] == nil && reserved[.silentPhrase] == nil, "Saved spellings and speaker destinations take precedence")
+        savedDefaults.removePersistentDomain(forName: suite)
+        savedDefaults.set("Quiet microphone", forKey: "mutePhrase")
+        savedDefaults.set("Quiet sound", forKey: "silencePhrase")
         savedDefaults.set("Listen Lantern", forKey: "wakePhrase")
         savedDefaults.set("Goodnight Lantern", forKey: "sleepPhrase")
         savedDefaults.set("Jump to", forKey: "switchAppPhrase")

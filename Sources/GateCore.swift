@@ -185,20 +185,33 @@ struct PhraseRow: Identifiable, Equatable {
 
 enum PhraseList {
     static let defaultsKey = "phraseAliases"
-    static let seededDefaultsKey = "phraseDefaults20261115"
-    // Add the new defaults once, only to an unchanged default section. A later deletion stays
-    // deleted, custom primary/extra phrases stay verbatim, and another command's ownership wins.
-    static func seedDefaults(in defaults: UserDefaults) {
-        guard !defaults.bool(forKey: seededDefaultsKey) else { return }
-        var rows = decode(defaults.object(forKey: defaultsKey))
-        let additions: [(PhraseSlot, [String])] = [(.wakePhrase, ["Hey Chat"]),
-            (.sleepPhrase, ["Goodbye Chat"]), (.switchAppPhrase, ["Switch up", "Switch to", "Switch"])]
-        var seen = Set(PhraseSlot.allCases.flatMap { slot in [slot.savedValue(in: defaults)] + (rows[slot] ?? []) }.map(key))
-        for (slot, phrases) in additions where slot.isDefault(slot.savedValue(in: defaults)) {
-            for phrase in phrases where seen.insert(key(phrase)).inserted { rows[slot, default: []].append(phrase) }
+    // Store each batch once. A deleted row stays deleted when a later version adds defaults.
+    static func seedDefaults(in defaults: UserDefaults, conflictsWithSpeaker: (PhrasePattern) -> Bool = { _ in false }) {
+        let batches: [(key: String, additions: [(PhraseSlot, [String])])] = [
+            ("phraseDefaults20261115", [(.wakePhrase, ["Hey Chat"]), (.sleepPhrase, ["Goodbye Chat"]),
+                                       (.switchAppPhrase, ["Switch up", "Switch to", "Switch"])]),
+            ("mutePhraseDefaults20261118", [(.mutePhrase, ["Mute mic"]), (.silentPhrase, ["Mute speakers"])])
+        ]
+        for batch in batches where !defaults.bool(forKey: batch.key) {
+            let saved = defaults.object(forKey: defaultsKey)
+            var rows = decode(saved)
+            let dictionaries = defaults.dictionary(forKey: "phraseDictionaries") as? [String: [String]] ?? [:]
+            var seen = Set(PhraseSlot.allCases.flatMap { slot in
+                [slot.savedValue(in: defaults)] + (rows[slot] ?? []) + (dictionaries[slot.rawValue] ?? [])
+            }.map(key))
+            for (slot, phrases) in batch.additions where slot.isDefault(slot.savedValue(in: defaults)) {
+                // The two speaker trigger families share a panel. Respect a customized primary in either.
+                if slot == .silentPhrase && !PhraseSlot.silencePhrase.isDefault(PhraseSlot.silencePhrase.savedValue(in: defaults)) { continue }
+                for phrase in phrases where !seen.contains(key(phrase)) {
+                    let pattern = PhrasePattern(slot: slot, text: phrase, similar: false, dictionaries: .init())
+                    guard !conflictsWithSpeaker(pattern) else { continue }
+                    rows[slot, default: []].append(phrase)
+                    seen.insert(key(phrase))
+                }
+            }
+            defaults.set(encode(rows, preserving: saved), forKey: defaultsKey)
+            defaults.set(true, forKey: batch.key)
         }
-        defaults.set(encode(rows, preserving: defaults.object(forKey: defaultsKey)), forKey: defaultsKey)
-        defaults.set(true, forKey: seededDefaultsKey)
     }
     static func key(_ text: String) -> String { PhraseMatcher.words(text).joined() }
     // Trimmed, nonempty pieces in typed order.

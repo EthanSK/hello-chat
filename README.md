@@ -16,8 +16,8 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | Say | What happens |
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
-| **Mute Chat** / **Unmute Chat** | Mutes or unmutes the active Voice microphone. Repeating a command keeps that state. |
-| **Silent Chat**, **Silence Chat** / **Unsilence Chat** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
+| **Mute Chat**, **Mute mic** / **Unmute Chat** | Mutes or unmutes the active Voice microphone. Repeating a command keeps that state. |
+| **Silent Chat**, **Silence Chat**, **Mute speakers** / **Unsilence Chat** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 | **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key. |
 | **Pause video** / **Play video** | Controls one Chrome video through [Agent Flow Bridge](https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install). Works with YouTube and standard web video players. |
