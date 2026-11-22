@@ -21,7 +21,7 @@ import Darwin
             } else if arguments.count == 2, arguments[0] == "--voice-peer-confirm-end",
                       let call = VoicePeerCall(token: arguments[1]) {
                 receipt = VoicePeerMailbox.submit(.init(action: .confirmEnd, call: call, expires: expires))
-            } else if arguments.count == 3, arguments[0] == "--voice-peer-end",
+            } else if arguments.count == 4, arguments[0] == "--voice-peer-end", arguments[3] == "v2",
                       let call = VoicePeerCall(token: arguments[1]), let deadline = TimeInterval(arguments[2]) {
                 receipt = VoicePeerMailbox.submit(.init(action: .end, call: call, expires: deadline))
             } else {

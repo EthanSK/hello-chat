@@ -59,7 +59,7 @@ struct VoiceTimeline {
         defer { sqlite3_close(db) }
         let sql = """
             SELECT thread_id, json_extract(payload_json, '$.sessionId'),
-                   json_extract(payload_json, '$.type')
+                   json_extract(payload_json, '$.type'), json_extract(payload_json, '$.occurredAtMs')
             FROM thread_timeline_ledger
             WHERE host_id = 'local' AND json_valid(payload_json)
               AND json_extract(payload_json, '$.occurredAtMs') >= ?
@@ -70,10 +70,12 @@ struct VoiceTimeline {
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_double(statement, 1, since.timeIntervalSince1970 * 1000)
-        var active = Set<String>(), ended = Set<String>(), count = 0
+        var starts: [String: Int64] = [:], ended = Set<String>(), count = 0
         while true {
             let result = sqlite3_step(statement)
-            if result == SQLITE_DONE { return count < 2000 ? VoiceLedgerSessions(active: active, ended: ended) : nil }
+            if result == SQLITE_DONE {
+                return count < 2000 ? VoiceLedgerSessions(startedAtMilliseconds: starts, ended: ended) : nil
+            }
             guard result == SQLITE_ROW,
                   let thread = sqlite3_column_text(statement, 0),
                   let session = sqlite3_column_text(statement, 1),
@@ -81,8 +83,11 @@ struct VoiceTimeline {
             count += 1
             let key = String(cString: thread) + ":" + String(cString: session)
             switch String(cString: kind) {
-            case "session-started": active.insert(key)
-            case "session-ended": active.remove(key); ended.insert(key)
+            case "session-started":
+                guard sqlite3_column_type(statement, 3) == SQLITE_INTEGER else { return nil }
+                let startedAt = sqlite3_column_int64(statement, 3)
+                starts[key] = min(starts[key] ?? startedAt, startedAt)
+            case "session-ended": starts.removeValue(forKey: key); ended.insert(key)
             default: return nil
             }
         }

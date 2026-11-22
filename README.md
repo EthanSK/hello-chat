@@ -156,13 +156,13 @@ Detection uses native Accessibility notifications and fresh call controls, inclu
 H Chat can give one Mac priority when both Macs have an active Codex Voice call. It checks after a native call starts, including calls opened using Codex's own Voice control. Configure both Macs with opposite roles and the exact names they use to reach each other in Agent Bridge. Leave both unconfigured for independent calls.
 
 ```sh
-# On the Mac that keeps its call
+# On the Mac that keeps its call when starts are within 30 seconds
 defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<secondary bridge name>' role primary
-# On the Mac that yields
+# On the Mac that yields when starts are within 30 seconds
 defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<primary bridge name>' role secondary
 ```
 
-Both machines need H Chat running from `/Applications/HelloChat.app` with Accessibility access and [Agent Bridge](https://github.com/EthanSK/agent-bridge) at `~/bin/agent-bridge`. This is an advanced, optional setup; it is not installed with H Chat. Restart H Chat after configuring the pair. A single call on either Mac works normally. When both calls can be identified, H Chat uses the secondary Mac's native End control for its exact session. This closes Voice and keeps the chat and its work. An unreachable peer or an ambiguous call leaves the calls open.
+Both machines need H Chat running from `/Applications/HelloChat.app` with Accessibility access and [Agent Bridge](https://github.com/EthanSK/agent-bridge) at `~/bin/agent-bridge`. This is an advanced, optional setup; it is not installed with H Chat. Restart H Chat after configuring the pair. A single call on either Mac works normally. For two verified calls starting within 30 seconds, the primary Mac keeps its call. More than 30 seconds apart, the newer call takes over. H Chat uses the native End control for the exact call that yields, closing Voice while keeping the chat and its work. Update both apps together. During mixed-version operation, or if either call cannot be verified, H Chat skips the automatic handoff.
 
 For read-only diagnosis, run `/Applications/HelloChat.app/Contents/MacOS/HelloChat --voice-peer-status` locally or over the paired bridge. The command returns a status and, when verified, the current thread and session identifiers. To remove the pairing, delete the `voicePeerPriority` preference on both Macs and restart H Chat.
 

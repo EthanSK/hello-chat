@@ -22,10 +22,11 @@ import SQLite3
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == true)
         precondition(VoiceTimeline.activeSessions(database: url, since: Date(timeIntervalSince1970: 2)) == ["chat:new"])
         precondition(VoiceTimeline.sessions(database: url, since: Date(timeIntervalSince1970: 2))
-                     == VoiceLedgerSessions(active: ["chat:new"], ended: []), "Starting is not End evidence")
+                     == VoiceLedgerSessions(startedAtMilliseconds: ["chat:new": 3000], ended: []),
+                     "The active session supplies its original start time, not the latest read time")
         // A cutoff after the start is a valid empty read, but no End record.
         precondition(VoiceTimeline.sessions(database: url, since: Date(timeIntervalSince1970: 9))
-                     == VoiceLedgerSessions(active: [], ended: []))
+                     == VoiceLedgerSessions(startedAtMilliseconds: [:], ended: []))
         // An older close must not end a replacement call in the same thread.
         sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',4,'{\"type\":\"session-ended\",\"sessionId\":\"old\",\"occurredAtMs\":5000}')")
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == true)
@@ -34,7 +35,7 @@ import SQLite3
         sql("INSERT INTO thread_timeline_ledger VALUES('remote','chat',6,'{\"type\":\"session-started\",\"sessionId\":\"remote\",\"occurredAtMs\":7000}')")
         precondition(VoiceTimeline.hasActiveCall(database: url, since: Date(timeIntervalSince1970: 2)) == false)
         precondition(VoiceTimeline.sessions(database: url, since: Date(timeIntervalSince1970: 2))
-                     == VoiceLedgerSessions(active: [], ended: ["chat:old", "chat:new"]),
+                     == VoiceLedgerSessions(startedAtMilliseconds: [:], ended: ["chat:old", "chat:new"]),
                      "The exact session's own End record is reported, never a remote host's")
         sql("INSERT INTO thread_timeline_ledger VALUES('local','chat',7,'{\"type\":\"session-started\",\"sessionId\":\"replacement\",\"occurredAtMs\":8000}')")
         precondition(VoiceTimeline.activeSessions(database: url, since: Date(timeIntervalSince1970: 2)) == ["chat:replacement"],

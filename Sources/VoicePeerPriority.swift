@@ -1,5 +1,5 @@
 // Check paired Macs at the start of a native Codex call and end only the
-// identified secondary call. H Chat's own observer drives this independently
+// identified losing call. H Chat's own observer drives this independently
 // of speech recognition, Spotify, or a Voice agent getting a tool turn.
 import AppKit
 import ApplicationServices
@@ -59,8 +59,11 @@ struct VoicePeerReceipt: Codable, Equatable {
     let status: Status
     var call: VoicePeerCall? = nil
     var role: VoicePeerConfiguration.Role? = nil
+    var startedAtMilliseconds: Int64? = nil
 
-    static let wirePrefix = "HCHAT_VOICE_PEER_V1 "
+    // The old protocol always handed priority to the M5. Mixed versions
+    // must skip arbitration so they cannot choose opposite calls to end.
+    static let wirePrefix = "HCHAT_VOICE_PEER_V2 "
 }
 
 enum VoicePeerControl {
@@ -81,23 +84,23 @@ enum VoicePeerControl {
             return .init(status: running ? .unknown : .inactive, role: role)
         }
         let database = VoiceTimeline.databaseURL()
-        let before = VoiceTimeline.activeSessions(database: database, since: launch)
+        let before = VoiceTimeline.sessions(database: database, since: launch)?.startedAtMilliseconds
         let state = VoiceBridge.snapshot(requireEnd: true)
         guard state.pid == app.processIdentifier, state.accessibilityAllowed,
-              let before, before == VoiceTimeline.activeSessions(database: database, since: launch) else {
+              let before, before == VoiceTimeline.sessions(database: database, since: launch)?.startedAtMilliseconds else {
             return .init(status: .unknown)
         }
-        if let id = before.first, before.count == 1, state.endControlAvailable || state.microphone != nil,
+        if let (id, startedAt) = before.first, before.count == 1, state.endControlAvailable || state.microphone != nil,
            let call = VoicePeerCall(token: id + ":\(app.processIdentifier)") {
-            return .init(status: .active, call: call, role: role)
+            return .init(status: .active, call: call, role: role, startedAtMilliseconds: startedAt)
         }
         let absent = before.isEmpty && state.controlsComplete && !state.endControlAvailable && state.microphone == nil
         return .init(status: absent ? .inactive : .unknown, role: role)
     }
 
     static func end(_ call: VoicePeerCall, expires: TimeInterval) -> VoicePeerReceipt {
-        guard VoicePeerConfiguration.installed?.role == .secondary else { return .init(status: .disabled) }
-        // Two startups can both identify the same M1 call. Share one
+        guard VoicePeerConfiguration.installed != nil else { return .init(status: .disabled) }
+        // Two startups can both identify the same losing call. Share one
         // dispatch receipt between the SSH command and the app process.
         let directory = AppPaths.support
         let file = directory.appendingPathComponent("voice-peer-end")
@@ -163,7 +166,7 @@ enum VoicePeerControl {
                       VoicePeerControl.end(call, expires: expires)
                   }.value },
                   endPeer: { call, expires in await Task.detached(priority: .utility) {
-                      VoicePeerBridge.run(machine: machine, arguments: "--voice-peer-end \(call.token) \(Int(expires))")
+                      VoicePeerBridge.run(machine: machine, arguments: "--voice-peer-end \(call.token) \(Int(expires)) v2")
                   }.value },
                   confirmLocal: { call in await Task.detached(priority: .utility) {
                       VoicePeerControl.confirmation(of: call)
@@ -176,14 +179,18 @@ enum VoicePeerControl {
 
     private let configuration: VoicePeerConfiguration?
     private let transport: Transport?
+    private static let duplicateStartWindowMilliseconds: Int64 = 30_000
+    private let observingSinceMilliseconds: Int64
     private var task: Task<Void, Never>?
     private var observedCall: String?
     private var attemptedCall: String?
     var enabled: Bool { configuration != nil }
 
-    init(configuration: VoicePeerConfiguration? = VoicePeerConfiguration.installed, transport: Transport? = nil) {
+    init(configuration: VoicePeerConfiguration? = VoicePeerConfiguration.installed, transport: Transport? = nil,
+         observingSince: Date = Date()) {
         self.configuration = configuration
         self.transport = transport ?? configuration.map { .live($0.machine) }
+        observingSinceMilliseconds = Int64((observingSince.timeIntervalSince1970 * 1000).rounded(.down))
     }
 
     @discardableResult func observe(_ observation: VoiceCallObservation) -> Task<Void, Never>? {
@@ -199,27 +206,43 @@ enum VoicePeerControl {
         attemptedCall = identifier
         task = Task { [weak self] in
             let peer = await transport.peerStatus()
-            guard !Task.isCancelled, self?.observedCall == identifier else { return }
+            guard let self, !Task.isCancelled, self.observedCall == identifier else { return }
             guard peer.status == .active, peer.role == configuration.role.peer, let peerCall = peer.call else {
                 Diagnostics.shared.record("voice.peer.checked", info: ["status": peer.status.rawValue])
                 return
             }
             let local = await transport.localStatus()
-            guard !Task.isCancelled, self?.observedCall == identifier, local.status == .active,
-                  local.role == configuration.role, let localCall = local.call, localCall.matches(identifier) else { return }
+            // Relaunching H Chat may rediscover an existing call. Only a
+            // call started while this observer is running may initiate End.
+            guard !Task.isCancelled, self.observedCall == identifier, local.status == .active,
+                  local.role == configuration.role, let localCall = local.call, localCall.matches(identifier),
+                  let localStart = local.startedAtMilliseconds, let peerStart = peer.startedAtMilliseconds,
+                  localStart > 0, peerStart > 0, localStart >= self.observingSinceMilliseconds else { return }
+            // Compare the persisted starts of these exact sessions. SSH
+            // latency and when an AX update arrives cannot change the winner.
+            let startDifference = localStart - peerStart
+            let endPeer: Bool
+            if abs(startDifference) <= Self.duplicateStartWindowMilliseconds {
+                endPeer = configuration.role == .primary
+            } else {
+                // Only the newly started side initiates a takeover. An older
+                // call noticed late must not send a second End.
+                guard startDifference > 0 else { return }
+                endPeer = true
+            }
             // Bound the lifetime of the exact End request. Late SSH delivery
             // cannot act on an old decision after the caller's check is stale.
             let expires = Date().timeIntervalSince1970 + 8
-            let result = configuration.role == .primary
+            let result = endPeer
                 ? await transport.endPeer(peerCall, expires) : await transport.endLocal(localCall, expires)
-            // The local observer can see the successful M1 hang-up first and
+            // The local observer can see a successful local hang-up first and
             // cancel this startup task. The End already sent still needs its
             // read-only confirmation even when the observation has changed.
             guard result.status == .endRequested else {
                 Diagnostics.shared.record("voice.peer.end", info: ["status": result.status.rawValue])
                 return
             }
-            let after = configuration.role == .primary ? await transport.confirmPeer(peerCall) : await transport.confirmLocal(localCall)
+            let after = endPeer ? await transport.confirmPeer(peerCall) : await transport.confirmLocal(localCall)
             let confirmed = after.status == .ended && after.call == result.call
             Diagnostics.shared.record("voice.peer.end", info: ["status": confirmed ? "confirmed" : "unconfirmed"])
         }

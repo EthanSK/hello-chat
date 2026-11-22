@@ -244,7 +244,7 @@ import Foundation
     }
 
     static func ledger(_ active: Set<String>, ended: Set<String> = []) -> VoiceLedgerSessions {
-        VoiceLedgerSessions(active: active, ended: ended)
+        VoiceLedgerSessions(startedAtMilliseconds: Dictionary(uniqueKeysWithValues: active.map { ($0, 0) }), ended: ended)
     }
 
     static func read(_ controls: String, _ saved: VoiceLedgerSessions?, process: pid_t? = 3735,

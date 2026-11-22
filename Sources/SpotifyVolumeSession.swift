@@ -27,8 +27,9 @@ struct VoiceCallObservation: Equatable {
 // Saved boundaries read after the current Codex process launched. `ended`
 // holds sessions with their own session-ended record, even if restarted.
 struct VoiceLedgerSessions: Equatable {
-    var active: Set<String>
+    var startedAtMilliseconds: [String: Int64]
     var ended: Set<String> = []
+    var active: Set<String> { Set(startedAtMilliseconds.keys) }
 }
 
 // Saved final End events outrank stale AX buttons. Session identity also

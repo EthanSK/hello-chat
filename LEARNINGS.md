@@ -221,7 +221,8 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 ## Cross-Mac Voice startup
 
 - Two Macs can each own an independent Codex Voice call and audio route. Switching a system output affects its own Mac. Check both hosts before attributing continued speech or duplicate work to an audio-control regression.
-- Keep a configured peer's startup check in H Chat's shared native call observer. It runs for Voice started from Codex itself and does not depend on a backend turn or the optional Spotify setting. The exact End action uses the secondary Mac's current native control and saved session boundary. A successful dispatch still needs the same session's End record to confirm it.
+- Keep a configured peer's startup check in H Chat's shared native call observer. It runs for Voice started from Codex itself and does not depend on a backend turn or the optional Spotify setting. Compare the exact sessions' saved start times to keep bridge latency out of the 30-second duplicate-start rule. Within that window the configured primary wins. Outside it, only the newer side initiates takeover. Starting the helper with a pre-existing local call does not initiate a handoff. The exact End uses the losing Mac's native control and saved session boundary. A successful dispatch still needs the same session's End record to confirm it.
+- When the two sides could choose different calls under old and new arbitration rules, version both the peer receipt and the End request. A mixed pair must leave both calls alone while updates are being installed.
 - An SSH command on macOS can read native Accessibility by explicit PID while AppKit application discovery returns no GUI app identity. Have the paired command ask the existing desktop H Chat process to check and act. A missing response is unknown, including while H Chat is stopped or updating.
 
 ## Native App Intents and desktop speech boundaries

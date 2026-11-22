@@ -10,9 +10,10 @@ import Foundation
         let peer = VoicePeerCall(token: "\(UUID()):\(UUID()):43")!
         let active = VoiceCallObservation(presence: .active, callIdentifier: identifier, verifiedCallIdentifier: identifier)
         let ledgerOnly = VoiceCallObservation(presence: .active, callIdentifier: identifier)
+        let observingSince = Date(timeIntervalSince1970: 100)
         var calls: [String] = []
-        var localStatus = VoicePeerReceipt(status: .active, call: local, role: .primary)
-        var peerStatus = VoicePeerReceipt(status: .active, call: peer, role: .secondary)
+        var localStatus = VoicePeerReceipt(status: .active, call: local, role: .primary, startedAtMilliseconds: 200_000)
+        var peerStatus = VoicePeerReceipt(status: .active, call: peer, role: .secondary, startedAtMilliseconds: 229_999)
         var onLocalEnd: (() -> Void)?
         let transport = VoicePeerPriority.Transport(
             localStatus: { calls.append("local"); return localStatus },
@@ -32,7 +33,8 @@ import Foundation
             },
             confirmLocal: { call in calls.append("confirm-local"); return .init(status: .ended, call: call) },
             confirmPeer: { call in calls.append("confirm-peer"); return .init(status: .ended, call: call) })
-        let primary = VoicePeerPriority(configuration: .init(machine: "secondary", role: .primary), transport: transport)
+        let primary = VoicePeerPriority(configuration: .init(machine: "secondary", role: .primary),
+                                        transport: transport, observingSince: observingSince)
         precondition(primary.observe(ledgerOnly) == nil && calls.isEmpty)
         await primary.observe(active)?.value
         precondition(calls == ["peer", "local", "end-peer", "confirm-peer"])
@@ -58,13 +60,24 @@ import Foundation
         precondition(calls == ["peer"], "Unknown peer state cannot authorize an End")
         primary.stop()
 
-        calls.removeAll()
-        peerStatus = .init(status: .active, call: peer, role: .primary)
-        localStatus = .init(status: .active, call: local, role: .secondary)
-        let secondary = VoicePeerPriority(configuration: .init(machine: "primary", role: .secondary), transport: transport)
+        let secondary = VoicePeerPriority(configuration: .init(machine: "primary", role: .secondary),
+                                          transport: transport, observingSince: observingSince)
+        func checkSecondary(localStart: Int64, peerStart: Int64?, expected: [String]) async {
+            calls.removeAll()
+            secondary.stop()
+            peerStatus = .init(status: .active, call: peer, role: .primary, startedAtMilliseconds: peerStart)
+            localStatus = .init(status: .active, call: local, role: .secondary, startedAtMilliseconds: localStart)
+            await secondary.observe(active)?.value
+            precondition(calls == expected, "Local start \(localStart), peer start \(String(describing: peerStart)): \(calls)")
+        }
         onLocalEnd = { secondary.observe(.init(presence: .inactive, callIdentifier: nil)) }
-        await secondary.observe(active)?.value
-        precondition(calls == ["peer", "local", "end-local", "confirm-local"], "A new M1 call yields when the M5 already has Voice")
+        await checkSecondary(localStart: 230_000, peerStart: 200_000,
+                             expected: ["peer", "local", "end-local", "confirm-local"])
+        await checkSecondary(localStart: 230_001, peerStart: 200_000,
+                             expected: ["peer", "local", "end-peer", "confirm-peer"])
+        await checkSecondary(localStart: 200_000, peerStart: 230_001, expected: ["peer", "local"])
+        await checkSecondary(localStart: 230_001, peerStart: nil, expected: ["peer", "local"])
+        await checkSecondary(localStart: 99_999, peerStart: 60_000, expected: ["peer", "local"])
 
         precondition(VoicePeerCall(token: identifier + ":0") == nil)
         precondition(VoicePeerConfiguration(machine: "-option", role: .primary) == nil)
