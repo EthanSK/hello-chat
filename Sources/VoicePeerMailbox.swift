@@ -21,7 +21,8 @@ final class VoicePeerMailbox {
 
     // Keep an in-flight request from an older executable out of the new
     // listener too. The CLI and desktop app can briefly straddle an update.
-    private static let directory = AppPaths.support.appendingPathComponent("voice-peer-v2", isDirectory: true)
+    private static let directory = AppPaths.support.appendingPathComponent(
+        "voice-peer-\(VoicePeerReceipt.endVersion)", isDirectory: true)
     private let directory: URL
     private let handler: (Request) -> VoicePeerReceipt
     private let queue = DispatchQueue(label: "com.ethansk.HeyChat.voice-peer-mailbox", qos: .utility)

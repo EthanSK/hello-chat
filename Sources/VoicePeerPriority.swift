@@ -13,25 +13,62 @@ struct VoicePeerConfiguration {
     }
     let machine: String
     let role: Role
+    let schedule: VoicePeerSchedule?
 
     init?(defaults: UserDefaults) {
         guard let configuration = defaults.dictionary(forKey: "voicePeerPriority"),
               let machine = configuration["machine"] as? String,
               let role = (configuration["role"] as? String).flatMap(Role.init(rawValue:)) else { return nil }
-        self.init(machine: machine, role: role)
+        // An incomplete or invalid schedule cannot safely make End decisions.
+        let keys = ["secondaryStartHour", "secondaryEndHour", "timeZone"]
+        var schedule: VoicePeerSchedule?
+        if keys.contains(where: { configuration[$0] != nil }) {
+            guard let start = configuration["secondaryStartHour"] as? Int,
+                  let end = configuration["secondaryEndHour"] as? Int,
+                  let zone = configuration["timeZone"] as? String,
+                  let configured = VoicePeerSchedule(startHour: start, endHour: end, timeZone: zone) else { return nil }
+            schedule = configured
+        }
+        self.init(machine: machine, role: role, schedule: schedule)
     }
 
-    init?(machine: String, role: Role) {
+    init?(machine: String, role: Role, schedule: VoicePeerSchedule? = nil) {
         guard !machine.isEmpty, machine.utf8.count <= 80,
               machine.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
                   || (97...122).contains($0) || [45, 46, 95].contains($0) }),
               !machine.hasPrefix("-") else { return nil }
         self.machine = machine
         self.role = role
+        self.schedule = schedule
     }
 
     // Foundation rejects opening this bundle's own ID as a separate suite.
     static var installed: Self? { Self(defaults: .standard) }
+}
+
+struct VoicePeerSchedule: Codable, Equatable {
+    let startHour: Int
+    let endHour: Int
+    let timeZone: String
+
+    init?(startHour: Int, endHour: Int, timeZone: String) {
+        guard (0..<24).contains(startHour), (0..<24).contains(endHour), startHour != endHour,
+              TimeZone(identifier: timeZone) != nil else { return nil }
+        self.startHour = startHour
+        self.endHour = endHour
+        self.timeZone = timeZone
+    }
+
+    func winner(atMilliseconds time: Int64) -> VoicePeerConfiguration.Role? {
+        guard let zone = TimeZone(identifier: timeZone) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let hour = calendar.component(.hour, from: Date(timeIntervalSince1970: Double(time) / 1000))
+        let secondaryWins = startHour < endHour
+            ? (startHour..<endHour).contains(hour)
+            : hour >= startHour || hour < endHour
+        return secondaryWins ? .secondary : .primary
+    }
 }
 
 struct VoicePeerCall: Codable, Equatable {
@@ -60,10 +97,12 @@ struct VoicePeerReceipt: Codable, Equatable {
     var call: VoicePeerCall? = nil
     var role: VoicePeerConfiguration.Role? = nil
     var startedAtMilliseconds: Int64? = nil
+    var schedule: VoicePeerSchedule? = nil
 
-    // The old protocol always handed priority to the M5. Mixed versions
-    // must skip arbitration so they cannot choose opposite calls to end.
-    static let wirePrefix = "HCHAT_VOICE_PEER_V2 "
+    // Both sides must apply the same priority policy before either can end a call.
+    static let protocolVersion = 3
+    static let wirePrefix = "HCHAT_VOICE_PEER_V\(protocolVersion) "
+    static let endVersion = "v\(protocolVersion)"
 }
 
 enum VoicePeerControl {
@@ -77,11 +116,12 @@ enum VoicePeerControl {
     }
 
     static func status() -> VoicePeerReceipt {
-        guard let role = VoicePeerConfiguration.installed?.role else { return .init(status: .disabled) }
+        guard let configuration = VoicePeerConfiguration.installed else { return .init(status: .disabled) }
+        let role = configuration.role, schedule = configuration.schedule
         guard let app = VoiceBridge.currentApplication(), let launch = app.launchDate else {
             let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
                 .contains { !$0.isTerminated }
-            return .init(status: running ? .unknown : .inactive, role: role)
+            return .init(status: running ? .unknown : .inactive, role: role, schedule: schedule)
         }
         let database = VoiceTimeline.databaseURL()
         let before = VoiceTimeline.sessions(database: database, since: launch)?.startedAtMilliseconds
@@ -92,10 +132,10 @@ enum VoicePeerControl {
         }
         if let (id, startedAt) = before.first, before.count == 1, state.endControlAvailable || state.microphone != nil,
            let call = VoicePeerCall(token: id + ":\(app.processIdentifier)") {
-            return .init(status: .active, call: call, role: role, startedAtMilliseconds: startedAt)
+            return .init(status: .active, call: call, role: role, startedAtMilliseconds: startedAt, schedule: schedule)
         }
         let absent = before.isEmpty && state.controlsComplete && !state.endControlAvailable && state.microphone == nil
-        return .init(status: absent ? .inactive : .unknown, role: role)
+        return .init(status: absent ? .inactive : .unknown, role: role, schedule: schedule)
     }
 
     static func end(_ call: VoicePeerCall, expires: TimeInterval) -> VoicePeerReceipt {
@@ -166,7 +206,7 @@ enum VoicePeerControl {
                       VoicePeerControl.end(call, expires: expires)
                   }.value },
                   endPeer: { call, expires in await Task.detached(priority: .utility) {
-                      VoicePeerBridge.run(machine: machine, arguments: "--voice-peer-end \(call.token) \(Int(expires)) v2")
+                      VoicePeerBridge.run(machine: machine, arguments: "--voice-peer-end \(call.token) \(Int(expires)) \(VoicePeerReceipt.endVersion)")
                   }.value },
                   confirmLocal: { call in await Task.detached(priority: .utility) {
                       VoicePeerControl.confirmation(of: call)
@@ -179,6 +219,7 @@ enum VoicePeerControl {
 
     private let configuration: VoicePeerConfiguration?
     private let transport: Transport?
+    private let diagnostics: Diagnostics?
     private static let duplicateStartWindowMilliseconds: Int64 = 30_000
     private let observingSinceMilliseconds: Int64
     private var task: Task<Void, Never>?
@@ -187,10 +228,11 @@ enum VoicePeerControl {
     var enabled: Bool { configuration != nil }
 
     init(configuration: VoicePeerConfiguration? = VoicePeerConfiguration.installed, transport: Transport? = nil,
-         observingSince: Date = Date()) {
+         observingSince: Date = Date(), diagnostics: Diagnostics? = .shared) {
         self.configuration = configuration
         self.transport = transport ?? configuration.map { .live($0.machine) }
         observingSinceMilliseconds = Int64((observingSince.timeIntervalSince1970 * 1000).rounded(.down))
+        self.diagnostics = diagnostics
     }
 
     @discardableResult func observe(_ observation: VoiceCallObservation) -> Task<Void, Never>? {
@@ -208,7 +250,7 @@ enum VoicePeerControl {
             let peer = await transport.peerStatus()
             guard let self, !Task.isCancelled, self.observedCall == identifier else { return }
             guard peer.status == .active, peer.role == configuration.role.peer, let peerCall = peer.call else {
-                Diagnostics.shared.record("voice.peer.checked", info: ["status": peer.status.rawValue])
+                self.diagnostics?.record("voice.peer.checked", info: ["status": peer.status.rawValue])
                 return
             }
             let local = await transport.localStatus()
@@ -216,6 +258,7 @@ enum VoicePeerControl {
             // call started while this observer is running may initiate End.
             guard !Task.isCancelled, self.observedCall == identifier, local.status == .active,
                   local.role == configuration.role, let localCall = local.call, localCall.matches(identifier),
+                  local.schedule == configuration.schedule, peer.schedule == configuration.schedule,
                   let localStart = local.startedAtMilliseconds, let peerStart = peer.startedAtMilliseconds,
                   localStart > 0, peerStart > 0, localStart >= self.observingSinceMilliseconds else { return }
             // Compare the persisted starts of these exact sessions. SSH
@@ -223,7 +266,10 @@ enum VoicePeerControl {
             let startDifference = localStart - peerStart
             let endPeer: Bool
             if abs(startDifference) <= Self.duplicateStartWindowMilliseconds {
-                endPeer = configuration.role == .primary
+                // Anchor a duplicate to its first observed start, so both Macs
+                // use the same local hour even if the pair straddles a boundary.
+                let winner = configuration.schedule?.winner(atMilliseconds: min(localStart, peerStart)) ?? .primary
+                endPeer = configuration.role == winner
             } else {
                 // Only the newly started side initiates a takeover. An older
                 // call noticed late must not send a second End.
@@ -239,12 +285,12 @@ enum VoicePeerControl {
             // cancel this startup task. The End already sent still needs its
             // read-only confirmation even when the observation has changed.
             guard result.status == .endRequested else {
-                Diagnostics.shared.record("voice.peer.end", info: ["status": result.status.rawValue])
+                self.diagnostics?.record("voice.peer.end", info: ["status": result.status.rawValue])
                 return
             }
             let after = endPeer ? await transport.confirmPeer(peerCall) : await transport.confirmLocal(localCall)
             let confirmed = after.status == .ended && after.call == result.call
-            Diagnostics.shared.record("voice.peer.end", info: ["status": confirmed ? "confirmed" : "unconfirmed"])
+            self.diagnostics?.record("voice.peer.end", info: ["status": confirmed ? "confirmed" : "unconfirmed"])
         }
         return task
     }

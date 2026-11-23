@@ -34,7 +34,7 @@ import Foundation
             confirmLocal: { call in calls.append("confirm-local"); return .init(status: .ended, call: call) },
             confirmPeer: { call in calls.append("confirm-peer"); return .init(status: .ended, call: call) })
         let primary = VoicePeerPriority(configuration: .init(machine: "secondary", role: .primary),
-                                        transport: transport, observingSince: observingSince)
+                                        transport: transport, observingSince: observingSince, diagnostics: nil)
         precondition(primary.observe(ledgerOnly) == nil && calls.isEmpty)
         await primary.observe(active)?.value
         precondition(calls == ["peer", "local", "end-peer", "confirm-peer"])
@@ -61,7 +61,7 @@ import Foundation
         primary.stop()
 
         let secondary = VoicePeerPriority(configuration: .init(machine: "primary", role: .secondary),
-                                          transport: transport, observingSince: observingSince)
+                                          transport: transport, observingSince: observingSince, diagnostics: nil)
         func checkSecondary(localStart: Int64, peerStart: Int64?, expected: [String]) async {
             calls.removeAll()
             secondary.stop()
@@ -79,6 +79,56 @@ import Foundation
         await checkSecondary(localStart: 230_001, peerStart: nil, expected: ["peer", "local"])
         await checkSecondary(localStart: 99_999, peerStart: 60_000, expected: ["peer", "local"])
 
+        let london = VoicePeerSchedule(startHour: 2, endHour: 11, timeZone: "Europe/London")!
+        func milliseconds(_ utc: String) -> Int64 {
+            Int64(ISO8601DateFormatter().date(from: utc)!.timeIntervalSince1970 * 1000)
+        }
+        let scheduleCases: [(String, VoicePeerConfiguration.Role)] = [
+            ("2026-11-23T01:59:59Z", .primary), ("2026-11-23T02:00:00Z", .secondary),
+            ("2026-11-23T10:59:59Z", .secondary), ("2026-11-23T11:00:00Z", .primary),
+            ("2026-03-29T00:59:59Z", .primary), ("2026-03-29T01:00:00Z", .secondary),
+            ("2026-03-29T10:00:00Z", .primary),
+            ("2026-10-25T00:30:00Z", .primary), ("2026-10-25T01:30:00Z", .primary),
+            ("2026-10-25T02:00:00Z", .secondary),
+        ]
+        for (utc, winner) in scheduleCases {
+            precondition(london.winner(atMilliseconds: milliseconds(utc)) == winner, "UK schedule at \(utc)")
+        }
+        precondition(VoicePeerSchedule(startHour: 24, endHour: 11, timeZone: "Europe/London") == nil)
+        precondition(VoicePeerSchedule(startHour: 2, endHour: 11, timeZone: "Invalid/Zone") == nil)
+        let overnight = VoicePeerSchedule(startHour: 22, endHour: 7, timeZone: "Europe/London")!
+        precondition(overnight.winner(atMilliseconds: milliseconds("2026-11-23T04:00:00Z")) == .secondary)
+        precondition(overnight.winner(atMilliseconds: milliseconds("2026-11-23T12:00:00Z")) == .primary)
+
+        onLocalEnd = nil
+        func checkScheduled(_ role: VoicePeerConfiguration.Role, firstLocal: Bool, firstUTC: String,
+                            gap: Int64, peerSchedule: VoicePeerSchedule?, expected: [String]) async {
+            let first = milliseconds(firstUTC), later = first + gap
+            let observer = VoicePeerPriority(configuration: .init(machine: "peer", role: role, schedule: london),
+                                             transport: transport, observingSince: observingSince, diagnostics: nil)
+            calls.removeAll()
+            localStatus = .init(status: .active, call: local, role: role,
+                                startedAtMilliseconds: firstLocal ? first : later, schedule: london)
+            peerStatus = .init(status: .active, call: peer, role: role.peer,
+                               startedAtMilliseconds: firstLocal ? later : first, schedule: peerSchedule)
+            await observer.observe(active)?.value
+            precondition(calls == ["peer", "local"] + expected, "Arbitration at \(firstUTC) on \(role): \(calls)")
+        }
+        for (first, winner) in [("2026-11-23T01:59:59Z", VoicePeerConfiguration.Role.primary),
+                                ("2026-11-23T10:59:59Z", .secondary)] {
+            // The same pair viewed from opposite Macs must end the same call.
+            await checkScheduled(.primary, firstLocal: true, firstUTC: first, gap: 30_000, peerSchedule: london,
+                                 expected: winner == .primary ? ["end-peer", "confirm-peer"] : ["end-local", "confirm-local"])
+            await checkScheduled(.secondary, firstLocal: false, firstUTC: first, gap: 30_000, peerSchedule: london,
+                                 expected: winner == .secondary ? ["end-peer", "confirm-peer"] : ["end-local", "confirm-local"])
+        }
+        await checkScheduled(.secondary, firstLocal: false, firstUTC: "2026-11-23T12:00:00Z",
+                             gap: 30_001, peerSchedule: london, expected: ["end-peer", "confirm-peer"])
+        await checkScheduled(.primary, firstLocal: false, firstUTC: "2026-11-23T03:00:00Z",
+                             gap: 30_001, peerSchedule: london, expected: ["end-peer", "confirm-peer"])
+        await checkScheduled(.secondary, firstLocal: false, firstUTC: "2026-11-23T03:00:00Z",
+                             gap: 1, peerSchedule: nil, expected: [])
+
         precondition(VoicePeerCall(token: identifier + ":0") == nil)
         precondition(VoicePeerConfiguration(machine: "-option", role: .primary) == nil)
         precondition(VoicePeerConfiguration(machine: "bad host", role: .primary) == nil)
@@ -90,6 +140,11 @@ import Foundation
         defaults.set(["machine": "paired-mac", "role": "primary"], forKey: "voicePeerPriority")
         precondition(VoicePeerConfiguration(defaults: defaults)?.machine == "paired-mac")
         precondition(VoicePeerConfiguration(defaults: defaults)?.role == .primary)
+        defaults.set(["machine": "paired-mac", "role": "primary", "secondaryStartHour": 2], forKey: "voicePeerPriority")
+        precondition(VoicePeerConfiguration(defaults: defaults) == nil)
+        defaults.set(["machine": "paired-mac", "role": "primary", "secondaryStartHour": 2,
+                      "secondaryEndHour": 11, "timeZone": "Europe/London"], forKey: "voicePeerPriority")
+        precondition(VoicePeerConfiguration(defaults: defaults)?.schedule == london)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("VoicePeerMailbox-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let expired = VoicePeerMailbox.Request(action: .end, call: local, expires: Date().timeIntervalSince1970 - 1)
