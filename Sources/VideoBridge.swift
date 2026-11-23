@@ -5,8 +5,49 @@ import Foundation
 // "play video" to work with any browser video. This file never touches Codex Voice: a reply
 // can only update availability or report one command's outcome.
 enum VideoCommand: String, CaseIterable, Hashable {
-    case pause, play
-    var slot: PhraseSlot { self == .pause ? .pauseVideoPhrase : .playVideoPhrase }
+    case pause, play, rewindFive, rewindTen, rewind
+    static let rewindSecondsPreference = "rewindVideoSeconds"
+    static func rewindSeconds(in defaults: UserDefaults = .standard) -> Int {
+        let value = defaults.integer(forKey: rewindSecondsPreference)
+        return durationRange.contains(value) ? value : 10
+    }
+    static let durationRange = 1...3600
+    func resolved(rewindSeconds: Int) -> Self {
+        guard self == .rewind else { return self }
+        switch rewindSeconds {
+        case 5: return .rewindFive
+        case 10: return .rewindTen
+        default: return .rewind
+        }
+    }
+    var setsPlaybackState: Bool { self == .pause || self == .play }
+    static func isSuperseded(_ command: VideoCommand, at position: Int, lastPlayback: Int?) -> Bool {
+        command.setsPlaybackState && position != lastPlayback
+    }
+
+    var slot: PhraseSlot {
+        switch self {
+        case .pause: return .pauseVideoPhrase
+        case .play: return .playVideoPhrase
+        case .rewind: return .rewindVideoPhrase
+        case .rewindFive: return .rewindFivePhrase
+        case .rewindTen: return .rewindTenPhrase
+        }
+    }
+    var unchangedReason: String {
+        switch self {
+        case .pause: return "already-paused"
+        case .play: return "already-playing"
+        case .rewind, .rewindFive, .rewindTen: return "at-start"
+        }
+    }
+    var successMessage: String {
+        switch self {
+        case .pause: return "Paused the browser video"
+        case .play: return "Playing the browser video"
+        case .rewind, .rewindFive, .rewindTen: return "Rewound the browser video"
+        }
+    }
 }
 
 enum VideoBridgeUnavailableReason: Equatable {
@@ -32,6 +73,7 @@ enum VideoBridgeAvailability: Equatable {
 
 enum VideoCommandOutcome: Equatable {
     case changed
+    case rewound(Double)
     case unchanged(String) // The extension's reason, such as already-paused or no-video.
     case unavailable
     case rejected          // Too old or malformed; nothing ran in Chrome.
@@ -40,14 +82,16 @@ enum VideoCommandOutcome: Equatable {
     // missing video or rejected play must not sound like success.
     func confirms(_ command: VideoCommand) -> Bool {
         switch self {
-        case .changed: return true
-        case .unchanged(let reason): return reason == (command == .pause ? "already-paused" : "already-playing")
+        case .changed, .rewound: return true
+        case .unchanged(let reason): return reason == command.unchangedReason
         case .unavailable, .rejected, .unconfirmed: return false
         }
     }
     func summary(for command: VideoCommand) -> String {
         switch self {
-        case .changed: return command == .pause ? "Paused the browser video" : "Playing the browser video"
+        case .rewound(let seconds): return "Rewound the video by \(seconds.formatted(.number.precision(.fractionLength(0...1)))) seconds"
+        case .changed: return command.successMessage
+        case .unchanged("at-start"): return "The video is already at the start"
         case .unchanged("already-paused"): return "Browser video is already paused"
         case .unchanged("already-playing"): return "Browser video is already playing"
         case .unchanged("play-blocked"): return "Chrome blocked video playback"
@@ -61,6 +105,7 @@ enum VideoCommandOutcome: Equatable {
     }
     var diagnostic: String {
         switch self {
+        case .rewound(let seconds): return "rewound:\(seconds)"
         case .changed: return "changed"
         case .unchanged(let reason): return "unchanged:\(reason)"
         case .unavailable: return "unavailable"
@@ -77,11 +122,12 @@ struct VideoBridgeReply: Equatable {
     var changed: Bool?
     var reason: String?
     var protocolVersion: Int?
+    var movedSeconds: Double? = nil
 }
 
 protocol VideoBridgeTransport: AnyObject {
     var onReply: (@MainActor (VideoBridgeReply) -> Void)? { get set }
-    func post(requestId: String, action: String, issuedAt: Int)
+    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?)
 }
 
 // Must match HelloChatVideoNotification in Agent Flow Bridge's AgentFlowBridgeShared.swift.
@@ -97,16 +143,19 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
             name: Self.reply, object: nil, suspensionBehavior: .deliverImmediately)
     }
     deinit { DistributedNotificationCenter.default().removeObserver(self) }
-    func post(requestId: String, action: String, issuedAt: Int) {
+    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?) {
+        var fields: [String: Any] = ["requestId": requestId, "action": action, "issuedAt": issuedAt]
+        if let seconds { fields["seekSeconds"] = -seconds }
         DistributedNotificationCenter.default().postNotificationName(Self.request, object: nil,
-            userInfo: ["requestId": requestId, "action": action, "issuedAt": issuedAt], deliverImmediately: true)
+            userInfo: fields, deliverImmediately: true)
     }
     @objc private func received(_ notification: Notification) {
         guard let info = notification.userInfo, let requestId = info["requestId"] as? String,
               let action = info["action"] as? String, let state = info["state"] as? String else { return }
         let reply = VideoBridgeReply(requestId: requestId, action: action, state: state,
             changed: (info["changed"] as? NSNumber)?.boolValue, reason: info["reason"] as? String,
-            protocolVersion: (info["protocolVersion"] as? NSNumber)?.intValue)
+            protocolVersion: (info["protocolVersion"] as? NSNumber)?.intValue,
+            movedSeconds: (info["movedSeconds"] as? NSNumber)?.doubleValue)
         Task { @MainActor [weak self] in self?.onReply?(reply) }
     }
 }
@@ -151,7 +200,7 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
         return { task.cancel() }
     }
 
-    // Status is a version check only; it never asks Chrome to touch a tab.
+    // Status checks the live extension without operating a tab.
     func refresh() {
         guard !pending.values.contains(where: { $0.action == "status" }) else { return }
         start(action: "status", completion: nil, timeout: Self.statusTimeout)
@@ -160,6 +209,37 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
     // One request, one reply. A timeout reports unconfirmed and checks status; it never resends.
     func send(_ command: VideoCommand, completion: @escaping @MainActor (VideoCommandOutcome) -> Void = { _ in }) {
         start(action: command.rawValue, completion: completion, timeout: Self.commandTimeout)
+    }
+
+    // Check the live extension immediately before sending an action. A disconnected
+    // extension can never receive an old command after it reconnects.
+    func sendIfAvailable(_ command: VideoCommand, seconds: Int = VideoCommand.rewindSeconds(), shouldSend: @escaping @MainActor () -> Bool = { true }, completion: @escaping @MainActor (VideoCommandOutcome) -> Void) {
+        if command == .rewind {
+            guard VideoCommand.durationRange.contains(seconds) else { completion(.rejected); return }
+            probeRewind(custom: true) { [weak self] ready in
+                guard ready, let self else { completion(.unavailable); return }
+                guard shouldSend() else { completion(.rejected); return }
+                self.start(action: command.rawValue, seconds: seconds, completion: completion, timeout: Self.commandTimeout)
+            }
+        } else if command.slot.isRewind {
+            probeRewind { [weak self] ready in
+                guard ready, let self else { completion(.unavailable); return }
+                guard shouldSend() else { completion(.rejected); return }
+                self.send(command, completion: completion)
+            }
+        } else {
+            start(action: "status", completion: { [weak self] status in
+                guard status == .unchanged("connected"), let self else { completion(.unavailable); return }
+                guard shouldSend() else { completion(.rejected); return }
+                self.send(command, completion: completion)
+            }, timeout: Self.statusTimeout)
+        }
+    }
+
+    func probeRewind(custom: Bool = false, completion: @escaping @MainActor (Bool) -> Void) {
+        start(action: custom ? "seekStatus" : "rewindStatus", completion: { outcome in
+            completion(outcome == .unchanged(custom ? "custom-seek-supported" : "rewind-supported"))
+        }, timeout: Self.statusTimeout)
     }
 
     func stop() {
@@ -176,14 +256,20 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
         switch (reply.state, entry.action == "status") {
         case ("available", true):
             apply(compatible ? .available : .unavailable(.incompatible), sequence: entry.sequence)
+            entry.completion?(compatible ? .unchanged("connected") : .unavailable)
         case ("done", false) where compatible:
             apply(.available, sequence: entry.sequence)
-            entry.completion?(reply.changed == true ? .changed : .unchanged(reply.reason ?? "no-video"))
+            if reply.changed == true, let seconds = reply.movedSeconds, seconds.isFinite, seconds > 0 {
+                entry.completion?(.rewound(seconds))
+            } else {
+                entry.completion?(reply.changed == true ? .changed : .unchanged(reply.reason ?? "no-video"))
+            }
         case ("unavailable", _):
             apply(.unavailable(.notConnected), sequence: entry.sequence)
             entry.completion?(.unavailable)
         case ("rejected", true):
             apply(.unavailable(.noReply), sequence: entry.sequence)
+            entry.completion?(.unavailable)
         case ("rejected", false):
             entry.completion?(.rejected)
         default:
@@ -192,19 +278,20 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
         }
     }
 
-    private func start(action: String, completion: (@MainActor (VideoCommandOutcome) -> Void)?, timeout: TimeInterval) {
+    private func start(action: String, seconds: Int? = nil, completion: (@MainActor (VideoCommandOutcome) -> Void)?, timeout: TimeInterval) {
         let id = makeID()
         sequence += 1
         pending[id] = Pending(action: action, sequence: sequence, completion: completion)
         let cancel = schedule(timeout) { [weak self] in self?.expire(id) }
         if pending[id] != nil { pending[id]?.cancelTimer = cancel } else { cancel() }
-        transport.post(requestId: id, action: action, issuedAt: now())
+        transport.post(requestId: id, action: action, issuedAt: now(), seconds: seconds)
     }
 
     private func expire(_ id: String) {
         guard let entry = pending.removeValue(forKey: id) else { return }
         if entry.action == "status" {
             apply(.unavailable(.noReply), sequence: entry.sequence)
+            entry.completion?(.unavailable)
         } else {
             entry.completion?(.unconfirmed)
             refresh()
@@ -218,6 +305,6 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
     }
 }
 
-// Spoken video commands share H Chat's phrase, mention, negation and occurrence rules. Matching
-// and consumption never depend on bridge availability, and nothing here can open Voice.
+// Consume the occurrence first. Dispatch checks the current extension connection,
+// so a later reconnection cannot replay an ignored phrase.
 typealias VideoPhraseDetectors = CommandPhraseDetectors<VideoCommand>

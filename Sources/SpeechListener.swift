@@ -114,9 +114,10 @@ import CoreAudio
             await worker.close()
             throw BridgeError.message("No supported microphone is available.")
         }
-        // Keep roughly one second of newest audio. A temporary scheduling stall
-        // drops stale buffers; the consumer resets state across the sequence gap.
-        let (stream, continuation) = AsyncStream<Frame>.makeStream(bufferingPolicy: .bufferingNewest(12))
+        // “Switch speakers computer” lost its destination during a short live backlog.
+        // Leave the recorder fixture's pacing alone. Only buffer when inference falls behind.
+        let capacity = capture == nil ? 12 : SpeechContinuity.liveBufferCount(sampleRate: format.sampleRate)
+        let (stream, continuation) = AsyncStream<Frame>.makeStream(bufferingPolicy: .bufferingNewest(capacity))
         self.continuation = continuation
         var meterFrames = 0
         var sequence: UInt64 = 0
@@ -165,14 +166,14 @@ import CoreAudio
             // Observe before starting: a stop/configuration event during start
             // must not leave a running-looking listener with no audio.
             self.capture = capture
-            do { try capture.start(bufferFrames: 4096, onBuffer: deliver, onConfigurationChange: configurationChanged) }
+            do { try capture.start(bufferFrames: SpeechContinuity.captureFrames, onBuffer: deliver, onConfigurationChange: configurationChanged) }
             catch { stop(); await worker.close(); throw error }
             diagnostics?.record("speech.capture.formats", numbers: capture.formatDiagnostics(), info: ["phase": "after_start"])
         }
         resultAudioSeconds = 0; resultWasFlushed = false; recordingError = nil
         diagnostics?.record("speech.capture.started", numbers: ["sample_rate": format.sampleRate, "channels": Double(format.channelCount)])
         if let capture { diagnostics?.record("speech.capture.route", numbers: ["current_device": Double(capture.currentDevice ?? 0)], info: ["engine_running": String(capture.isRunning)]) }
-        processing = Task(priority: .utility) { [weak self] in
+        processing = Task(priority: capture == nil ? .utility : .userInitiated) { [weak self] in
             var continuity = SpeechContinuity()
             var timing = SpeechTimingTracker()
             var frames = 0, textUpdates = 0, gaps = 0
@@ -190,7 +191,7 @@ import CoreAudio
                     if boundaryReset || gap {
                         if !boundaryReset {
                             gaps += 1
-                            self.diagnostics?.record("speech.audio_gap")
+                            self.diagnostics?.record("speech.audio_gap", numbers: ["missing_buffers": Double(continuity.missingFrames), "queue_capacity": Double(capacity)])
                             self.onDelay?()
                         }
                         let resetting = Diagnostics.now

@@ -20,6 +20,70 @@ import Darwin
             print(String(decoding: try! JSONEncoder().encode(result), as: UTF8.self))
             exit(["observed", "unchanged", "confirmed"].contains(result.status) ? 0 : 1)
         }
+        if arguments.first == "--voice-command-receipt" {
+            // The skill supplies the real session and input frame time. Only a live local call can
+            // grant an exclusive fallback. A read-only check can still explain an already-ended call.
+            guard arguments.count == 9, let thread = UUID(uuidString: arguments[1]),
+                  let session = UUID(uuidString: arguments[2]), let frame = UUID(uuidString: arguments[3]),
+                  let from = Double(arguments[4]), let through = Double(arguments[5]),
+                  ["check", "claim"].contains(arguments[8]) else { print("invalid"); exit(2) }
+            let action = arguments[6], supplied = arguments[7]
+            let supported = Set(PhraseSlot.allCases.map(\.rawValue) + VoiceAudioAction.allCases.map(\.rawValue) + ["app", "speakerOutput"])
+            guard supported.contains(action), supplied.count <= 160,
+                  (action == "app" || action == "speakerOutput") == !supplied.isEmpty else { print("invalid"); exit(2) }
+            let target: String
+            switch action {
+            case "app": target = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)).commandTarget(supplied)
+            case "speakerOutput":
+                guard let output = SpeakerOutputSettings.load().receiptTarget(supplied) else { print("unknownSpeaker"); return }
+                target = output
+            default: target = ""
+            }
+            let callKey = thread.uuidString.lowercased() + ":" + session.uuidString.lowercased()
+            let claim = arguments[8] == "claim"
+            if claim {
+                let current = VoicePeerControl.localStatus()
+                guard current.status == .active, current.call?.thread == thread, current.call?.session == session
+                else { print("inactiveOrUnknown"); return }
+            }
+            do {
+                print(try SpokenCommandJournal.shared.decide(action: action, target: target, session: callKey,
+                    frame: frame, from: from, through: through, allowFallback: claim))
+            } catch { print("journalUnavailable"); exit(1) }
+            return
+        }
+        if arguments == ["--browser-rewind-status"] || arguments == ["--browser-custom-rewind-status"] {
+            Task { @MainActor in
+                let bridge = VideoBridge()
+                bridge.probeRewind(custom: arguments == ["--browser-custom-rewind-status"]) { supported in
+                    withExtendedLifetime(bridge) { print(supported ? "supported" : "unavailable") }
+                    exit(supported ? 0 : 1)
+                }
+            }
+            RunLoop.main.run()
+            return
+        }
+        if arguments.count == 2, arguments[0] == "--browser-video", let requested = VideoCommand(rawValue: arguments[1]) {
+            let command = requested.resolved(rewindSeconds: VideoCommand.rewindSeconds())
+            Task { @MainActor in
+                let bridge = VideoBridge()
+                bridge.sendIfAvailable(command) { outcome in
+                    withExtendedLifetime(bridge) { print(outcome.diagnostic) }
+                    exit(outcome.confirms(command) ? 0 : 1)
+                }
+            }
+            RunLoop.main.run()
+            return
+        }
+        if arguments == ["--show-current-voice"] {
+            Task { @MainActor in
+                let result = await ShowVoiceCommand.perform()
+                print(result.message)
+                exit(result.didOpen ? 0 : 1)
+            }
+            RunLoop.main.run()
+            return
+        }
         if ["--voice-peer-status", "--voice-peer-end", "--voice-peer-confirm-end"].contains(arguments.first ?? "") {
             let receipt: VoicePeerReceipt
             let expires = Date().timeIntervalSince1970 + 4
@@ -30,8 +94,7 @@ import Darwin
             } else if arguments.count == 2, arguments[0] == "--voice-peer-confirm-end",
                       let call = VoicePeerCall(token: arguments[1]) {
                 receipt = VoicePeerMailbox.submit(.init(action: .confirmEnd, call: call, expires: expires))
-            } else if arguments.count == 4, arguments[0] == "--voice-peer-end",
-                      arguments[3] == VoicePeerReceipt.endVersion,
+            } else if arguments.count == 4, arguments[0] == "--voice-peer-end", arguments[3] == "v2",
                       let call = VoicePeerCall(token: arguments[1]), let deadline = TimeInterval(arguments[2]) {
                 receipt = VoicePeerMailbox.submit(.init(action: .end, call: call, expires: deadline))
             } else {
@@ -428,9 +491,13 @@ struct MainView: View {
                                    viewportHeight: viewport.size.height, scale: zoom.scale,
                                    controlPhrases: model.controlPhrases, patterns: model.phrasePatterns)
                         .id(model.transcriptBatchID) // A new recognition batch releases held text and selection from the previous batch.
+                    // One place for command outcomes. The model words each result; this row shows it
+                    // as written, with any reason from the command, and links to the history.
+                    LastCommandRow(message: model.lastCommandMessage, detail: model.lastCommandDetail) { model.openCommandHistory() }
                 } header: {
                     HStack {
-                        Text("Heard (local model)")
+                        Text("Live transcription").accessibilityIdentifier("liveTranscriptionTitle")
+                        CommandInfoButton(title: "Live transcription", detail: "Shows what H Chat heard on this Mac. Green marks an exact phrase and orange an alternate spelling. A highlight means the phrase was heard. Last command shows what happened next.")
                         Spacer()
                         Button(model.chatActionTitle) { model.toggleChat() }
                             .buttonStyle(.bordered)
@@ -465,9 +532,13 @@ struct MainView: View {
                             .accessibilityIdentifier("errorMessage")
                     }
                 }
-                Section("Listening (say it twice if detection is wonky)") {
-                    Toggle("Listen for wake phrase", isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() }))
-                        .disabled(model.busy && !preparing && !model.enabled)
+                Section("Commands") {
+                    Toggle(isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() })) {
+                        HStack(spacing: 6) {
+                            Text("Listening enabled")
+                            CommandInfoButton(title: "Listening enabled", detail: "When on, H Chat listens for the phrases below with the command microphone. Speech is recognized on this Mac.")
+                        }
+                    }.disabled(model.busy && !preparing && !model.enabled)
                         .accessibilityIdentifier("listeningToggle")
                     // Preserve Ethan's removal of redundant always-visible status/instruction rows.
                     // Explain only preparation, dock waiting or interrupted capture on Home.
@@ -479,37 +550,7 @@ struct MainView: View {
                                 .accessibilityIdentifier("listeningDetail")
                         }
                     }
-                    PhraseFields(model: model)
-                    VideoControls(model: model, bridge: model.videoBridge)
-                    PhraseFields(model: model, slots: PhraseSlot.musicSlots)
-                    PhraseFields(model: model, slots: PhraseSlot.desktopSlots)
-                    Button("Switch speakers…") { showingSpeakerOutput = true }
-                        .accessibilityIdentifier("speakerOutputSettings")
-                        .sheet(isPresented: $showingSpeakerOutput) {
-                            SpeakerOutputEditor(initial: model.speakerOutputSettings, otherPatterns: model.speakerOutputConflictingPhrases, save: model.saveSpeakerOutputSettings)
-                        }
-                    if let status = model.speakerOutputStatus {
-                        Text(status).foregroundStyle(.secondary).accessibilityIdentifier("speakerOutputStatus")
-                    }
-                    if let phrase = model.speakerOutputConflict {
-                        Text("Speaker phrases are off. Already used by another command: \(phrase)")
-                            .foregroundStyle(.red).accessibilityIdentifier("speakerOutputConflict")
-                    }
-                    if let status = model.desktopCommandStatus {
-                        Text(status).foregroundStyle(.secondary).accessibilityIdentifier("desktopCommandStatus")
-                    }
-                    // Ethan wants to change the microphone from the home page.
-                    // Home owns the only microphone editor; Settings keeps advanced options.
-                    MicrophoneSettings(inputs: model.inputs)
-                    Picker("Speech model", selection: $model.speechModel) {
-                        ForEach(SpeechModel.allCases) { choice in
-                            Text(choice.title).tag(choice)
-                        }
-                    }
-                    .disabled(model.busy || model.checkingSpeech || model.changingModel)
-                    .accessibilityIdentifier("speechModelPicker")
-                    NativeMeter(meter: model.meter, active: model.detectionRunning)
-                    Text(model.speechModel.detail).foregroundStyle(.secondary)
+                    // Permission problems stop listening or commands, so they stay beside the toggle.
                     if !model.micAllowed {
                         if model.micPermissionDenied {
                             Link("Microphone settings…", destination: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
@@ -522,6 +563,50 @@ struct MainView: View {
                         Button("Accessibility settings…") { model.requestAccessibilityPermission() }
                             .accessibilityIdentifier("accessibilitySettingsLink")
                         Text("Allow Hello Chat to send shortcuts and read Codex Voice controls.").foregroundStyle(.secondary)
+                    }
+                    // Ethan wants to change the microphone from the home page.
+                    // Home owns the only microphone editor; Settings keeps advanced options.
+                    MicrophoneSettings(inputs: model.inputs)
+                    NativeMeter(meter: model.meter, active: model.detectionRunning)
+                    Picker(selection: $model.speechModel) {
+                        ForEach(SpeechModel.allCases) { choice in
+                            Text(choice.title).tag(choice)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("Speech model")
+                            CommandInfoButton(title: "Speech model", detail: "Turns command microphone audio into text on this Mac. \(model.speechModel.detail)")
+                        }
+                    }
+                    .disabled(model.busy || model.checkingSpeech || model.changingModel)
+                    .accessibilityIdentifier("speechModelPicker")
+                    // Rows take value snapshots, so live transcript updates don't rebuild every command row.
+                    PhraseFields(model: model, configuration: model.phraseConfiguration).equatable()
+                    VideoControls(model: model, bridge: model.videoBridge, configuration: model.phraseConfiguration,
+                                  rewindSeconds: model.rewindVideoSeconds).equatable()
+                    PhraseFields(model: model, configuration: model.phraseConfiguration, slots: PhraseSlot.musicSlots).equatable()
+                    PhraseFields(model: model, configuration: model.phraseConfiguration, slots: PhraseSlot.desktopSlots).equatable()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text("Switch speakers")
+                                CommandInfoButton(title: "Switch speakers", detail: "Switches Mac audio to a speaker you’ve added. Say a phrase followed by its name. This keeps your microphone and alert output in place.")
+                            }
+                            let names = model.speakerOutputSettings.destinations.compactMap { SpeakerOutputSettings.lines($0.names).first }
+                            Text(names.isEmpty ? "No speakers added" : names.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        CommandSettingsButton(title: "Switch speakers") { showingSpeakerOutput = true }
+                            .accessibilityIdentifier("speakerOutputSettings")
+                    }
+                        .sheet(isPresented: $showingSpeakerOutput) {
+                            SpeakerOutputEditor(initial: model.speakerOutputSettings, otherPatterns: model.speakerOutputConflictingPhrases, preview: model.previewSound, save: model.saveSpeakerOutputSettings)
+                        }
+                    // A configuration error, not a command outcome, so it stays beside its command.
+                    if let phrase = model.speakerOutputConflict {
+                        Label("Switch speakers is off because another command already uses “\(phrase)”.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.red).accessibilityIdentifier("speakerOutputConflict")
                     }
                 }
 
@@ -543,12 +628,63 @@ struct MainView: View {
     }
 }
 
+// The most recent command outcome, directly under what was heard. The text is shown as the
+// model words it; the history opens as a text file with recent outcomes in order.
+private struct LastCommandRow: View {
+    let message: String?
+    let detail: String?
+    let openHistory: () -> Void
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Last command").font(.caption).foregroundStyle(.secondary)
+                Text(message ?? "None yet")
+                    .foregroundStyle(message == nil ? .secondary : .primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("lastCommandMessage")
+                if let detail, detail != message {
+                    Text(detail).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("lastCommandDetail")
+                }
+            }
+            Spacer(minLength: 8)
+            Button(action: openHistory) { Image(systemName: "clock.arrow.circlepath") }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Show command history")
+                .help("Opens a list of recent commands and what happened to each")
+                .accessibilityIdentifier("commandHistoryButton")
+        }
+    }
+}
+
+// Real loads only. Quick results never flash a spinner; slow ones show it after a short delay.
+private struct DelayedProgress: View {
+    let label: String
+    var showsLabel = false
+    @State private var visible = false
+    var body: some View {
+        Group {
+            if showsLabel { ProgressView(label) } else { ProgressView().controlSize(.small) }
+        }
+        .opacity(visible ? 1 : 0)
+        .accessibilityHidden(!visible)
+        .accessibilityLabel(label)
+        .task {
+            do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+            visible = true
+        }
+    }
+}
+
 
 struct PhraseHighlightPreviewApp: App {
     var body: some Scene {
         Window("Hello Chat · \(AppVersion.display)", id: "phrase-preview") {
             Form {
-                Section("Heard (local model)") {
+                Section("Live transcription") {
                     HeardTranscript(text: "Hello chat. Mute chat. Silent chat. Silence chat. Bye chat. By chat. Hello chance.",
                                     phrase: "Hello Chat", endPhrase: "Bye Chat", similar: true, enabled: true)
                     HeardTranscript(text: "Start Lantern. End Lantern. Hello Chat and Bye Chat stay unchanged with custom phrases.",
@@ -586,67 +722,221 @@ private struct SpeakerOutputEditor: View {
     @State private var draft: SpeakerOutputSettings
     @State private var devices: [String] = []
     @State private var saveError: String?
+    @State private var soundDraft = "default"
+    // Saved with the speakers by Done, like the sound; Cancel leaves the stored choice alone.
+    @State private var repeatDraft: Bool
+    @State private var spellingPrefix: String?
+    @AppStorage("similarPhrases") private var alternateSpellings = true
+    @AppStorage(FeedbackSounds.preferenceKey("speakerOutput")) private var savedSound = "default"
     let otherPatterns: [PhrasePattern]
     let save: (SpeakerOutputSettings) -> Bool
-    private var issue: String? {
-        draft.issue ?? draft.conflictingPhrase(with: otherPatterns).map { "Already used by another command: \($0)" }
+    let preview: ((FeedbackSounds.Cue) -> Void)?
+    // Validation expands every phrase, spelling and name, so it runs once per draft change rather
+    // than on every render. Done stays off until the draft is valid; Cancel always discards it.
+    private struct Validation {
+        let problem: String?
+        let spellings: [String: [String]]
     }
-    init(initial: SpeakerOutputSettings, otherPatterns: [PhrasePattern], save: @escaping (SpeakerOutputSettings) -> Bool) {
-        _draft = State(initialValue: initial); self.otherPatterns = otherPatterns; self.save = save
+    @State private var validation: Validation
+    private var problem: String? { validation.problem }
+    @State private var loadingDevices = true
+    @State private var hasOutputHelper = true
+    init(initial: SpeakerOutputSettings, otherPatterns: [PhrasePattern], preview: ((FeedbackSounds.Cue) -> Void)? = nil, save: @escaping (SpeakerOutputSettings) -> Bool) {
+        _draft = State(initialValue: initial); self.otherPatterns = otherPatterns; self.preview = preview; self.save = save
+        _validation = State(initialValue: Self.validate(initial, avoiding: otherPatterns))
+        _repeatDraft = State(initialValue: CommandRepetition.enabled(RepeatCountToggle.speakerOutput))
+    }
+    private static func validate(_ settings: SpeakerOutputSettings, avoiding otherPatterns: [PhrasePattern]) -> Validation {
+        // The same steps as GateModel.saveSpeakerOutputSettings, so Done is never on for a draft it rejects.
+        let effective = settings.cleaned().omittingConflictingBuiltIns(avoiding: otherPatterns)
+        let issue = effective.issue ?? effective.conflictingPhrase(with: otherPatterns).map { "Another command already uses “\($0)”." }
+        return Validation(problem: issue, spellings: effective.prefixSpellings ?? [:])
+    }
+    // A speaker still being added isn't a conflict. Show the next step in grey and keep red for real problems.
+    private var incomplete: Bool {
+        draft.destinations.contains {
+            $0.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || SpeakerOutputSettings.lines($0.names).isEmpty
+        }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Switch speakers").font(.headline)
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save") {
-                    if save(draft) { dismiss() }
-                    else { saveError = "Phrases changed elsewhere. Close and try again." }
-                }.disabled(issue != nil)
-                    .keyboardShortcut(.defaultAction).accessibilityIdentifier("speakerOutputSave")
-            }
-            Text("Say a prefix followed by a speaker name, such as ‘Switch speakers to Kitchen’.")
-                .foregroundStyle(.secondary)
-            ScrollView {
-              Form {
-                Section("Prefixes") {
-                    TextField("One prefix per line", text: $draft.prefixes, axis: .vertical)
-                        .lineLimit(2...5).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("speakerOutputPrefixes")
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Switch speakers").font(.headline).accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Done") { finish() }
+                        .disabled(problem != nil)
+                        .keyboardShortcut(.defaultAction).accessibilityIdentifier("speakerOutputSave")
                 }
-                Section("Speakers") {
-                    ForEach($draft.destinations) { $destination in
-                        LabeledContent("Names, one per line") {
-                            HStack(alignment: .top) {
-                                TextField("Speaker names", text: $destination.names, axis: .vertical)
-                                    .labelsHidden().lineLimit(1...4).accessibilityLabel("Speaker names")
-                                Button { draft.destinations.removeAll { $0.id == destination.id } } label: {
-                                    Image(systemName: "minus.circle")
-                                }.buttonStyle(.plain).accessibilityLabel("Remove speaker")
+                Text("Say a phrase, then a speaker name, such as “Switch speakers to Kitchen”.")
+                    .foregroundStyle(.secondary)
+                RepeatCountToggle(command: RepeatCountToggle.speakerOutput, example: "Switch speakers to Kitchen", draft: $repeatDraft)
+                if !alternateSpellings { AlternateSpellingsOffNote() }
+                if !loadingDevices && !hasOutputHelper {
+                    Label("The speaker switching helper is missing.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
+                if let saveError {
+                    Label(saveError, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                        .accessibilityIdentifier("speakerOutputIssue")
+                } else if incomplete {
+                    Text("Choose an output and enter a name for each speaker.").foregroundStyle(.secondary)
+                        .accessibilityIdentifier("speakerOutputIssue")
+                } else if let problem {
+                    Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                        .accessibilityIdentifier("speakerOutputIssue")
+                }
+            }
+            .padding([.horizontal, .top], 20).padding(.bottom, 4)
+            // One scroll container. A Form inside a ScrollView clipped the last speaker and
+            // showed field titles as a label column.
+            Form {
+                Section("Phrases") {
+                    SpeakerPhraseRows(text: $draft.prefixes, field: "Phrase", add: "Add phrase") { prefix in
+                        let key = PhraseList.key(prefix)
+                        if !key.isEmpty {
+                            let listed = draft.prefixSpellings?[key] ?? SpeakerOutputSettings.builtInSpellings(for: prefix)
+                            let unused = max(0, listed.count - (validation.spellings[key] ?? listed).count)
+                            SpellingCountButton(count: listed.count, unused: alternateSpellings ? unused : 0) {
+                                spellingPrefix = prefix
                             }
-                        }.accessibilityElement(children: .contain)
-                        LabeledContent("Output") {
-                            HStack {
-                                Menu(destination.output.isEmpty ? "Choose output…" : destination.output) {
-                                    ForEach(devices, id: \.self) { name in Button(name) { destination.output = name } }
-                                    if devices.isEmpty { Text("No configured outputs found") }
-                                }.accessibilityLabel("Output device")
-                                    .accessibilityValue(destination.output.isEmpty ? "No output selected" : destination.output)
-                                Image(systemName: "minus.circle").hidden().accessibilityHidden(true)
+                        }
+                    }
+                    if SpeakerOutputSettings.lines(draft.prefixes).isEmpty {
+                        Text("Add a phrase to use this command.").foregroundStyle(.secondary)
+                    } else if draft.cleaned().prefixes != SpeakerOutputSettings.defaultPrefixes {
+                        Button("Restore default phrases") { draft.prefixes = SpeakerOutputSettings.defaultPrefixes }
+                    }
+                }
+                ForEach($draft.destinations) { $destination in
+                    Section {
+                        Picker("Output", selection: $destination.output) {
+                            // The list loads in the background. A saved output isn't called
+                            // unavailable until loading has finished.
+                            Text(loadingDevices ? "Finding outputs…" : devices.isEmpty ? "No outputs found" : "Choose output…").tag("")
+                            ForEach(devices, id: \.self) { name in Text(name).tag(name) }
+                            if !destination.output.isEmpty && !devices.contains(destination.output) {
+                                Text(loadingDevices ? destination.output : destination.output + " (not available)").tag(destination.output)
                             }
-                        }.accessibilityElement(children: .contain)
+                        }.accessibilityLabel("Output device")
+                        SpeakerPhraseRows(text: $destination.names, field: "Speaker name", add: "Add name") { _ in
+                            EmptyView()
+                        }
+                    } header: {
+                        HStack {
+                            Text(SpeakerOutputSettings.lines(destination.names).first ?? "New speaker")
+                            Spacer()
+                            Button("Remove speaker") { draft.destinations.removeAll { $0.id == destination.id } }
+                        }.textCase(nil)
+                    }
+                }
+                Section {
+                    if draft.destinations.isEmpty {
+                        Text("Add a speaker to use this command.").foregroundStyle(.secondary)
                     }
                     Button("Add speaker") { draft.destinations.append(SpeakerDestination(names: "", output: "")) }
                         .accessibilityIdentifier("speakerOutputAdd")
+                } footer: {
+                    Text("Lists connected outputs and saved Bluetooth speakers. Choosing one here doesn't switch to it.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                if let issue = issue ?? saveError { Text(issue).foregroundStyle(.red).accessibilityIdentifier("speakerOutputIssue") }
-              }.fixedSize(horizontal: false, vertical: true).padding(.trailing, 12)
+                if let preview {
+                    Section {
+                        CommandSoundPicker(control: "speakerOutput", title: "Sound", defaultCue: nil, draft: $soundDraft, preview: preview)
+                    }
+                }
             }
-            Text("Choose an output configured in the audio switch helper. Disconnected speakers stay listed.")
-                .font(.caption).foregroundStyle(.secondary)
+            .formStyle(.grouped)
         }
-        .padding(16).frame(width: 600, height: 500)
-        .task { devices = await Task.detached { SpeakerOutput.available() }.value }
+        .frame(minWidth: 520, idealWidth: 600, minHeight: 440, idealHeight: 580)
+        .onAppear { soundDraft = savedSound }
+        .onChange(of: draft) { _, settings in
+            validation = Self.validate(settings, avoiding: otherPatterns)
+            saveError = nil
+        }
+        .task {
+            let inventory = await Task.detached { (SpeakerOutput.helperInstalled, SpeakerOutput.available()) }.value
+            hasOutputHelper = inventory.0
+            devices = inventory.1
+            loadingDevices = false
+        }
+        .sheet(isPresented: Binding(get: { spellingPrefix != nil }, set: { if !$0 { spellingPrefix = nil } })) {
+            if let prefix = spellingPrefix {
+                let key = PhraseList.key(prefix)
+                PhraseDictionaryEditor(slot: nil, phrase: prefix, dictionary: Binding(
+                    get: { draft.prefixSpellings?[key] }, set: { entries in
+                        var spellings = draft.prefixSpellings ?? [:]
+                        spellings[key] = entries
+                        draft.prefixSpellings = spellings
+                    }), builtIn: SpeakerOutputSettings.builtInSpellings(for: prefix), similar: alternateSpellings,
+                    validate: { [draft, otherPatterns] entries in
+                        var proposed = draft
+                        var spellings = proposed.prefixSpellings ?? [:]
+                        spellings[key] = entries
+                        proposed.prefixSpellings = spellings
+                        return Self.validate(proposed, avoiding: otherPatterns).problem
+                    })
+            }
+        }
+    }
+    private func finish() {
+        if save(draft) {
+            savedSound = soundDraft
+            if repeatDraft != CommandRepetition.enabled(RepeatCountToggle.speakerOutput) {
+                CommandRepetition.setEnabled(repeatDraft, command: RepeatCountToggle.speakerOutput)
+            }
+            dismiss()
+        } else {
+            // The model rechecks against the current commands, which can change while this is open.
+            saveError = "Another command changed while this was open. Cancel, then open Switch speakers again."
+        }
+    }
+}
+
+// The speaker editor keeps its saved newline format. A trailing blank can stay
+// in the editor while the user adds a row; only nonempty phrases are recognized.
+private struct SpeakerPhraseRows<Accessory: View>: View {
+    @Binding var text: String
+    let field: String
+    let add: String
+    @ViewBuilder var accessory: (String) -> Accessory
+    @FocusState private var focusedRow: Int?
+
+    var body: some View {
+        let rows = text.components(separatedBy: .newlines)
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(rows.indices, id: \.self) { index in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        // Hidden labels: a grouped Form otherwise repeats the field title beside every row.
+                        TextField(field, text: Binding(get: {
+                            text.components(separatedBy: .newlines)[safe: index] ?? ""
+                        }, set: { value in
+                            var lines = text.components(separatedBy: .newlines)
+                            guard lines.indices.contains(index) else { return }
+                            lines[index] = value
+                            text = lines.joined(separator: "\n")
+                        }), prompt: Text(field))
+                            .labelsHidden().textFieldStyle(.roundedBorder)
+                            .accessibilityLabel(field)
+                            .focused($focusedRow, equals: index)
+                        Button {
+                            var lines = text.components(separatedBy: .newlines)
+                            guard lines.indices.contains(index) else { return }
+                            lines.remove(at: index)
+                            text = lines.joined(separator: "\n")
+                        } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.plain).help("Remove").accessibilityLabel("Remove " + field.lowercased())
+                    }
+                    accessory(rows[index])
+                }
+            }
+            Button(add) {
+                text += "\n"
+                DispatchQueue.main.async { focusedRow = rows.count }
+            }
+        }
     }
 }
 
@@ -654,30 +944,175 @@ private struct SpeakerOutputEditor: View {
 // every trigger and its spellings while retaining the existing saved rows. — GPT-6.1 Sol
 private enum PhraseFocus: Hashable { case main(PhraseSlot), row(UUID) }
 
-private struct PhraseFields: View {
-    @ObservedObject var model: GateModel
-    var slots: [PhraseSlot] = PhraseSlot.voiceSlots
-    @State private var selected: PhraseSlot?
+private struct CommandInfoButton: View {
+    let title: String
+    let detail: String
+    @State private var showing = false
+
+    var body: some View {
+        Button { showing = true } label: { Image(systemName: "info.circle") }
+            .buttonStyle(.borderless)
+            .help("About " + title)
+            .accessibilityLabel("About " + title)
+            .popover(isPresented: $showing) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+                    Text(detail).fixedSize(horizontal: false, vertical: true)
+                }.padding().frame(width: 270, alignment: .leading)
+            }
+    }
+}
+
+private extension PhraseSlot {
+    var commandHelp: String {
+        switch self {
+        case .wakePhrase: return "Starts Codex Voice. If a call is already open, it brings its microphone back on."
+        case .sleepPhrase: return "Ends the current Codex Voice call."
+        case .mutePhrase: return "Mutes the microphone in the current Codex Voice call."
+        case .unmutePhrase: return "Turns the microphone back on in the current Codex Voice call."
+        case .silentPhrase, .silencePhrase: return "Mutes the sound coming from the current Codex Voice call. Other Mac audio isn’t changed."
+        case .unsilencePhrase: return "Turns sound back on in the current Codex Voice call."
+        case .pauseVideoPhrase: return "Pauses the browser video through Agent Flow."
+        case .playVideoPhrase: return "Resumes the browser video through Agent Flow."
+        case .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase: return "Jumps back in the browser video through Agent Flow. Choose how far in the gear."
+        case .pauseMusicPhrase: return "Presses the Mac’s Play/Pause key. If the current media is already paused, it can resume."
+        case .playMusicPhrase: return "Presses the Mac’s Play/Pause key. If the current media is already playing, it can pause."
+        case .switchAppPhrase, .openAppPhrase: return "Say a phrase followed by an app name. H Chat opens it or brings it forward."
+        case .zoomInPhrase: return "Sends Zoom In to the app you’re using."
+        case .zoomOutPhrase: return "Sends Zoom Out to the app you’re using."
+        case .showVoicePhrase: return "Opens the current Voice chat in Codex, or your last Voice chat if the call has ended."
+        }
+    }
+}
+
+private struct CommandSettingsButton: View {
+    let title: String
+    let open: () -> Void
+    var body: some View {
+        Button(action: open) { Image(systemName: "gearshape").frame(width: 22, height: 22) }
+            .help("Configure " + title).accessibilityLabel("Configure " + title)
+    }
+}
+
+// Ethan's repeat count for every command, on by default. The key is the pane's first slot (or
+// speakerOutput), matching GateModel's repeat lookup. Phrase panes save at once like their rows;
+// Switch speakers passes a draft that only its Done saves. One original for the in-app wording;
+// README's How It Works repeat row uses the same sentences, and the website derives from README.
+private struct RepeatCountToggle: View {
+    static let speakerOutput = "speakerOutput"
+    static let settingsHelp = "Say how many times after a command, such as “Zoom in three times”. Turn off Repeat count in a command’s gear on Home."
+    static let guide: String = {
+        guard let url = Bundle.main.url(forResource: "CommandRepetitionHelp", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let content = try? JSONDecoder().decode([String: String].self, from: data),
+              let body = content["body"], let examples = content["examples"] else { return settingsHelp }
+        return examples + "\n\n" + body
+    }()
+    let command: String
+    let example: String
+    let draft: Binding<Bool>?
+    @State private var saved: Bool
+    init(command: String, example: String, draft: Binding<Bool>? = nil) {
+        self.command = command; self.example = example; self.draft = draft
+        _saved = State(initialValue: CommandRepetition.enabled(command))
+    }
+    // Rewind numbers can be a distance, and every music run is another Play/Pause press.
+    private var tooltip: String {
+        let first = "Say how many times after the command, such as “\(example) three times”. Up to 100."
+        switch command {
+        case PhraseSlot.rewindVideoPhrase.rawValue:
+            return first + " Always include “times”, since a number alone can be a distance."
+        case PhraseSlot.pauseMusicPhrase.rawValue, PhraseSlot.playMusicPhrase.rawValue:
+            return first + " Without a number, it runs once. Each run is another Play/Pause press, so an even number can leave playback as it was."
+        default:
+            return first + " Without a number, it runs once."
+        }
+    }
+    var body: some View {
+        Toggle("Repeat count", isOn: draft ?? $saved)
+            .toggleStyle(.checkbox)
+            .help(tooltip)
+            .accessibilityIdentifier(command + "RepeatCount")
+            .onChange(of: saved) { _, value in CommandRepetition.setEnabled(value, command: command) }
+    }
+}
+
+private struct CommandSoundPicker: View {
+    let control: String
+    let title: String
+    let defaultCue: FeedbackSounds.Cue?
+    let preview: (FeedbackSounds.Cue) -> Void
+    @AppStorage private var choice: String
+    let draft: Binding<String>?
+    init(control: String, title: String, defaultCue: FeedbackSounds.Cue?, draft: Binding<String>? = nil, preview: @escaping (FeedbackSounds.Cue) -> Void) {
+        self.control = control; self.title = title; self.defaultCue = defaultCue; self.preview = preview; self.draft = draft
+        _choice = AppStorage(wrappedValue: "default", FeedbackSounds.preferenceKey(control))
+    }
+    @AppStorage("soundEffects") private var enabled = true
+    private var selected: FeedbackSounds.Cue? { FeedbackSounds.selected(draft?.wrappedValue ?? choice, default: defaultCue) }
+    var body: some View {
+        HStack {
+            Picker(title, selection: draft ?? $choice) {
+                Text(defaultCue == nil ? "None (default)" : "Default").tag("default")
+                if defaultCue != nil { Text("None").tag("off") }
+                ForEach(PhraseSlot.allCases) { slot in Text(slot.soundTitle).tag(slot.cue.rawValue) }
+                Text("Microphone command heard").tag(FeedbackSounds.Cue.microphoneDetected.rawValue)
+            }.accessibilityIdentifier(control + "SoundPicker")
+            Button {
+                if let selected { preview(selected) }
+            } label: { Image(systemName: "play.fill") }
+                .disabled(!enabled || selected == nil)
+                .accessibilityLabel("Preview " + title).help("Preview sound")
+        }
+    }
+}
+
+// Home rows read value snapshots instead of observing the model. Live transcript updates still
+// re-render MainView, but these rows only re-render when their phrases or the rewind amount change.
+// Each gear sheet observes the model itself.
+private struct PhraseFields: View, Equatable {
+    let model: GateModel
+    let configuration: PhraseConfiguration
+    let slots: [PhraseSlot]
+    let rewindSeconds: Int
+    @State private var selected: PhraseSlot? = nil
+    init(model: GateModel, configuration: PhraseConfiguration, slots: [PhraseSlot] = PhraseSlot.voiceSlots, rewindSeconds: Int = 10) {
+        self.model = model; self.configuration = configuration; self.slots = slots; self.rewindSeconds = rewindSeconds
+    }
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.configuration == rhs.configuration && lhs.slots == rhs.slots && lhs.rewindSeconds == rhs.rewindSeconds
+    }
+    // The rewind amount appears once, in this explanation, rather than as a second caption line.
+    private func help(for slot: PhraseSlot) -> String {
+        guard slot.isRewind else { return slot.commandHelp }
+        let amount = rewindSeconds == 1 ? "1 second" : "\(rewindSeconds) seconds"
+        return "Jumps back \(amount) in the browser video through Agent Flow. Change the amount in the gear. Phrases that say 5 or 10 seconds always use that amount."
+    }
     var body: some View {
         ForEach(PhraseSlot.settingsGroups(slots), id: \.first) { group in
             if let slot = group.first {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(slot.action.settingsTitle)
-                        let phrases = group.flatMap { model.phraseConfiguration.phrases(for: $0) }
-                        Text(phrases.isEmpty ? "No phrases" : phrases.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 6) {
+                            Text(slot.settingsTitle)
+                            CommandInfoButton(title: slot.settingsTitle, detail: help(for: slot))
+                        }
+                        let phrases = (slot.isRewind ? [.rewindVideoPhrase] : group).flatMap { configuration.phrases(for: $0) }
+                        let actionTitle = slot.settingsTitle.components(separatedBy: " (").first ?? slot.settingsTitle
+                        if phrases.count != 1 || PhraseList.key(phrases[0]) != PhraseList.key(actionTitle) {
+                            Text(phrases.isEmpty ? "No phrases" : phrases.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     Spacer(minLength: 12)
-                    Button("Phrases…") { selected = slot }
-                        .accessibilityLabel(slot.action.settingsTitle)
+                    CommandSettingsButton(title: slot.settingsTitle) { selected = slot }
                         .accessibilityIdentifier(slot.identifier + "Settings")
                 }
             }
         }
         .sheet(item: $selected) { slot in
-            CommandPhrasesView(model: model, slots: slots.filter { $0.action == slot.action })
+            CommandPhrasesView(model: model, slots: PhraseSlot.settingsGroups(slots).first { $0.first == slot } ?? [slot])
         }
     }
 }
@@ -690,48 +1125,131 @@ private struct CommandPhrasesView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focus: PhraseFocus?
     @State private var showingAppSpellings = false
+    @State private var showingSound = false
+    @State private var addedRow: UUID?
+    @State private var showingExplicitRewinds = false
+    // Rewind is one configurable action. The existing 5- and 10-second phrases stay editable
+    // below it with their own sounds, but they aren't a second way to choose an amount.
+    private var listedSlots: [PhraseSlot] { slots.filter { !$0.isRewind || $0 == .rewindVideoPhrase } }
+    private var explicitRewinds: [PhraseSlot] { slots.filter { $0 == .rewindFivePhrase || $0 == .rewindTenPhrase } }
+    // The app cue follows the phrase's first word; new rows with any other verb join Open.
+    private func soundTitle(_ slot: PhraseSlot) -> String {
+        switch slot {
+        case .switchAppPhrase: return "Switch phrases"
+        case .openAppPhrase: return "Open, Show and other phrases"
+        default: return slot.soundTitle
+        }
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(slots.first?.action.settingsTitle ?? "Phrases").font(.headline)
+                Text(slots.first?.settingsTitle ?? "Phrases").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer()
+                // Rows save as you type, so Done only closes. Escape does the same.
                 Button("Done") { commitFocused(); dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text("Changes save automatically. Spaces, punctuation and capitalization may differ.")
-                .font(.caption).foregroundStyle(.secondary)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    ForEach(slots) { slot in
-                      VStack(alignment: .leading, spacing: 12) {
-                        TriggerPhraseEditor(model: model, slot: slot,
-                            text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
-                                          set: { model[keyPath: model.phraseKeyPath(for: slot)] = $0 }),
-                            commit: PhraseCommit(field: .main(slot), focus: $focus, commit: commit), id: nil)
-                        ForEach(Array((model.phraseAliases[slot] ?? []).enumerated()), id: \.element.id) { index, row in
-                            TriggerPhraseEditor(model: model, slot: slot,
-                                text: Binding(get: { model.phraseAliases[slot]?.first { $0.id == row.id }?.text ?? "" },
-                                              set: { model.setPhraseRow(slot, id: row.id, text: $0) }),
-                                commit: PhraseCommit(field: .row(row.id), focus: $focus, commit: commit),
-                                id: row.id, number: index + 2)
+            HStack {
+                if let first = slots.first, !first.isRewind {
+                    // Switch and Open rows form one list. New rows join Open, whose short form
+                    // and fallback suit any verb, such as “Launch app”.
+                    Button("Add phrase") { add(to: first == .switchAppPhrase ? .openAppPhrase : first) }
+                        .accessibilityIdentifier(first.identifier + "Add")
+                }
+                if slots.contains(.switchAppPhrase) {
+                    Button("App spellings…") { showingAppSpellings = true }
+                        .accessibilityIdentifier("appSpellingsButton")
+                }
+                Button("Sound…") { showingSound = true }
+                    .accessibilityIdentifier("configureCommandSound")
+                    .popover(isPresented: $showingSound) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(listedSlots) { slot in
+                                CommandSoundPicker(control: slot.cue.rawValue, title: listedSlots.count == 1 ? "Sound" : soundTitle(slot),
+                                                   defaultCue: slot.cue, preview: model.previewSound)
+                            }
+                            if slots.contains(.mutePhrase) || slots.contains(.unmutePhrase) {
+                                CommandSoundPicker(control: FeedbackSounds.Cue.microphoneDetected.rawValue, title: "Microphone command heard",
+                                                   defaultCue: .microphoneDetected, preview: model.previewSound)
+                            }
+                        }.padding().frame(minWidth: 300)
+                    }
+            }
+            if let first = slots.first {
+                RepeatCountToggle(command: first.rawValue, example: repeatExample(first))
+            }
+            if !model.similarPhrases { AlternateSpellingsOffNote() }
+            if slots.contains(.rewindVideoPhrase) {
+                RewindAmountField(seconds: $model.rewindVideoSeconds)
+            }
+            if slots.contains(.switchAppPhrase), let example = PhraseSlot.switchAppPhrase.example {
+                Text(example).font(.caption).foregroundStyle(.secondary)
+            }
+            ScrollViewReader { reader in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        ForEach(listedSlots) { phraseRows(for: $0) }
+                        if !explicitRewinds.isEmpty {
+                            let count = explicitRewinds.reduce(0) { $0 + model.phraseConfiguration.phrases(for: $1).count }
+                            DisclosureGroup("Phrases that say how far (\(count))", isExpanded: $showingExplicitRewinds) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(explicitRewinds) { slot in
+                                        HStack {
+                                            Text(slot == .rewindFivePhrase ? "5 seconds" : "10 seconds").font(.headline)
+                                            Spacer()
+                                            CommandSoundPicker(control: slot.cue.rawValue, title: "Sound", defaultCue: slot.cue,
+                                                               preview: model.previewSound)
+                                                .fixedSize()
+                                        }
+                                        phraseRows(for: slot)
+                                    }
+                                }.padding(.top, 8)
+                            }.accessibilityIdentifier("explicitRewindPhrases")
                         }
-                        Button("Add phrase") {
-                            let id = model.addPhraseRow(slot)
-                            Task { @MainActor in focus = .row(id) }
-                        }.accessibilityIdentifier(slot.identifier + "Add")
-                      }
+                    }.padding(2)
+                }.onChange(of: addedRow) { _, id in
+                    if let id {
+                        reader.scrollTo(id, anchor: .center)
+                        focus = .row(id)
                     }
-                    if let example = slots.compactMap(\.example).first {
-                        Text(example).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if slots.contains(.switchAppPhrase) {
-                        Button("App spellings…") { showingAppSpellings = true }
-                            .accessibilityIdentifier("appSpellingsButton")
-                    }
-                }.padding(2)
+                }
             }
         }
-        .padding(20).frame(width: 570, height: 560)
+        .padding(20).frame(minWidth: 440, idealWidth: 570, maxWidth: 640, minHeight: 360, idealHeight: 560, maxHeight: 640)
         .sheet(isPresented: $showingAppSpellings) { AppSpellingsView(model: model) }
+    }
+    private func phraseRows(for slot: PhraseSlot) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            editor(slot, id: nil, number: 1, current: model[keyPath: model.phraseKeyPath(for: slot)],
+                   text: Binding(get: { model[keyPath: model.phraseKeyPath(for: slot)] },
+                                 set: { model.renamePhrase(slot, id: nil, old: model[keyPath: model.phraseKeyPath(for: slot)], new: $0) }))
+            ForEach(Array((model.phraseAliases[slot] ?? []).enumerated()), id: \.element.id) { index, row in
+                editor(slot, id: row.id, number: index + 2, current: row.text,
+                       text: Binding(get: { model.phraseAliases[slot]?.first { $0.id == row.id }?.text ?? "" },
+                                     set: { model.renamePhrase(slot, id: row.id, old: model.phraseAliases[slot]?.first { $0.id == row.id }?.text ?? "", new: $0) }))
+                    .id(row.id)
+            }
+        }
+    }
+    // Each row receives value snapshots, so a transcript update while this sheet is open
+    // doesn't recompute every row's spellings.
+    private func editor(_ slot: PhraseSlot, id: UUID?, number: Int, current: String, text: Binding<String>) -> some View {
+        let field: PhraseFocus = id.map { PhraseFocus.row($0) } ?? .main(slot)
+        return TriggerPhraseEditor(model: model, slot: slot, value: current, text: text,
+                                   commit: PhraseCommit(field: field, focus: $focus, commit: commit),
+                                   id: id, number: number, issue: model.phraseIssue(slot, id: id),
+                                   saved: model.phraseDictionaries[slot.spellingKey(for: current)],
+                                   similar: model.similarPhrases, dictionaries: model.matchingDictionaries)
+            .equatable()
+    }
+    // The tooltip's example uses the current main phrase; Switch app needs an app name after it.
+    private func repeatExample(_ slot: PhraseSlot) -> String {
+        let phrase = model[keyPath: model.phraseKeyPath(for: slot)].trimmingCharacters(in: .whitespacesAndNewlines)
+        let main = phrase.isEmpty ? slot.defaultText : phrase
+        return slot == .switchAppPhrase ? main + " Chrome" : main
+    }
+    private func add(to slot: PhraseSlot) {
+        commitFocused()
+        addedRow = model.addPhraseRow(slot)
     }
     private func commitFocused() { if let field = focus { commit(field) } }
     private func commit(_ field: PhraseFocus) {
@@ -742,18 +1260,44 @@ private struct CommandPhrasesView: View {
     }
 }
 
+// The one rewind amount. Type a duration or step one second at a time. Values are kept
+// within the range Agent Flow accepts.
+private struct RewindAmountField: View {
+    @Binding var seconds: Int
+    var body: some View {
+        let range = VideoCommand.durationRange
+        let value = $seconds.changes(in: range)
+        HStack(spacing: 6) {
+            Text("Rewind by")
+            TextField("Seconds", value: value, format: .number)
+                .labelsHidden().textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing).frame(width: 64)
+                .accessibilityLabel("Rewind seconds").accessibilityIdentifier("rewindVideoSeconds")
+            Stepper("Rewind seconds", value: value, in: range)
+                .labelsHidden()
+            Text(seconds == 1 ? "second" : "seconds")
+        }
+    }
+}
+
 // One editor within App prefixes. The native app catalog supplies choices; GateModel owns the
 // saved configuration shared by Switch and Open. Editing never opens an app. — GPT-6.1 Sol
 private struct AppSpellingsView: View {
-    @ObservedObject var model: GateModel
+    // Reads only the app spellings, so the long app list isn't rebuilt on every transcript update.
+    let model: GateModel
+    @State private var names: AppNameSpellings
     @Environment(\.dismiss) private var dismiss
     @State private var apps: [AppCandidate] = []
     @State private var loaded = false
-    @State private var selectedID: String?
+    @State private var selectedID: String? = nil
     @State private var search = ""
     @State private var editing = false
     @State private var draft = ""
     @FocusState private var editorFocused: Bool
+    init(model: GateModel) {
+        self.model = model
+        _names = State(initialValue: model.appNameSpellings)
+    }
     private var selected: AppCandidate? { apps.first { $0.id == selectedID } }
     private var filtered: [AppCandidate] {
         let key = AppResolver.key(search)
@@ -763,19 +1307,19 @@ private struct AppSpellingsView: View {
         do {
             let values = try AppNameSpellings.parse(draft)
             guard let selected else { return nil }
-            let conflicts = model.appNameSpellings.conflicts(values, for: selected.id, among: apps)
+            let conflicts = names.conflicts(values, for: selected.id, among: apps)
             return conflicts.isEmpty ? nil : "Already used by \(conflicts.joined(separator: ", "))."
         } catch { return error.localizedDescription }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("App spellings").font(.headline)
+                Text("App spellings").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button("Close") { dismiss() }.disabled(editing)
+                Button("Done") { dismiss() }.disabled(editing)
                     .accessibilityIdentifier("appSpellingsClose")
             }
-            Text("Add names the local model hears for each app. Switch and Open use the same spellings.")
+            Text("Other names H Chat accepts for each app, for every app phrase. App names always work.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -789,44 +1333,42 @@ private struct AppSpellingsView: View {
                     spellingDetail(selected)
                 } else {
                     Group {
-                        if !loaded { ProgressView("Loading apps…") }
+                        if !loaded { DelayedProgress(label: "Loading apps…", showsLabel: true) }
                         else { Text(filtered.isEmpty ? "No apps found" : "Select an app").foregroundStyle(.secondary) }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-        }.padding(16).frame(width: 570, height: 440)
+        }.padding(16).frame(minWidth: 570, idealWidth: 600, minHeight: 440, idealHeight: 480)
             .interactiveDismissDisabled(editing)
             .onExitCommand { if editing { editing = false } else { dismiss() } }
+            .onReceive(model.$appNameSpellings) { names = $0 }
             .task {
                 apps = await model.appSpellingChoices()
-                selectedID = apps.first { !model.appNameSpellings.spellings(for: $0.id).isEmpty }?.id ?? apps.first?.id
+                selectedID = apps.first { !names.spellings(for: $0.id).isEmpty }?.id ?? apps.first?.id
                 loaded = true
             }
     }
     @ViewBuilder private func spellingDetail(_ app: AppCandidate) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(app.displayName).font(.headline).accessibilityIdentifier("appSpellingSelection")
-            Text("App names always work. Spaces, punctuation and capitalization may differ.")
-                .font(.caption).foregroundStyle(.secondary)
             if editing {
-                Text("One spelling per line. Leave blank to use app names only.").font(.caption).foregroundStyle(.secondary)
+                Text("One per line. Leave empty to use app names only.").font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $draft).font(.body.monospaced()).border(.separator)
                     .accessibilityLabel("App spellings").accessibilityIdentifier("appSpellingEditor")
                     .focused($editorFocused)
                 if let validation { Text(validation).font(.caption).foregroundStyle(.red).accessibilityIdentifier("appSpellingError") }
+                // An edit inside the sheet uses Save; Done closes the sheet.
                 HStack {
                     Button("Cancel") { editing = false }.accessibilityIdentifier("appSpellingCancel")
                     Spacer()
-                    Button(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Use app names only" : "Save") {
+                    Button("Save") {
                         guard let values = try? AppNameSpellings.parse(draft), validation == nil else { return }
                         model.appNameSpellings.overrides[app.id] = values
                         editing = false
                     }.disabled(validation != nil).accessibilityIdentifier("appSpellingSave")
                 }
             } else {
-                Text(model.appNameSpellings.overrides[app.id] == nil ? "Built-in spellings" : "Custom spellings")
-                    .font(.caption).foregroundStyle(.secondary)
-                let values = model.appNameSpellings.spellings(for: app.id)
+                let values = names.spellings(for: app.id)
                 if values.isEmpty {
                     Text("App names only").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -838,8 +1380,8 @@ private struct AppSpellingsView: View {
                         draft = values.joined(separator: "\n"); editing = true; editorFocused = true
                     }.accessibilityIdentifier("appSpellingEdit")
                     Spacer()
-                    if model.appNameSpellings.overrides[app.id] != nil {
-                        Button("Restore built-in") { model.appNameSpellings.overrides[app.id] = nil }
+                    if names.overrides[app.id] != nil {
+                        Button("Restore built-in spellings") { model.appNameSpellings.overrides[app.id] = nil }
                             .accessibilityIdentifier("appSpellingRestore")
                     }
                 }
@@ -887,37 +1429,29 @@ private struct PhraseIssueText: View {
     }
 }
 
-// Browser video control needs a connected Agent Flow Bridge. Its phrases and buttons stay visible
-// but greyed out until then; the install link below them stays active.
-private struct VideoControls: View {
-    @ObservedObject var model: GateModel
+// Editing phrases is always available. Video commands need a live Agent Flow connection, so
+// the connection notice appears only while it's missing. Outcomes go to Last command.
+private struct VideoControls: View, Equatable {
+    let model: GateModel
     @ObservedObject var bridge: VideoBridge
+    let configuration: PhraseConfiguration
+    let rewindSeconds: Int
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.configuration == rhs.configuration && lhs.rewindSeconds == rhs.rewindSeconds
+    }
     private var available: Bool { bridge.availability.isAvailable }
     var body: some View {
-        PhraseFields(model: model, slots: PhraseSlot.videoSlots)
-            .disabled(!available)
-        HStack(spacing: 8) {
-            Text("Browser video")
-            Spacer(minLength: 8)
-            Button { model.requestVideo(.pause) } label: { Label("Pause", systemImage: "pause.fill") }
-                .accessibilityLabel("Pause browser video").accessibilityIdentifier("pauseVideoButton")
-            Button { model.requestVideo(.play) } label: { Label("Play", systemImage: "play.fill") }
-                .accessibilityLabel("Play browser video").accessibilityIdentifier("playVideoButton")
-        }
-        .disabled(!available)
-        .help(bridge.availability.detail)
-        if let result = model.videoCommandStatus {
-            Text(result).foregroundStyle(.secondary).accessibilityIdentifier("videoCommandStatus")
-        }
+        PhraseFields(model: model, configuration: configuration, slots: PhraseSlot.videoSlots, rewindSeconds: rewindSeconds).equatable()
         if !available {
             HStack(spacing: 5) {
                 Image(systemName: "info.circle").foregroundStyle(.secondary).accessibilityHidden(true)
-                Link("Install Agent Flow Bridge to use", destination: VideoBridge.installURL)
+                Link(bridge.availability == .unavailable(.incompatible) ? "Update Agent Flow for video commands" : "Connect Agent Flow for video commands",
+                     destination: VideoBridge.installURL)
                     .help(bridge.availability.detail)
                     .accessibilityIdentifier("installAgentFlowBridgeLink")
                 Spacer(minLength: 8)
                 if bridge.availability == .checking {
-                    ProgressView().controlSize(.small).accessibilityLabel("Checking Agent Flow Bridge")
+                    DelayedProgress(label: "Checking Agent Flow")
                 } else {
                     Button { model.refreshVideoBridge() } label: { Image(systemName: "arrow.clockwise") }
                         .buttonStyle(.borderless).help("Check Agent Flow Bridge again")
@@ -929,34 +1463,73 @@ private struct VideoControls: View {
     }
 }
 
-// Refactor of PhraseField/ExtraPhraseField: spellings belong visibly to their trigger,
-// including a default phrase placed in an extra row. Recognition rules are unchanged. — GPT-6.1 Sol
-private struct TriggerPhraseEditor: View {
-    @ObservedObject var model: GateModel
+private struct SpellingCountButton: View {
+    let count: Int
+    let unused: Int
+    var identifier: String? = nil
+    let edit: () -> Void
+
+    private var title: String {
+        switch count {
+        case 0: return "Add alternate spellings…"
+        case 1: return "1 alternate spelling…"
+        default: return "\(count) alternate spellings…"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(title, action: edit)
+                .help("Edit alternate spellings for this phrase")
+                .accessibilityIdentifier(identifier ?? "speakerPrefixSpellings")
+            if unused > 0 {
+                Text("\(unused) not used").foregroundStyle(.secondary)
+                    .help("These spellings aren’t used by this phrase.")
+            }
+        }.font(.caption)
+    }
+}
+
+private struct AlternateSpellingsOffNote: View {
+    var body: some View {
+        Text("Alternate spellings are off in Settings.").font(.caption).foregroundStyle(.secondary)
+    }
+}
+
+// One phrase and its alternate spellings. The count and the editor use one list: this trigger's
+// saved spellings, or its built-in ones when none are saved. The list opens in the editor, so the
+// row doesn't repeat it. Entries recognition can't use right now are counted as unused.
+private struct TriggerPhraseEditor: View, Equatable {
+    let model: GateModel
     let slot: PhraseSlot
+    let value: String // Snapshot of the text, for comparison; a Binding reads the live value.
     @Binding var text: String
     let commit: PhraseCommit
     let id: UUID?
-    var number = 1
+    let number: Int
+    let issue: PhraseConfiguration.Issue?
+    let saved: [String]?
+    let similar: Bool
+    let dictionaries: PhraseDictionaries
     @State private var showingDictionary = false
-    @State private var search = ""
-    private var isDefault: Bool { slot.isDefault(text) }
-    private var dictionary: Binding<[String]?> {
-        Binding(get: { model.phraseDictionaries[slot.rawValue] }, set: { model.phraseDictionaries[slot.rawValue] = $0 })
+    init(model: GateModel, slot: PhraseSlot, value: String, text: Binding<String>, commit: PhraseCommit, id: UUID?, number: Int,
+         issue: PhraseConfiguration.Issue?, saved: [String]?, similar: Bool, dictionaries: PhraseDictionaries) {
+        self.model = model; self.slot = slot; self.value = value; _text = text; self.commit = commit; self.id = id
+        self.number = number; self.issue = issue; self.saved = saved; self.similar = similar; self.dictionaries = dictionaries
     }
-    private var spellings: [String] {
-        PhraseMatcher.knownSpellings(for: text, similar: model.similarPhrases && isDefault,
-                                    ending: slot.ending, dictionaries: model.matchingDictionaries)
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.slot == rhs.slot && lhs.value == rhs.value && lhs.id == rhs.id && lhs.number == rhs.number && lhs.issue == rhs.issue
+            && lhs.saved == rhs.saved && lhs.similar == rhs.similar && lhs.dictionaries == rhs.dictionaries
     }
+    private var builtIn: [String] { slot.stockSpellings(for: value) }
     private var identifier: String { slot.identifier + (id == nil ? "" : String(number)) }
-    private var filteredSpellings: [String] {
-        let query = PhraseMatcher.words(search).joined()
-        return query.isEmpty ? spellings : spellings.filter { PhraseMatcher.words($0).joined().contains(query) }
-    }
-    private var spellingStatus: String {
-        guard isDefault else { return spellings.count > 1 ? "Custom phrase · recognized spellings" : "Custom phrase · exact only" }
-        if spellings.count == 1 { return model.similarPhrases ? "Default phrase · exact only" : "Default phrase · alternate spellings off" }
-        return dictionary.wrappedValue == nil ? "Default phrase · built-in spellings" : "Default phrase · custom spellings"
+    private var listed: [String] { saved ?? builtIn }
+    private var unused: Int {
+        guard similar, !listed.isEmpty else { return 0 }
+        let pattern = PhrasePattern(slot: slot, text: value, similar: similar, dictionaries: dictionaries)
+        let recognized = Set(PhraseMatcher.knownSpellings(for: value, similar: pattern.similar, ending: slot.ending,
+                                                         dictionaries: pattern.dictionaries).dropFirst().map(PhraseList.key))
+        return listed.filter { !recognized.contains(PhraseList.key($0)) }.count
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -967,42 +1540,25 @@ private struct TriggerPhraseEditor: View {
                 if let id {
                     Button("Remove") { model.removePhraseRow(slot, id: id) }
                         .accessibilityIdentifier(identifier + "Remove")
-                } else if !isDefault {
+                } else if !slot.isDefault(value) {
                     Button("Restore default") { text = slot.defaultText }
                         .accessibilityIdentifier(identifier + "Reset")
                 }
             }
-            PhraseIssueText(issue: model.phraseIssue(slot, id: id), identifier: identifier + "Issue")
-            if !PhraseMatcher.words(text).isEmpty {
-                HStack {
-                    Text(spellingStatus)
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    if isDefault {
-                        Button("Edit spellings…") { showingDictionary = true }
-                            .disabled(!model.similarPhrases)
-                            .accessibilityIdentifier(identifier + "EditSpellings")
-                    }
-                }
-                if spellings.count > 1 {
-                    DisclosureGroup("Recognized spellings (\(spellings.count))") {
-                        TextField("Find a spelling", text: $search).textFieldStyle(.roundedBorder)
-                            .accessibilityIdentifier(identifier + "SpellingSearch")
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 4) {
-                                if filteredSpellings.isEmpty { Text("No spellings found").foregroundStyle(.secondary) }
-                                ForEach(filteredSpellings, id: \.self) {
-                                    Text($0).textSelection(.enabled)
-                                }
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }.frame(maxHeight: 170)
-                    }.accessibilityIdentifier(identifier + "Spellings")
+            PhraseIssueText(issue: issue, identifier: identifier + "Issue")
+            if !PhraseMatcher.words(value).isEmpty {
+                SpellingCountButton(count: listed.count, unused: unused, identifier: identifier + "EditSpellings") {
+                    showingDictionary = true
                 }
             }
         }
         .padding(12).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
         .sheet(isPresented: $showingDictionary) {
-            PhraseDictionaryEditor(slot: slot, dictionary: dictionary, similar: model.similarPhrases)
+            PhraseDictionaryEditor(slot: slot, phrase: value, dictionary: Binding(
+                get: { model.phraseDictionaries[slot.spellingKey(for: value)] },
+                set: { model.phraseDictionaries[slot.spellingKey(for: value)] = $0 }),
+                builtIn: builtIn, similar: similar,
+                validate: { model.spellingConflict($0, for: slot, phrase: value) })
         }
     }
 }
@@ -1010,41 +1566,50 @@ private struct TriggerPhraseEditor: View {
 // Refactor of PhraseSpellings’ existing dictionary editor. The owning command panel
 // now displays the recognized forms; this sheet only edits that trigger’s dictionary. — GPT-6.1 Sol
 private struct PhraseDictionaryEditor: View {
-    let slot: PhraseSlot
+    let slot: PhraseSlot?
+    let phrase: String
     @Binding var dictionary: [String]?
+    let builtIn: [String]
     let similar: Bool
+    let validate: ([String]) -> String?
     @Environment(\.dismiss) private var dismiss
     @State private var draft = ""
     @State private var error: String?
     @State private var importing = false
+    // Same finish as the other draft editors: Cancel discards, Done saves a valid list and closes.
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Edit Spellings").font(.headline)
-            Text(slot.defaultText).font(.subheadline)
-            Text("One full spelling per line. Saving replaces the built-in alternatives. The default phrase always works; leave this blank to use only that phrase.")
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Alternate spellings").font(.headline).accessibilityAddTraits(.isHeader)
+                    Text("For “\(phrase)”").font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Done") { finish() }.accessibilityIdentifier("phraseDictionarySave")
+            }
+            Text("One per line. Leave empty to use only the phrase.")
                 .font(.caption).foregroundStyle(.secondary)
+            if !similar {
+                Label("Recognize alternate spellings is off in Settings, so these aren't used.", systemImage: "info.circle")
+                    .font(.caption)
+            }
             TextEditor(text: $draft).font(.body.monospaced()).border(.separator)
-                .accessibilityLabel("Custom dictionary").accessibilityIdentifier("phraseDictionaryEditor")
-            if let error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled) }
+                .accessibilityLabel("Alternate spellings").accessibilityIdentifier("phraseDictionaryEditor")
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red).font(.caption).textSelection(.enabled)
+            }
             HStack {
                 Button("Import text file…") { importing = true }.accessibilityIdentifier("phraseDictionaryImport")
-                if dictionary != nil {
-                    Button("Restore built-in") { dictionary = nil; dismiss() }
+                if dictionary != nil && !builtIn.isEmpty {
+                    Button("Restore built-in spellings") { dictionary = nil; dismiss() }
                         .accessibilityIdentifier("phraseDictionaryRestore")
                 }
                 Spacer()
             }
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Use phrase only" : "Save") {
-                    do { dictionary = try PhraseDictionary.parse(draft, for: slot); dismiss() }
-                    catch { self.error = error.localizedDescription }
-                }.disabled(!similar).accessibilityIdentifier("phraseDictionarySave")
-            }
         }
-        .padding(20).frame(width: 520, height: 420).interactiveDismissDisabled()
-        .onAppear { draft = (dictionary ?? []).joined(separator: "\n") }
+        .padding(20).frame(minWidth: 520, idealWidth: 540, minHeight: 420, idealHeight: 460).interactiveDismissDisabled()
+        .onAppear { draft = (dictionary ?? builtIn).joined(separator: "\n") }
         .onChange(of: draft) { error = nil }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText]) { result in
             switch result {
@@ -1057,21 +1622,50 @@ private struct PhraseDictionaryEditor: View {
             }
         }
     }
+    private func finish() {
+        do {
+            let entries = try PhraseDictionary.parse(draft, for: slot)
+            if let issue = validate(entries) { error = issue; return }
+            let keys = entries.map(PhraseList.key)
+            // Store nothing when the list matches the built-in one, so later built-in updates
+            // still apply. An empty list with no built-ins also needs no saved entry.
+            if keys == builtIn.map(PhraseList.key) || (entries.isEmpty && builtIn.isEmpty) {
+                if dictionary != nil { dictionary = nil }
+            } else {
+                dictionary = entries
+            }
+            dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
 }
 
 struct SettingsView: View {
+    @AppStorage(CodexVoiceSpeed.preferenceKey) private var ultrafastForNewVoiceChats = true
     @ObservedObject var model: GateModel
     @ObservedObject var zoom: InterfaceZoom
     @ObservedObject var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
+    // This button's own progress and result. model.busy also covers other actions, and the
+    // model's error otherwise shows only on Home.
+    @State private var settingUltrafast = false
+    @State private var ultrafastResult: (message: String, failed: Bool)?
+    @State private var showRepeatHelp = false
     var body: some View {
         Form {
             Section("About") {
                 LabeledContent("Version", value: AppVersion.display).accessibilityIdentifier("appVersion")
             }
             Section("Voice chats") {
-                Button("Set Voice to Ultrafast") { Task { _ = try? await model.performShortcut(.ultrafast) } }
-                    .disabled(model.busy).accessibilityIdentifier("setVoiceUltrafast")
+                Button(settingUltrafast ? "Setting Ultrafast…" : "Set Voice to Ultrafast") { setUltrafast() }
+                    .disabled(model.busy || settingUltrafast).accessibilityIdentifier("setVoiceUltrafast")
+                if let ultrafastResult {
+                    Text(ultrafastResult.message).foregroundStyle(ultrafastResult.failed ? Color.red : Color.secondary)
+                        .textSelection(.enabled).accessibilityIdentifier("setVoiceUltrafastResult")
+                }
+                Toggle("Prepare GPT-6.2 Sol, High and Ultrafast", isOn: $ultrafastForNewVoiceChats)
+                    .accessibilityIdentifier("ultrafastForNewVoiceChats")
+                Text("H Chat restores your previous defaults after Voice opens. If Codex is already running, it can use the choices saved in its window.")
+                    .foregroundStyle(.secondary)
             }
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
@@ -1080,16 +1674,29 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 DockStatus(dock: model.dock)
             }
+            // Home owns phrases, spellings, the microphone and each command's sound. Settings keeps
+            // only app-wide choices, with one way back to Home.
             Section("Recognition") {
-                Button("Phrases and microphone on Home") { openWindow(id: "main") }
-                    .accessibilityIdentifier("phraseSettingsHome")
-                Toggle("Alternate spellings for default phrases", isOn: $model.similarPhrases)
+                Toggle("Recognize alternate spellings", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
-                Text(model.similarPhrases ? "Custom phrases match exactly. Open a command’s Phrases panel on Home to view or edit its spellings. Green is exact; orange is an alternate spelling." : "Alternate spellings are off. Saved phrases match exactly, ignoring capitalization, spacing and punctuation.")
+                Text(model.similarPhrases ? "Also matches each phrase’s alternate spellings, edited from its gear on Home." : "Phrases must match exactly. Capitalization, spaces and punctuation can differ.")
                     .foregroundStyle(.secondary)
                 if !model.hasPhrase(.wakePhrase) || !model.hasPhrase(.sleepPhrase) {
-                    Text("Enter wake and end phrases on Home.").foregroundStyle(.red)
+                    Label("Add a wake phrase and an end phrase on Home.", systemImage: "exclamationmark.triangle").foregroundStyle(.red)
                 }
+                HStack(alignment: .top) {
+                    Text(RepeatCountToggle.settingsHelp).foregroundStyle(.secondary)
+                    Button { showRepeatHelp = true } label: { Image(systemName: "info.circle") }
+                        .buttonStyle(.borderless).accessibilityLabel("About Repeat count")
+                        .popover(isPresented: $showRepeatHelp) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Repeat count").font(.headline)
+                                Text(RepeatCountToggle.guide).textSelection(.enabled)
+                            }.padding().frame(width: 350)
+                        }
+                }.accessibilityIdentifier("repeatCountHelp")
+                Button("Edit phrases on Home") { openWindow(id: "main") }
+                    .accessibilityIdentifier("phraseSettingsHome")
                 Button(model.checkingSpeech ? "Checking speech…" : "Check speech recognition") { model.checkSpeech() }
                     .disabled(model.speechCheckUnavailableReason != nil)
                     .accessibilityIdentifier("speechCheck")
@@ -1116,22 +1723,22 @@ struct SettingsView: View {
                         Text("\(Int((model.soundEffectsVolume * 100).rounded()))%").monospacedDigit().frame(minWidth: 38)
                     }
                 }.disabled(!model.soundEffects)
-                // Every phrase has its own sound; preview them to learn which is which.
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 180 * zoom.scale), alignment: .leading)], alignment: .leading) {
-                    ForEach(PhraseSlot.allCases) { slot in
-                        Button { model.previewSound(slot.cue) } label: {
-                            Text("\(slot.soundTitle) sound")
-                                .fixedSize(horizontal: false, vertical: true)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                            .accessibilityIdentifier("previewSound\(slot.cue.rawValue)")
-                    }
-                }.disabled(!model.soundEffects)
+                Text("Choose each command’s sound from its gear on Home.").foregroundStyle(.secondary)
             }
             Section("Spotify") {
+                let limit = $model.spotifyVolumeLimit.changes(in: 0...100)
                 Toggle("Lower volume during chat", isOn: $model.lowerSpotifyDuringChat)
                     .accessibilityIdentifier("lowerSpotifyDuringChat")
-                Text("Lowers Spotify to \(SpotifyVolumePolicy.maximumVolume)% or below, then restores its volume unless changed manually.")
+                HStack {
+                    Text("Maximum volume")
+                    Spacer()
+                    TextField("Percent", value: limit, format: .number)
+                        .labelsHidden().multilineTextAlignment(.trailing).frame(width: 48)
+                        .accessibilityLabel("Spotify maximum volume percent").accessibilityIdentifier("spotifyVolumeLimit")
+                    Text("%")
+                    Stepper("Maximum volume", value: limit, in: 0...100).labelsHidden()
+                }
+                Text("Keeps Spotify at or below this volume during Voice. Restores the previous volume afterwards unless you changed it in Spotify.")
                     .foregroundStyle(.secondary)
                 SpotifyVolumeStatus(volume: model.spotifyVolume)
             }
@@ -1174,6 +1781,22 @@ struct SettingsView: View {
         .frame(minWidth: 440, idealWidth: 560, maxWidth: .infinity,
                minHeight: 420, idealHeight: 660, maxHeight: .infinity)
     }
+    // Same action as the menu and Shortcuts; only the shown result differs. Result messages come
+    // from GateModel and CodexChatSpeed, so Settings adds no second wording for them.
+    private func setUltrafast() {
+        settingUltrafast = true
+        ultrafastResult = nil
+        Task { @MainActor in
+            defer { settingUltrafast = false }
+            do {
+                let message = try await model.performShortcut(.ultrafast)
+                ultrafastResult = (message, false)
+            } catch is CancellationError {
+            } catch {
+                ultrafastResult = (error.localizedDescription, true)
+            }
+        }
+    }
 }
 
 private struct SpotifyVolumeStatus: View {
@@ -1189,15 +1812,19 @@ private struct SpotifyVolumeStatus: View {
 
 struct DiagnosticsView: View {
     @State private var recent = ""
+    @State private var showingRecent = false
     var body: some View {
         Text("Timing and error logs exclude recognized words. Saved transcripts are in Transcript Archive. Audio isn't saved.").foregroundStyle(.secondary)
-        Text(Diagnostics.shared.directory.path).textSelection(.enabled)
-        DisclosureGroup("Recent events") {
+        Button("Show logs in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([Diagnostics.shared.directory.appendingPathComponent("events.jsonl")])
+        }.accessibilityIdentifier("showDiagnosticLogs")
+        DisclosureGroup("Recent events", isExpanded: $showingRecent) {
             Text(recent.isEmpty ? "No events yet" : recent).fontDesign(.monospaced).textSelection(.enabled)
                 .accessibilityIdentifier("diagnosticEvents")
         }
-        .task {
-            while !Task.isCancelled {
+        // Read the log only while it's shown.
+        .task(id: showingRecent) {
+            while showingRecent, !Task.isCancelled {
                 recent = Diagnostics.shared.tail()
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
             }
@@ -1205,20 +1832,24 @@ struct DiagnosticsView: View {
     }
 }
 
+// The resolved device is shown in the menu itself, so there's no separate “Using” line.
 struct MicrophoneSettings: View {
     @ObservedObject var inputs: MicrophoneInputs
     var body: some View {
-        Picker("Microphone", selection: $inputs.selectedUID) {
-            Text("System default").tag("")
+        let systemName = inputs.devices.first { $0.id == inputs.systemDefault }?.name
+        Picker(selection: $inputs.selectedUID) {
+            Text(systemName.map { "System default (\($0))" } ?? "System default").tag("")
             ForEach(inputs.devices) { input in Text(input.name).tag(input.uid) }
             if !inputs.selectedUID.isEmpty && inputs.selected == nil {
-                Text("Selected microphone unavailable").tag(inputs.selectedUID)
+                Text("Selected microphone isn't connected").tag(inputs.selectedUID)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("Command microphone")
+                CommandInfoButton(title: "Command microphone", detail: "Choose the microphone H Chat uses to hear phrases. Choose the call microphone in Codex Voice.")
             }
         }
         .accessibilityIdentifier("microphonePicker")
-        Text("Using: \(inputs.selectedName)").foregroundStyle(.secondary)
-            .accessibilityIdentifier("microphoneRoute")
-        Text("For local listening. Codex Voice uses its own input setting.").foregroundStyle(.secondary)
     }
 }
 
@@ -1270,6 +1901,8 @@ struct MenuView: View {
             .disabled(model.busy)
         Divider()
         Button("Hello Chat") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        // The history opens in the default text editor, so H Chat doesn't take focus back.
+        Button("Show Command History") { model.openCommandHistory() }
         Button("Settings…") { openWindow(id: "settings"); NSApp.activate(ignoringOtherApps: true) }
         Button("Quit Hello Chat") { model.quit() }
     }

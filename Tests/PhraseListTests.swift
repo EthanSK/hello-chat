@@ -14,9 +14,9 @@ import Foundation
         savedDefaults.set(["switchAppPhrase": ["Jump to"], "openAppPhrase": ["Launch app"], "futurePhrase": ["Keep me"]], forKey: PhraseList.defaultsKey)
         PhraseList.seedDefaults(in: savedDefaults)
         var seeded = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
-        check(seeded[.wakePhrase] == ["Hey Chat"] && seeded[.sleepPhrase] == ["Goodbye Chat"], "New default wake and End rows are editable saved rows")
-        check(seeded[.switchAppPhrase] == ["Jump to", "Switch up", "Switch to", "Switch"] && seeded[.openAppPhrase] == ["Launch app"], "Both app families' saved custom rows survive")
-        for (slot, text) in [(PhraseSlot.wakePhrase, "Hey Chat"), (.sleepPhrase, "Goodbye Chat")] {
+        check(seeded[.wakePhrase] == ["Hey Chat", "Start chat"] && seeded[.sleepPhrase] == ["Goodbye Chat", "End chat"], "New default wake and End rows are editable saved rows")
+        check(seeded[.switchAppPhrase] == ["Jump to", "Switch up", "Switch to", "Switch"] && seeded[.openAppPhrase] == ["Launch app", "Show app", "Show me", "Show", "Open"], "Both app families' saved custom rows survive; Show app follows them")
+        for (slot, text) in [(PhraseSlot.wakePhrase, "Hey Chat"), (.sleepPhrase, "Goodbye Chat"), (.wakePhrase, "Start chat"), (.sleepPhrase, "End chat")] {
             let patterns = ([slot.defaultText] + (seeded[slot] ?? [])).map { PhrasePattern(slot: slot, text: $0, similar: false, dictionaries: .init()) }
             var detector = StandaloneWake()
             detector.audio(level: 0.2, seconds: 0.1); detector.update(text, at: 1)
@@ -26,11 +26,16 @@ import Foundation
             check(!detector.poll(at: 1, phrase: slot.defaultText, similar: false, rejectNegated: true, ending: slot.ending, patterns: patterns), "New default row preserves the mention guard")
         }
         check((savedDefaults.dictionary(forKey: PhraseList.defaultsKey)?["futurePhrase"] as? [String]) == ["Keep me"], "Future-build preferences survive seeding")
-        check(seeded[.mutePhrase] == ["Mute mic"] && seeded[.silentPhrase] == ["Mute speakers"], "New installs list both mute aliases")
+        check(seeded[.mutePhrase] == ["Mute mic"] && seeded[.silentPhrase] == ["Mute speakers", "Silent speakers", "Silent speaker"], "New installs list both mute aliases")
+        check(PhraseAction.allCases.filter { $0.settingsTitle.hasSuffix(" (Codex Voice)") } == [.wake, .end, .muteMicrophone, .unmuteMicrophone, .silenceSpeakers, .unsilenceSpeakers], "Call start, end and audio controls carry the Codex Voice scope in the list and its editor")
         let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map {
             ($0, [$0.savedValue(in: savedDefaults)] + (seeded[$0] ?? []))
         }))
         for (utterance, expected) in [("mute mic", VoiceAudioAction.muteMicrophone), ("mute speakers", .silenceSpeakers),
+                                      ("Silent speakers", .silenceSpeakers), ("Silent speaker", .silenceSpeakers),
+                                      ("Silence speakers", .silenceSpeakers), ("Silence speaker", .silenceSpeakers),
+                                      ("Unsilent speakers", .unsilenceSpeakers), ("Unsilent speaker", .unsilenceSpeakers),
+                                      ("Unsilence speakers", .unsilenceSpeakers), ("Unsilence speaker", .unsilenceSpeakers),
                                       ("mute chat", .muteMicrophone), ("silent chat", .silenceSpeakers), ("silence chat", .silenceSpeakers)] {
             for similar in [false, true] {
                 let actions = VoiceAudioAction.allCases.filter { action in
@@ -45,43 +50,50 @@ import Foundation
                 check(actions == [expected], "Only the intended audio action accepts " + utterance)
             }
         }
+        seeded[.unsilencePhrase]?.removeAll { $0 == "Unsilent speaker" }
         seeded[.silentPhrase] = nil
         seeded[.wakePhrase] = nil
         savedDefaults.set(PhraseList.encode(seeded, preserving: savedDefaults.object(forKey: PhraseList.defaultsKey)), forKey: PhraseList.defaultsKey)
         PhraseList.seedDefaults(in: savedDefaults)
         check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))[.wakePhrase] == nil, "Removing a seeded row is respected on later launches")
+        check(!(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))[.unsilencePhrase] ?? []).contains("Unsilent speaker"), "Deleting one of the editable speaker phrases survives the next launch")
         savedDefaults.removePersistentDomain(forName: suite)
         savedDefaults.set(true, forKey: "phraseDefaults20261115")
         savedDefaults.set(["zoomInPhrase": ["Mute-mic"]], forKey: PhraseList.defaultsKey)
         PhraseList.seedDefaults(in: savedDefaults)
         let upgraded = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
-        check(upgraded == [.zoomInPhrase: ["Mute-mic"], .silentPhrase: ["Mute speakers"]], "Upgrade respects existing ownership and deleted old defaults")
+        check(upgraded[.zoomInPhrase] == ["Mute-mic"] && upgraded[.silentPhrase] == ["Mute speakers", "Silent speakers", "Silent speaker"] && upgraded[.wakePhrase] == ["Start chat"] && upgraded[.mutePhrase] == nil, "Upgrade respects existing ownership and deleted old defaults")
         savedDefaults.set(["zoomInPhrase": ["Mute-mic"]], forKey: PhraseList.defaultsKey)
         PhraseList.seedDefaults(in: savedDefaults)
         check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))[.silentPhrase] == nil, "Removed mute alias stays removed")
         savedDefaults.removePersistentDomain(forName: suite)
-        savedDefaults.set(["zoomOutPhrase": ["Mute mic"]], forKey: "phraseDictionaries")
+        savedDefaults.set(["zoomOutPhrase": ["My smaller view"]], forKey: PhraseList.defaultsKey)
+        savedDefaults.set(["zoomOutPhrase": ["Mute mic"], PhraseSlot.zoomOutPhrase.spellingKey(for: "My smaller view"): ["End chat"]], forKey: "phraseDictionaries")
         PhraseList.seedDefaults(in: savedDefaults) { $0.text == "Mute speakers" }
         let reserved = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
-        check(reserved[.mutePhrase] == nil && reserved[.silentPhrase] == nil, "Saved spellings and speaker destinations take precedence")
+        check(!(reserved[.sleepPhrase] ?? []).contains("End chat"), "An existing alias spelling owns its words during migration")
+        check(reserved[.mutePhrase] == nil && !(reserved[.silentPhrase] ?? []).contains("Mute speakers"), "Saved spellings and speaker destinations take precedence")
         savedDefaults.removePersistentDomain(forName: suite)
         savedDefaults.set("Quiet microphone", forKey: "mutePhrase")
+        savedDefaults.set("Restore call audio", forKey: "unsilencePhrase")
         savedDefaults.set("Quiet sound", forKey: "silencePhrase")
         savedDefaults.set("Listen Lantern", forKey: "wakePhrase")
         savedDefaults.set("Goodnight Lantern", forKey: "sleepPhrase")
         savedDefaults.set("Jump to", forKey: "switchAppPhrase")
         PhraseList.seedDefaults(in: savedDefaults)
-        check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey)).isEmpty, "Custom primary phrases don't silently gain the new defaults")
+        let afterCustomization = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
+        check([PhraseSlot.wakePhrase, .sleepPhrase, .switchAppPhrase, .mutePhrase, .silentPhrase, .silencePhrase, .unsilencePhrase].allSatisfy { afterCustomization[$0] == nil }, "Custom primary phrases don't silently gain the new defaults")
         check(savedDefaults.string(forKey: "wakePhrase") == "Listen Lantern" && savedDefaults.string(forKey: "switchAppPhrase") == "Jump to", "Custom main text is untouched")
         let groups = PhraseSlot.settingsGroups(PhraseSlot.desktopSlots)
-        check(groups == [[.switchAppPhrase, .openAppPhrase], [.zoomInPhrase], [.zoomOutPhrase]], "One app setting includes both legacy fields without duplicating or losing rows")
+        check(groups == [[.switchAppPhrase, .openAppPhrase], [.zoomInPhrase], [.zoomOutPhrase], [.showVoicePhrase]], "One app setting includes both legacy fields without duplicating or losing rows")
         let settingsGroups = PhraseSlot.settingsGroups(PhraseSlot.allCases)
         check(Set(settingsGroups.flatMap { $0 }) == Set(PhraseSlot.allCases)
               && settingsGroups.flatMap { $0 }.count == PhraseSlot.allCases.count,
               "Command panels retain each saved phrase slot exactly once")
         check(settingsGroups.contains([.silentPhrase, .silencePhrase])
-              && settingsGroups.contains([.pauseMusicPhrase, .playMusicPhrase]),
-              "Equivalent speaker and music triggers share a command panel without dropping either family")
+              && settingsGroups.contains([.pauseMusicPhrase]) && settingsGroups.contains([.playMusicPhrase])
+              && settingsGroups.contains([.rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase]),
+              "Speaker silence and rewind share their own panels, while Play and Pause music have separate panels")
 
         // Slash entry: trimmed pieces, empty pieces ignored, applied only at submit or focus loss.
         check(PhraseList.pieces("Open app / Switch app") == ["Open app", "Switch app"], "Typed example becomes two phrases")

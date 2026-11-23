@@ -18,6 +18,29 @@ private final class Probe {
     @MainActor static func main() async throws {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
+        let numericApps = [AppCandidate(id: "live", names: ["Live 12"], url: nil, pid: 1),
+                           AppCandidate(id: "chrome", names: ["Google Chrome", "Chrome"], url: nil, pid: 2)]
+        let numericName = AppCommandCandidate(kind: .openApp, name: "Live 12", bare: false, wordRange: 0..<4, alternateName: nil)
+        check(numericName.separatingCount(among: numericApps, spellings: .init()).name == "Live 12", "Exact numeric app name wins over count")
+        let countedApp = AppCommandCandidate(kind: .switchApp, name: "Chrome twenty five times", bare: false, wordRange: 0..<6, alternateName: nil)
+        let separated = countedApp.separatingCount(among: numericApps, spellings: .init())
+        check(separated.name == "chrome" && separated.wordRange == 0..<3, "Resolved app excludes the count from its name and accepted range")
+        let unknownApp = AppCommandCandidate(kind: .openApp, name: "Unrelated five", bare: true, alternateName: nil)
+        check(unknownApp.separatingCount(among: numericApps, spellings: .init()).name == "Unrelated five", "Count stripping cannot invent an app match")
+        var zoomPosts = 0
+        var repeatedZoom = ZoomShortcut()
+        repeatedZoom.session = { .interactive }; repeatedZoom.accessibilityTrusted = { true }
+        repeatedZoom.currentFlags = { [] }; repeatedZoom.post = { key, flags, _ in
+            check(key == ZoomShortcut.equalsKeyCode && flags == [.maskCommand, .maskShift], "Each repetition uses the unchanged native zoom shortcut")
+            zoomPosts += 1; return true
+        }
+        let repeated = RepeatedCommands()
+        repeated.update(["zoom", "in", "five"], timings: nil)
+        repeated.begin(id: UUID(), range: 0..<2, repeats: true) { step in
+            if case .success = repeatedZoom.perform(.zoomIn) { repeated.finish(step, .submitted) }
+            else { repeated.finish(step, .failedBeforeDispatch) }
+        }
+        check(zoomPosts == 5, "Zoom in five submits exactly five injected native actions")
         var mediaPosts = 0, mediaCues = 0
         var mediaEnvironment = DesktopCommands.Environment()
         mediaEnvironment.mediaPlayPause.session = { .interactive }
@@ -90,10 +113,10 @@ private final class Probe {
         check(!cancelledWorkspaceResult.0 && cancelledWorkspaceResult.1 == 0, "Cancellation after AX refusal prevents Launch Services")
 
         // Slots: four new canonical preferences after the unchanged Voice and Browser fields.
-        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase], "Existing fields are intact")
-        check(PhraseSlot.desktopSlots == [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase], "Desktop fields follow them")
-        check(PhraseSlot.desktopSlots.map(\.rawValue) == ["switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase"], "Canonical preference names")
-        check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Switch app", "Open app", "Zoom in", "Zoom out"], "Defaults")
+        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase], "Existing fields are intact")
+        check(PhraseSlot.desktopSlots == [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase], "Desktop fields follow them")
+        check(PhraseSlot.desktopSlots.map(\.rawValue) == ["switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase", "showVoicePhrase"], "Canonical preference names")
+        check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Switch app", "Open app", "Zoom in", "Zoom out", "Show voice"], "Defaults")
         check(PhraseSlot.switchAppPhrase.example != nil && PhraseSlot.openAppPhrase.example == nil && PhraseSlot.zoomInPhrase.example == nil,
               "The combined app setting carries one example")
         check(PhraseSlot.switchAppPhrase.label.hasSuffix("prefix") && PhraseSlot.openAppPhrase.label.hasSuffix("prefix"), "App commands are labelled as prefixes")
@@ -232,6 +255,16 @@ private final class Probe {
                 let start = time; time += 0.15
                 return (word, start, time)
             }
+        }
+        for (text, expected) in [("it picked up open Chrome", false), ("it picked up. Open Chrome", true)] {
+            let words = PhraseMatcher.words(text)
+            let timing = spans(text, gaps: [words.firstIndex(of: "open")!: 0.65])
+            var detector = AppCommandDetector()
+            detector.audio(level: 0.2, seconds: 0.1, at: timing.last!.end)
+            detector.update(text, at: 1, timings: timing)
+            detector.audio(level: 0, seconds: 1, at: timing.last!.end + 1)
+            check(!detector.poll(switchPrefix: switchPrefix, openPrefix: openPrefix).isEmpty == expected,
+                  "A hesitation before a quoted app command is not a new instruction: "+text)
         }
         let appText = "we discussed open Chrome and the app command open Chrome thanks"
         let appSpans = spans(appText, gaps: [8: 0.7, 10: 0.9])

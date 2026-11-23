@@ -142,6 +142,17 @@ enum RunningAppActivation {
         return await carry(AppCommandPlanner.decide(candidate, running: environment.running(), installed: installed, spellings: spellings), dispatched: dispatched)
     }
 
+    func repetitionCandidate(_ candidate: AppCommandCandidate, spellings: AppNameSpellings) async -> AppCommandCandidate {
+        let words = PhraseMatcher.words(candidate.name)
+        let hasCount = (1..<max(1, words.count)).contains { end in
+            if case .value(_, let used) = CommandRepetition.count(in: words, after: end) { return end + used == words.count }
+            return false
+        }
+        guard hasCount else { return candidate }
+        let apps = AppCommandPlanner.merged(running: environment.running(), installed: await installedApps())
+        return candidate.separatingCount(among: apps, spellings: spellings)
+    }
+
     // The editor derives its app menu from the same bounded catalog as command execution.
     // Group copies only for display; resolution keeps its ambiguity and verified-path checks.
     func spellingChoices() async -> [AppCandidate] {

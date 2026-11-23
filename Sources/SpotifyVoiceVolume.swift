@@ -156,7 +156,12 @@ enum SpotifyVolumeControl {
             }
     }
 
-    private func reconcile() {
+    func volumeLimitChanged() {
+        if enabled, presence == .active { reconcile(limitEdited: true) }
+    }
+
+    private func reconcile(limitEdited: Bool = false) {
+        let limit = SpotifyVolumePolicy.limit()
         let state = enabled ? presence : .inactive
         let callIdentifier = self.callIdentifier
         let microphoneMuted = self.microphoneMuted
@@ -166,7 +171,7 @@ enum SpotifyVolumeControl {
         let session = self.session
         queue.async { [weak self] in
             do {
-                let result = try session.reconcile(state, callIdentifier: callIdentifier, microphoneMuted: microphoneMuted)
+                let result = try session.reconcile(state, callIdentifier: callIdentifier, microphoneMuted: microphoneMuted, limit: limit, limitEdited: limitEdited)
                 Diagnostics.shared.record("spotify.volume.reconciled", info: [
                     "result": result.rawValue, "call": state.rawValue,
                     "confirmed_mic_command": microphoneMuted.map { $0 ? "mute" : "unmute" } ?? "none",
@@ -176,7 +181,7 @@ enum SpotifyVolumeControl {
                     guard let self, self.generation == generation else { return }
                     self.permissionRequired = false
                     switch result {
-                    case .lowered: self.message = "Spotify lowered to \(SpotifyVolumePolicy.maximumVolume)%."
+                    case .lowered: self.message = "Spotify chat volume limit is \(limit)%."
                     case .restored: self.message = "Spotify volume restored."
                     case .manualChange: self.message = "Spotify volume changed manually."
                     case .spotifyClosed: self.message = "Spotify is closed."

@@ -20,9 +20,170 @@ import SwiftUI
     private var voiceStatusRefresh = VoiceStatusRefresh()
     private var voiceStatusTask: Task<Void, Never>?
     private let voiceCalls = VoiceCallMonitor()
+    private let receipts = SpokenCommandJournal.shared
+    private let repetitions = RepeatedCommands()
+    private var repeatAppTargets: [UUID: AppCommandCandidate] = [:]
+    private var repetitionDetails: [UUID: (String?, String?)] = [:]
+    @Published private(set) var lastCommandMessage: String?
+    @Published private(set) var lastCommandDetail: String?
+    private var latestCommandID: UUID?
+
+    private func commandTitle(_ action: String) -> String {
+        if let slot = PhraseSlot(rawValue: action) { return slot.settingsTitle }
+        if let audio = VoiceAudioAction(rawValue: action), let slot = audio.slots.first { return slot.settingsTitle }
+        return action == "speakerOutput" ? "Switch speakers" : "Switch app"
+    }
+
+    private func finishCommand(_ id: UUID?, _ phase: SpokenCommandJournal.Phase, message: String? = nil, detail: String? = nil,
+                               repetition: RepeatedCommands.Progress? = nil) {
+        if repetition == nil, let id, let root = repetitions.root(for: id), let outcome = RepeatedCommands.Outcome(rawValue: phase.rawValue) {
+            if message != nil || detail != nil { repetitionDetails[root] = (message, detail) }
+            if repetitions.finish(id, outcome) { return }
+        }
+        let entry = repetition.flatMap { receipts.progress($0.id, requested: $0.requested, completed: $0.completed, phase: phase) }
+            ?? receipts.finish(id, phase)
+        guard let entry else { return }
+        let title = commandTitle(entry.action)
+        let result: String
+        switch phase {
+        case .confirmed: result = "Confirmed"
+        case .submitted: result = "Sent"
+        case .failedBeforeDispatch: result = "Couldn’t run"
+        case .superseded: result = "Superseded"
+        default: result = "Result unconfirmed"
+        }
+        let count = repetition.map { $0.requested > 1 ? " \($0.completed) of \($0.requested)" : "" } ?? ""
+        let summary = repetition == nil ? (message ?? "\(title) · \(result)") : "\(title) · \(result)\(count)"
+        if entry.id == latestCommandID {
+            lastCommandMessage = summary
+            lastCommandDetail = detail
+        }
+        // Only command names, receipt state and stock results belong in the retained log.
+        Diagnostics.shared.record("command.history", numbers: ["spoken_at": entry.at],
+                                  info: ["receipt": entry.id.uuidString, "command": title, "result": result, "summary": summary])
+    }
+
+    func openCommandHistory() {
+        Task {
+            do {
+                let url = try await Task.detached { try Diagnostics.shared.exportCommandHistory() }.value
+                guard NSWorkspace.shared.open(url) else { throw CocoaError(.fileReadUnknown) }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Couldn’t open the command history."
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
+    }
+
+    private var receiptSession: String?
+    private var latestAudioTime: Double = 0
+    private var receiptWordEnds: [Double] = []
+
+    // Use the accepted words' audio time, even when an ASR revision arrives after Voice's handoff.
+    // Every speech action supplies its normal replay route here. New actions cannot opt out
+    // accidentally: the callback is required, while the user's per-command toggle defaults on. — GPT-6.1 Sol
+    private func reserveSpeech(_ action: String, target: String = "", range: Range<Int>?,
+                               repeatAction: @escaping (UUID) -> Void) -> UUID? {
+        guard let range else { return nil }
+        let now = Date().timeIntervalSince1970
+        let index = range.upperBound - 1
+        let age = receiptWordEnds.indices.contains(index) ? max(0, latestAudioTime - receiptWordEnds[index]) : 0
+        do {
+            switch try receipts.begin(action, target: target, session: receiptSession, at: now - age) {
+            case .run(let id):
+                latestCommandID = id
+                let title = commandTitle(action)
+                let summary = title + " · Heard"
+                lastCommandMessage = summary
+                lastCommandDetail = nil
+                Diagnostics.shared.record("command.history", numbers: ["spoken_at": now - age],
+                                          info: ["receipt": id.uuidString, "command": title, "result": "Heard", "summary": summary])
+                var reserving = true
+                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(repetitionKey(action)), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true) { [weak self] step in
+                    if reserving { return } // The unqueued first action stays immediate; queued first actions use this callback later.
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        guard !self.quitting, self.repetitions.shouldRun(step) else { self.finishCommand(step, .superseded); return }
+                        repeatAction(step)
+                    }
+                }
+                reserving = false
+                if step == nil, !repetitions.contains(id) {
+                    finishCommand(id, .failedBeforeDispatch, detail: "Use a repeat count from 1 to 100.")
+                }
+                return step
+            case .covered: return nil
+            }
+        } catch {
+            Diagnostics.shared.failure("voice.command.journal_failed", error)
+            // A later lookup might recover. Without a durable claim it could repeat this action.
+            return nil
+        }
+    }
+    private func repetitionKey(_ action: String) -> String {
+        let raw = action == "app" ? "switchAppPhrase" : (VoiceAudioAction(rawValue: action)?.slots.first?.rawValue ?? action)
+        guard let slot = PhraseSlot(rawValue: raw) else { return raw }
+        return PhraseSlot.settingsGroups(PhraseSlot.allCases).first(where: { $0.contains(slot) })?.first?.rawValue ?? raw
+    }
+    private func repeatWake(receipt: UUID) {
+        Task { @MainActor in
+            let previous = voiceTask
+            await previous?.value
+            guard !quitting, repetitions.shouldRun(receipt) else { finishCommand(receipt, .superseded); return }
+            // Repeat the native Start action without replacing the first wake's opening capture.
+            let context = VoiceStartContext()
+            voiceTask = Task { await openVoice(trigger: "Repeated wake", context: context, receipt: receipt) }
+        }
+    }
+    private func repeatAudio(_ action: VoiceAudioAction, receipt: UUID) {
+        Task { @MainActor in
+            // The original handler may still be finishing another channel in the same transcript.
+            // Await its real completion, without a timer or competing Voice operation. — GPT-6.1 Sol
+            let previous = voiceTask
+            await previous?.value
+            guard !quitting, repetitions.shouldRun(receipt) else { finishCommand(receipt, .superseded); return }
+            let shortcut: HChatShortcutAction
+            switch action {
+            case .muteMicrophone: shortcut = .muteMicrophone
+            case .unmuteMicrophone: shortcut = .unmuteMicrophone
+            case .silenceSpeakers: shortcut = .silenceSpeakers
+            case .unsilenceSpeakers: shortcut = .unsilenceSpeakers
+            }
+            do { _ = try await performShortcut(shortcut, playFeedback: false); finishCommand(receipt, .confirmed) }
+            catch { finishCommand(receipt, .unknown, detail: error.localizedDescription) }
+        }
+    }
+
+    // The former inline Show Voice handler; speech repetitions use the same navigation and status.
+    // Moved without changing its current/previous-chat policy. — GPT-6.1 Sol
+    private func repeatShowVoice(receipt id: UUID) {
+        guard !quitting, showVoiceTask == nil else { finishCommand(id, .superseded); return }
+        showVoiceTask = Task { [weak self] in
+            let outcome = await ShowVoiceCommand.perform()
+            guard let self else { return }
+            self.finishCommand(id, outcome.didOpen ? .submitted : .failedBeforeDispatch,
+                               detail: outcome == .inactive && self.observedVoicePresence == .active ? nil : outcome.message)
+            self.showVoiceTask = nil
+            guard !self.quitting else { return }
+            if outcome != .inactive || self.observedVoicePresence != .active {
+                self.desktopCommandStatus = outcome.message
+                self.desktopStatusRequiresInactiveVoice = outcome == .inactive
+            }
+            if outcome.didOpen, self.repetitions.isFirst(id) { self.feedback.play(PhraseSlot.showVoicePhrase.cue) }
+            Diagnostics.shared.record("voice.show", info: ["outcome": outcome.rawValue])
+        }
+    }
     private let voicePeerPriority = VoicePeerPriority()
     private let voicePeerMailbox = VoicePeerMailbox(handler: VoicePeerControl.respond)
     let spotifyVolume: SpotifyVoiceVolume
+    @Published var spotifyVolumeLimit = SpotifyVolumePolicy.limit() {
+        didSet {
+            UserDefaults.standard.set(spotifyVolumeLimit, forKey: SpotifyVolumePolicy.preferenceKey)
+            spotifyVolume.volumeLimitChanged()
+        }
+    }
     @Published var lowerSpotifyDuringChat = UserDefaults.standard.bool(forKey: "lowerSpotifyDuringChat") {
         didSet {
             UserDefaults.standard.set(lowerSpotifyDuringChat, forKey: "lowerSpotifyDuringChat")
@@ -103,6 +264,18 @@ import SwiftUI
     @Published var pauseVideoPhrase = PhraseSlot.pauseVideoPhrase.savedValue() {
         didSet { UserDefaults.standard.set(pauseVideoPhrase, forKey: "pauseVideoPhrase"); updatePhrases() }
     }
+    @Published var rewindVideoPhrase = PhraseSlot.rewindVideoPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(rewindVideoPhrase, forKey: PhraseSlot.rewindVideoPhrase.rawValue); updatePhrases() }
+    }
+    @Published var rewindVideoSeconds = VideoCommand.rewindSeconds() {
+        didSet { UserDefaults.standard.set(rewindVideoSeconds, forKey: VideoCommand.rewindSecondsPreference) }
+    }
+    @Published var rewindFivePhrase = PhraseSlot.rewindFivePhrase.savedValue() {
+        didSet { UserDefaults.standard.set(rewindFivePhrase, forKey: "rewindFivePhrase"); updatePhrases() }
+    }
+    @Published var rewindTenPhrase = PhraseSlot.rewindTenPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(rewindTenPhrase, forKey: "rewindTenPhrase"); updatePhrases() }
+    }
     @Published var playVideoPhrase = PhraseSlot.playVideoPhrase.savedValue() {
         didSet { UserDefaults.standard.set(playVideoPhrase, forKey: "playVideoPhrase"); updatePhrases() }
     }
@@ -117,6 +290,9 @@ import SwiftUI
     }
     @Published var openAppPhrase = PhraseSlot.openAppPhrase.savedValue() {
         didSet { UserDefaults.standard.set(openAppPhrase, forKey: "openAppPhrase"); updatePhrases() }
+    }
+    @Published var showVoicePhrase = PhraseSlot.showVoicePhrase.savedValue() {
+        didSet { UserDefaults.standard.set(showVoicePhrase, forKey: "showVoicePhrase"); updatePhrases() }
     }
     @Published var zoomInPhrase = PhraseSlot.zoomInPhrase.savedValue() {
         didSet { UserDefaults.standard.set(zoomInPhrase, forKey: "zoomInPhrase"); updatePhrases() }
@@ -138,12 +314,15 @@ import SwiftUI
     // Detection, highlighting, cancellation and startup capture all read this one configuration.
     @Published private(set) var phraseConfiguration = PhraseConfiguration(rows: [:])
     // Mac app and zoom commands don't depend on a connected Voice call.
-    @Published var appNameSpellings = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)) {
+    @Published var appNameSpellings = AppNameSpellings.load(from: .standard) { // Applies new built-ins to saved lists once.
         didSet { UserDefaults.standard.set(appNameSpellings.overrides, forKey: AppNameSpellings.defaultsKey) }
     }
     @Published private(set) var speakerOutputSettings = SpeakerOutputSettings.load()
     @Published private(set) var speakerOutputStatus: String?
-    private var speakerOutputDetector = StandaloneWake()
+    private var showVoiceDetector = StandaloneWake()
+    private var showVoiceTask: Task<Void, Never>?
+    private var speakerOutputDetector = StandaloneWake(speakerRoute: true)
+    private var speakerQueue = SpeakerOutputQueue()
     private var speakerOutputTask: Task<Void, Never>?
     @Published private(set) var switchingSpeakerOutput = false
     // App prefixes are handled by the overlapping-prefix suppression below. All other
@@ -156,12 +335,20 @@ import SwiftUI
     // Recognition checks each audio frame. Compile speaker combinations only when settings
     // change, not on that hot path, and share the result with highlighting and cancellation.
     private func rebuildSpeakerCommands() {
-        let conflict = speakerOutputSettings.conflictingPhrase(with: speakerOutputConflictingPhrases)
+        let otherPatterns = speakerOutputConflictingPhrases
+        if let upgraded = speakerOutputSettings.upgradingDefaultPrefixes(in: .standard, avoiding: otherPatterns) {
+            speakerOutputSettings = upgraded
+        }
+        let effective = similarPhrases ? speakerOutputSettings.omittingConflictingBuiltIns(avoiding: otherPatterns) : speakerOutputSettings
+        let conflict = effective.conflictingPhrase(with: otherPatterns, alternateSpellings: similarPhrases)
         if speakerOutputConflict != conflict { speakerOutputConflict = conflict }
-        activeSpeakerCommands = conflict == nil ? speakerOutputSettings.commands : []
+        activeSpeakerCommands = conflict == nil ? effective.commands(alternateSpellings: similarPhrases) : []
     }
     func saveSpeakerOutputSettings(_ settings: SpeakerOutputSettings) -> Bool {
-        guard settings.issue == nil, settings.conflictingPhrase(with: speakerOutputConflictingPhrases) == nil else { return false }
+        let settings = settings.cleaned()
+        let otherPatterns = speakerOutputConflictingPhrases
+        let effective = settings.omittingConflictingBuiltIns(avoiding: otherPatterns)
+        guard effective.issue == nil, effective.conflictingPhrase(with: otherPatterns) == nil else { return false }
         speakerOutputSettings = settings
         settings.save()
         updatePhrases()
@@ -178,9 +365,13 @@ import SwiftUI
     }
     private var appCommandDetector = AppCommandDetector()
     private var desktopTask: Task<Void, Never>?
-    private var pendingAppCommands: [AppCommandCandidate] = []
+    private var pendingAppCommands: [(AppCommandCandidate, UUID)] = []
     private var desktopCommandGeneration = UUID()
-    @Published private(set) var desktopCommandStatus: String?
+    @Published private(set) var desktopCommandStatus: String? {
+        didSet { desktopStatusRequiresInactiveVoice = false }
+    }
+    private var desktopStatusRequiresInactiveVoice = false
+    private var observedVoicePresence: VoiceCallPresence = .unknown
     private var zoomPatterns: [ZoomDirection: [PhrasePattern]] {
         Dictionary(uniqueKeysWithValues: ZoomDirection.allCases.map { ($0, patterns(for: $0.slot)) })
     }
@@ -192,23 +383,52 @@ import SwiftUI
         Dictionary(uniqueKeysWithValues: VideoCommand.allCases.map { ($0, patterns(for: $0.slot)) })
     }
     @Published var phraseDictionaries = UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]] ?? [:] {
-        didSet { UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); rebuildPhraseDictionaries(); updatePhrases() }
+        didSet { UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); updatePhrases() }
     }
-    private(set) var matchingDictionaries = PhraseDictionaries(Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.compactMap { slot in
-        (UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]])?[slot.rawValue].map { (PhraseMatcher.words(slot.defaultText).joined(), $0) }
-    }))
-    private func rebuildPhraseDictionaries() {
-        matchingDictionaries = PhraseDictionaries(Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.compactMap { slot in
-            phraseDictionaries[slot.rawValue].map { (PhraseMatcher.words(slot.defaultText).joined(), $0) }
-        }))
-    }
-    // A section's active phrases. Only a phrase equal to the section's default uses alternate
-    // spellings; every other main or extra phrase matches exactly.
-    func patterns(for slot: PhraseSlot) -> [PhrasePattern] {
-        phraseConfiguration.phrases(for: slot).map {
-            PhrasePattern(slot: slot, text: $0, similar: similarPhrases, dictionaries: matchingDictionaries)
+    private(set) var matchingDictionaries = PhraseDictionaries(savedByTrigger:
+        UserDefaults.standard.dictionary(forKey: "phraseDictionaries") as? [String: [String]] ?? [:])
+    func spellingConflict(_ entries: [String], for slot: PhraseSlot, phrase: String) -> String? {
+        for other in PhraseSlot.allCases where other.action != slot.action {
+            for text in phraseConfiguration.phrases(for: other) {
+                let pattern = PhrasePattern(slot: other, text: text, similar: true, dictionaries: matchingDictionaries)
+                if let conflict = entries.first(where: { pattern.kind(for: $0) != nil }) {
+                    return "“" + conflict + "” already belongs to " + other.action.settingsTitle + "."
+                }
+            }
         }
+        if let conflict = entries.first(where: { value in activeSpeakerCommands.contains { $0.pattern.kind(for: value) != nil } }) {
+            return "“" + conflict + "” already belongs to Switch speakers."
+        }
+        return nil
     }
+    // Move explicitly entered alternatives with a renamed custom trigger. Stock dictionaries
+    // keep their historical slot key so restoring the default recovers its own entries.
+    func renamePhrase(_ slot: PhraseSlot, id: UUID?, old: String, new: String) {
+        let draftKey = slot.rawValue + ":draft:" + (id?.uuidString ?? "main")
+        // Slash entry keeps its first component in the edited row on commit.
+        let oldTrigger = PhraseList.pieces(old).first ?? "", newTrigger = PhraseList.pieces(new).first ?? ""
+        let oldKey = PhraseList.key(oldTrigger).isEmpty ? draftKey : slot.spellingKey(for: oldTrigger)
+        let newKey = PhraseList.key(newTrigger).isEmpty ? draftKey : slot.spellingKey(for: newTrigger)
+        if !slot.isDefault(oldTrigger), !slot.isDefault(newTrigger), oldKey != newKey, let entries = phraseDictionaries[oldKey] {
+            var updated = phraseDictionaries
+            if !otherRowUses(slot, text: oldTrigger, excluding: id) { updated[oldKey] = nil }
+            if let existing = updated[newKey] {
+                var seen = Set(existing.map(PhraseList.key))
+                updated[newKey] = existing + entries.filter { seen.insert(PhraseList.key($0)).inserted }
+            } else { updated[newKey] = entries }
+            phraseDictionaries = updated
+        }
+        if let id { setPhraseRow(slot, id: id, text: new) }
+        else { self[keyPath: phraseKeyPath(for: slot)] = new }
+    }
+    private func otherRowUses(_ slot: PhraseSlot, text: String, excluding id: UUID?) -> Bool {
+        let key = PhraseList.key(text)
+        guard !key.isEmpty else { return false }
+        if id != nil && PhraseList.key(self[keyPath: phraseKeyPath(for: slot)]) == key { return true }
+        return phraseAliases[slot]?.contains { $0.id != id && PhraseList.key($0.text) == key } == true
+    }
+    private var compiledPatterns: [PhraseSlot: [PhrasePattern]] = [:]
+    func patterns(for slot: PhraseSlot) -> [PhrasePattern] { compiledPatterns[slot] ?? [] }
     var phrasePatterns: [PhrasePattern] { PhraseSlot.allCases.flatMap { patterns(for: $0) } + activeSpeakerCommands.map(\.pattern) }
     // Every phrase for an audio action, with the section that owns it, so the cue follows the match.
     private func patterns(for action: VoiceAudioAction) -> [(slot: PhraseSlot, pattern: PhrasePattern)] {
@@ -235,6 +455,10 @@ import SwiftUI
     }
     func removePhraseRow(_ slot: PhraseSlot, id: UUID) {
         guard let index = phraseAliases[slot]?.firstIndex(where: { $0.id == id }) else { return }
+        if let old = phraseAliases[slot]?[index].text, !slot.isDefault(old), !otherRowUses(slot, text: old, excluding: id) {
+            let key = PhraseList.key(old).isEmpty ? slot.rawValue + ":draft:" + id.uuidString : slot.spellingKey(for: old)
+            if phraseDictionaries[key] != nil { phraseDictionaries[key] = nil }
+        }
         phraseAliases[slot]?.remove(at: index)
         if phraseAliases[slot]?.isEmpty == true { phraseAliases[slot] = nil }
     }
@@ -271,11 +495,15 @@ import SwiftUI
         case .silencePhrase: return \.silencePhrase
         case .unsilencePhrase: return \.unsilencePhrase
         case .pauseVideoPhrase: return \.pauseVideoPhrase
+        case .rewindVideoPhrase: return \.rewindVideoPhrase
+        case .rewindFivePhrase: return \.rewindFivePhrase
+        case .rewindTenPhrase: return \.rewindTenPhrase
         case .playVideoPhrase: return \.playVideoPhrase
         case .pauseMusicPhrase: return \.pauseMusicPhrase
         case .playMusicPhrase: return \.playMusicPhrase
         case .switchAppPhrase: return \.switchAppPhrase
         case .openAppPhrase: return \.openAppPhrase
+        case .showVoicePhrase: return \.showVoicePhrase
         case .zoomInPhrase: return \.zoomInPhrase
         case .zoomOutPhrase: return \.zoomOutPhrase
         }
@@ -340,16 +568,28 @@ import SwiftUI
     // it must not start the optional Spotify side effect.
     init(enableSpotifyControl: Bool = true) {
         spotifyVolume = SpotifyVoiceVolume(monitor: voiceCalls)
+        repetitions.onProgress = { [weak self] progress in
+            guard let self else { return }
+            if let outcome = progress.outcome, let phase = SpokenCommandJournal.Phase(rawValue: outcome.rawValue) {
+                self.finishCommand(progress.id, phase, detail: self.repetitionDetails[progress.id]?.1, repetition: progress)
+            } else {
+                _ = self.receipts.progress(progress.id, requested: progress.requested, completed: progress.completed, phase: .attempted)
+            }
+        }
         PhraseList.seedDefaults(in: .standard) { [speakerOutputSettings] pattern in
             speakerOutputSettings.conflictingPhrase(with: [pattern]) != nil
         }
         phraseAliases = PhraseList.decode(UserDefaults.standard.object(forKey: PhraseList.defaultsKey)).mapValues { $0.map { PhraseRow($0) } }
         Diagnostics.shared.record("app.started", info: ["build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"])
+        Task { [weak self] in
+            let previous = await Task.detached(priority: .utility) { Diagnostics.shared.latestCommandSummary() }.value
+            if let self, self.latestCommandID == nil { self.lastCommandMessage = previous }
+        }
         desktopSession.onChange = { [weak self] state in
             guard let self else { return }
             // A lock or session switch cannot carry a queued wake into the
             // next desktop. Preserve any late call and require a fresh phrase.
-            self.endPhrase.reset(); self.standaloneWake.reset(); self.resetAudioPhrases()
+            self.repetitions.cancelPending(); self.endPhrase.reset(); self.standaloneWake.reset(); self.resetAudioPhrases()
             self.cancelAppCommands()
             self.listener.discardPendingRecognition()
             self.finishStartupSpeech(preserveRequested: true)
@@ -381,18 +621,21 @@ import SwiftUI
             self?.startupSpeech?.boundary()
         }
         listener.onUtteranceEnd = { [weak self] in
+            self?.repetitions.endUtterance()
             guard let self, var capture = self.startupSpeech else { return }
             let complete = capture.markUtteranceEnded()
             self.startupSpeech = capture
             if complete { self.finishStartupSpeech(preserveRequested: true, boundary: .utterance) }
         }
-        listener.onWaiting = { [weak self] in self?.archive.boundary(); self?.standaloneWake.reset(); self?.resetAudioPhrases(); self?.detectionRunning = false }
+        listener.onWaiting = { [weak self] in self?.repetitions.cancelPending(); self?.archive.boundary(); self?.standaloneWake.reset(); self?.resetAudioPhrases(); self?.detectionRunning = false }
         listener.onAudioActivity = { [weak self] level, seconds, audioTime in
+            self?.latestAudioTime = audioTime
             self?.standaloneWake.audio(level: level, seconds: seconds, at: audioTime)
             for action in VoiceAudioAction.allCases { self?.audioPhraseDetectors[action, default: StandaloneWake()].audio(level: level, seconds: seconds, at: audioTime) }
             self?.videoPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.zoomPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.musicPhraseDetector.audio(level: level, seconds: seconds, at: audioTime)
+            self?.showVoiceDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.speakerOutputDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
@@ -451,10 +694,24 @@ import SwiftUI
         dock.onWake = { [weak self] in self?.retrySpeechAfterEnvironmentChange() }
         listener.model = speechModel
         updateComputeLabel()
+        appCommandDetector.usesEditableShortForms = UserDefaults.standard.bool(forKey: PhraseList.editableShortFormsKey)
         updatePhrases()
         if enableSpotifyControl {
+            Task { await CodexVoiceSpeed.shared.recoverOnLaunch() }
+            voiceCalls.onSessionStarted = { date in
+                Task {
+                    do { try await CodexVoiceSpeed.shared.observedSessionStart(date, executable: CodexVoiceSpeed.executable()) }
+                    catch { Diagnostics.shared.failure("voice.defaults.restore_failed", error) }
+                }
+            }
             voiceCalls.onChange = { [weak self] state in
                 guard let self, !self.quitting else { return }
+                self.observedVoicePresence = state.presence
+                if state.presence == .active, self.desktopStatusRequiresInactiveVoice {
+                    if self.lastCommandDetail == ShowVoiceCommand.Outcome.inactive.message { self.lastCommandDetail = nil }
+                    self.desktopCommandStatus = nil
+                }
+                self.receiptSession = state.presence == .active ? state.callIdentifier?.lowercased() : nil
                 self.spotifyVolume.observe(state)
                 self.voicePeerPriority.observe(state)
                 self.voiceStatusRefresh.observe(state.presence, at: state.observedAt)
@@ -470,66 +727,136 @@ import SwiftUI
     }
 
     private func updateVoiceCallMonitoring() {
-        if soundEffects || lowerSpotifyDuringChat || voicePeerPriority.enabled { voiceCalls.start() }
-        else { voiceCalls.stop(); endFeedback = VoiceEndFeedback() }
+        // Receipt ownership needs the same native call identity even with feedback and ducking off.
+        if !quitting { voiceCalls.start() }
     }
     // Spoken or button video control. Sent once; Agent Flow Bridge picks the browser video and
     // answers with the outcome. Nothing here changes Voice, the microphone or the busy state.
-    func requestVideo(_ command: VideoCommand) {
+    func requestVideo(_ requested: VideoCommand, receipt: UUID? = nil) {
         guard !quitting else { return }
+        let command = requested.resolved(rewindSeconds: rewindVideoSeconds)
         Diagnostics.shared.record("video.command.requested", info: ["action": command.rawValue,
             "bridge": videoBridge.availability.isAvailable ? "available" : "unavailable"])
-        videoBridge.send(command) { [weak self] outcome in
+        videoBridge.sendIfAvailable(command, seconds: rewindVideoSeconds, shouldSend: { [weak self] in
+            guard let self, !self.quitting else { return false }
+            guard let receipt, self.repetitions.root(for: receipt) != nil else { return true }
+            return self.repetitions.shouldRun(receipt)
+        }) { [weak self] outcome in
+            let phase: SpokenCommandJournal.Phase
+            switch outcome {
+            case _ where outcome.confirms(command): phase = .confirmed
+            case .rejected, .unavailable: phase = .failedBeforeDispatch
+            default: phase = .unknown
+            }
+            self?.finishCommand(receipt, phase, message: outcome.summary(for: command))
             Diagnostics.shared.record("video.command.result", info: ["action": command.rawValue, "outcome": outcome.diagnostic])
             guard let self, !self.quitting else { return }
             self.lastEvent = outcome.summary(for: command)
             self.videoCommandStatus = outcome.summary(for: command)
-            if outcome.confirms(command) { self.feedback.play(command.slot.cue) }
+            if outcome.confirms(command) { if self.repetitions.isFirst(receipt ?? UUID()) { self.feedback.play(requested.slot.cue) } }
         }
     }
     func refreshVideoBridge() { if !quitting { videoBridge.refresh() } }
     // One shortcut pair to the frontmost app. Reports dispatch, not whether the app zoomed.
-    private func requestZoom(_ direction: ZoomDirection) {
-        guard !quitting else { return }
-        let result = desktopCommands.zoom(direction) { feedback.play(direction.slot.cue) } // Only once the keys are sent.
+    private func requestZoom(_ direction: ZoomDirection, range: Range<Int>, receipt: UUID? = nil) {
+        guard !quitting else { finishCommand(receipt, .superseded); return }
+        guard let id = receipt ?? reserveSpeech(direction.slot.rawValue, range: range,
+            repeatAction: { [weak self] id in self?.requestZoom(direction, range: range, receipt: id) }) else { return }
+        let result = desktopCommands.zoom(direction) { if repetitions.isFirst(id) { feedback.play(direction.slot.cue) } } // Only once the keys are sent.
+        finishCommand(id, result.diagnostic == "sent" ? .submitted : .failedBeforeDispatch, detail: result.message)
         Diagnostics.shared.record("desktop.zoom", info: ["direction": direction.rawValue, "outcome": result.diagnostic])
         if let message = result.message { desktopCommandStatus = message }
     }
-    private func requestSpeakerOutput(_ output: String) {
-        guard !quitting else { return }
-        guard speakerOutputTask == nil else { speakerOutputStatus = "Already switching speakers."; return }
+    private func requestSpeakerOutput(_ output: String, range: Range<Int>, receipt: UUID? = nil) {
+        guard !quitting else { finishCommand(receipt, .superseded); return }
+        guard let id = receipt ?? reserveSpeech("speakerOutput", target: output.lowercased(), range: range,
+            repeatAction: { [weak self] id in self?.requestSpeakerOutput(output, range: range, receipt: id) }) else { return }
+        for superseded in speakerQueue.enqueue(output, receipt: id) { finishCommand(superseded, .superseded) }
+        guard speakerOutputTask == nil else { return }
         speakerOutputStatus = "Switching speakers…"
         switchingSpeakerOutput = true
-        speakerOutputTask = Task { [weak self] in
-            let message = await Task.detached { SpeakerOutput.switchTo(output) }.value
-            guard let self else { return }
-            self.speakerOutputTask = nil
-            self.switchingSpeakerOutput = false
-            if !self.quitting { self.speakerOutputStatus = message; self.lastEvent = message }
+        speakerOutputTask = Task {
+            while let request = speakerQueue.active {
+                let admitted = request.receipts.filter { repetitions.root(for: $0) == nil || repetitions.shouldRun($0) }
+                guard !admitted.isEmpty else {
+                    for receipt in speakerQueue.finished() { finishCommand(receipt, .superseded) }
+                    continue
+                }
+                let started = Diagnostics.now
+                let first = request.receipts[0].uuidString
+                // Device names can be personal. The saved destination UUID identifies the output
+                // across the request and completion without copying its name into diagnostics.
+                let destination = speakerOutputSettings.destinations.first { $0.output.trimmingCharacters(in: .whitespacesAndNewlines) == request.output }?.id.uuidString ?? "unknown"
+                Diagnostics.shared.record("speaker.output.requested", info: ["receipt": first, "destination": destination])
+                let outcome = await Task.detached { SpeakerOutput.switchTo(request.output) }.value
+                for receipt in speakerQueue.finished() { finishCommand(receipt, outcome.phase, detail: outcome.message) }
+                Diagnostics.shared.record("speaker.output.completed", numbers: ["elapsed_ms": (Diagnostics.now - started) * 1000],
+                                          info: ["verified": String(outcome.verified), "receipt": first, "destination": destination])
+                if !quitting {
+                    speakerOutputStatus = outcome.message; lastEvent = outcome.message
+                    if outcome.verified, request.receipts.contains(where: { repetitions.isFirst($0) }) { feedback.play(control: "speakerOutput", default: nil) }
+                }
+            }
+            speakerOutputTask = nil
+            switchingSpeakerOutput = false
         }
     }
-    private func requestMusic(_ slot: PhraseSlot) {
-        guard !quitting else { return }
-        let result = desktopCommands.toggleCurrentMedia { feedback.play(slot.cue) }
+    private func requestMusic(_ slot: PhraseSlot, receipt: UUID? = nil) {
+        guard !quitting else { finishCommand(receipt, .superseded); return }
+        guard let id = receipt ?? reserveSpeech(slot.rawValue, range: musicPhraseDetector.acceptedRange,
+            repeatAction: { [weak self] id in self?.requestMusic(slot, receipt: id) }) else { return }
+        let result = desktopCommands.toggleCurrentMedia { if repetitions.isFirst(id) { feedback.play(slot.cue) } }
+        finishCommand(id, result.diagnostic == "sent" ? .submitted : .failedBeforeDispatch, detail: result.message)
         Diagnostics.shared.record("media.play_pause", info: ["phrase_slot": slot.rawValue, "outcome": result.diagnostic])
         if let message = result.message { lastEvent = message; desktopCommandStatus = message }
     }
     // App commands run one after another in spoken order; each heard occurrence acts once.
-    private func performAppCommands(_ candidates: [AppCommandCandidate]) {
-        pendingAppCommands.append(contentsOf: candidates.prefix(max(0, 8 - pendingAppCommands.count)))
+    private func performAppCommands(_ candidates: [AppCommandCandidate], receipt: UUID? = nil) {
+        for candidate in candidates {
+            let target = appNameSpellings.commandTarget(candidate.name)
+            guard let id = receipt ?? reserveSpeech("app", target: target, range: candidate.wordRange,
+                repeatAction: { [weak self] id in
+                    guard let self else { return }
+                    let root = self.repetitions.root(for: id) ?? id
+                    self.performAppCommands([self.repeatAppTargets[root] ?? candidate], receipt: id)
+                }) else { continue }
+            guard pendingAppCommands.count < 8 else { finishCommand(id, .superseded); continue }
+            pendingAppCommands.append((candidate, id))
+        }
         guard desktopTask == nil else { return }
         let token = desktopCommandGeneration
         desktopTask = Task { [weak self] in
             while !Task.isCancelled, let self, self.desktopCommandGeneration == token,
-                  let candidate = self.pendingAppCommands.first {
+                  let (candidate, id) = self.pendingAppCommands.first {
                 self.pendingAppCommands.removeFirst()
+                let prepared = await self.desktopCommands.repetitionCandidate(candidate, spellings: self.appNameSpellings)
+                if prepared.name != candidate.name, let range = prepared.wordRange, self.repetitions.isFirst(id) {
+                    guard self.repetitions.setArgumentRange(range, for: id),
+                          let root = self.repetitions.root(for: id),
+                          self.receipts.retarget(root, to: self.appNameSpellings.commandTarget(prepared.name)) else {
+                        self.finishCommand(id, .failedBeforeDispatch); continue
+                    }
+                }
+                if let root = self.repetitions.root(for: id) { self.repeatAppTargets[root] = prepared }
+                let candidate = prepared
+                guard self.repetitions.root(for: id) == nil || self.repetitions.shouldRun(id) else {
+                    self.finishCommand(id, .superseded); continue
+                }
                 let dispatchedAt = Diagnostics.now
                 // The cue marks an accepted switch/open request, before front-app confirmation.
                 // Ordinary speech, unresolved names and cancelled work stay silent.
                 let result = await self.desktopCommands.perform(candidate, spellings: self.appNameSpellings) {
-                    if !self.quitting, self.desktopCommandGeneration == token { self.feedback.play(candidate.kind.slot.cue) }
+                    if !self.quitting, self.desktopCommandGeneration == token, self.repetitions.isFirst(id) { self.feedback.play(candidate.kind.slot.cue) }
                 }
-                guard !Task.isCancelled, self.desktopCommandGeneration == token else { return }
+                guard !Task.isCancelled, self.desktopCommandGeneration == token else { self.finishCommand(id, .unknown); return }
+                let phase: SpokenCommandJournal.Phase
+                switch result.diagnostic {
+                case "frontmost": phase = .confirmed
+                case "dispatched": phase = .submitted
+                case "ignored", "not-resolved", "verify-failed": phase = .failedBeforeDispatch
+                default: phase = .unknown
+                }
+                self.finishCommand(id, phase, detail: result.message)
                 Diagnostics.shared.record("desktop.app", numbers: ["duration_ms": (Diagnostics.now - dispatchedAt) * 1000],
                     info: ["kind": candidate.kind.rawValue, "bare": String(candidate.bare), "outcome": result.diagnostic])
                 if let message = result.message { self.desktopCommandStatus = message }
@@ -538,6 +865,7 @@ import SwiftUI
         }
     }
     private func cancelAppCommands() {
+        for (_, id) in pendingAppCommands { finishCommand(id, .failedBeforeDispatch) }
         pendingAppCommands.removeAll()
         desktopCommandGeneration = UUID()
         desktopTask?.cancel()
@@ -692,15 +1020,21 @@ import SwiftUI
         restartMicrophone(settle: true)
     }
     private func resetAudioPhrases() {
+        repetitions.boundary()
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
         videoPhraseDetectors.reset()
         zoomPhraseDetectors.reset()
         musicPhraseDetector.reset()
+        showVoiceDetector.reset()
         speakerOutputDetector.reset()
         appCommandDetector.reset()
     }
     private func updatePhrases() {
         rebuildPhraseConfiguration()
+        matchingDictionaries = PhraseDictionaries(savedByTrigger: phraseDictionaries, active: phraseConfiguration)
+        compiledPatterns = Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { slot in
+            (slot, phraseConfiguration.phrases(for: slot).map { PhrasePattern(slot: slot, text: $0, similar: similarPhrases, dictionaries: matchingDictionaries) })
+        })
         rebuildSpeakerCommands()
         cancelAppCommands()
         listener.contextualPhrases = phraseConfiguration.allPhrases + activeSpeakerCommands.map { $0.pattern.text }
@@ -741,7 +1075,7 @@ import SwiftUI
         }
         refreshPermissions()
     }
-    func previewSound(_ cue: FeedbackSounds.Cue) { feedback.play(cue) }
+    func previewSound(_ cue: FeedbackSounds.Cue) { feedback.sample(cue) }
     var speechCheckUnavailableReason: String? {
         if checkingSpeech { return "Checking recorded speech locally…" }
         if busy || quitting { return "Available when the current action finishes." }
@@ -895,7 +1229,7 @@ import SwiftUI
     // Siri and personally trained Vocal Shortcuts use the same native actions
     // and task ownership as the window/phrases. A native shortcut can start a
     // call while local transcription is off, without turning that listener on.
-    func performShortcut(_ action: HChatShortcutAction) async throws -> String {
+    func performShortcut(_ action: HChatShortcutAction, playFeedback: Bool = true) async throws -> String {
         if action == .status {
             let snapshot = await voice.readStatus()
             guard snapshot.accessibilityAllowed else {
@@ -921,7 +1255,7 @@ import SwiftUI
                 beginVoice(trigger: "Voice started with shortcut")
             } else {
                 busy = true
-                feedback.play(PhraseSlot.wakePhrase.cue)
+                if playFeedback { feedback.play(PhraseSlot.wakePhrase.cue) }
                 let context = VoiceStartContext()
                 voiceStartContext = context
                 voiceTask = Task {
@@ -953,7 +1287,7 @@ import SwiftUI
                 defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
                 do {
                     let call = spotifyVolume.callEpoch
-                    let active = try await voice.setAudio(audio, onRecognized: { self.feedback.play(.microphoneDetected) })
+                    let active = try await voice.setAudio(audio, onRecognized: { if playFeedback { self.feedback.play(.microphoneDetected) } })
                     guard generation == token else { return }
                     guard active else { throw BridgeError.message("Codex Voice is off.") }
                     confirmedVoiceStatusRead()
@@ -961,7 +1295,7 @@ import SwiftUI
                         microphone = audio.targetMuted ? .muted : .listening
                         spotifyVolume.confirmMicrophoneMute(audio.targetMuted, in: call)
                     }
-                    if let slot = audio.slots.first { feedback.play(slot.cue) }
+                    if playFeedback, let slot = audio.slots.first { feedback.play(slot.cue) }
                     showListening()
                     lastEvent = audio.controlsSpeakers ? "Chat audio is \(audio.targetMuted ? "muted" : "on")" : "Chat is \(audio.targetMuted ? "muted" : "listening")"
                 } catch {
@@ -991,8 +1325,8 @@ import SwiftUI
         case .status: return "Chat status is unknown."
         }
     }
-    func manualMute(feedbackAlreadyPlayed: Bool = false, force: Bool = false) {
-        guard enabled || voice.connected || voiceStartContext != nil || force, !quitting, !endingVoice else { return }
+    func manualMute(feedbackAlreadyPlayed: Bool = false, force: Bool = false, receipt: UUID? = nil) {
+        guard enabled || voice.connected || voiceStartContext != nil || force, !quitting, !endingVoice else { finishCommand(receipt, .unknown); return }
         cancelStartupSpeech()
         if busy, voiceStartContext != nil {
             let previous = voiceTask
@@ -1000,7 +1334,7 @@ import SwiftUI
             let token = UUID(); generation = token
             busy = true; endingVoice = true
             voiceTask = Task {
-                defer { endingVoice = false; if generation == token { busy = false; voiceTask = nil } }
+                defer { finishCommand(receipt, .unknown); endingVoice = false; if generation == token { busy = false; voiceTask = nil } }
                 do { _ = try await voice.endIfPresent() }
                 catch { if generation == token { self.error = error.localizedDescription } }
                 await previous?.value
@@ -1013,12 +1347,12 @@ import SwiftUI
             previous?.cancel()
             voiceTask = Task {
                 await previous?.value
-                guard generation == token, !quitting else { return }
-                await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true, force: force)
+                guard generation == token, !quitting else { finishCommand(receipt, .failedBeforeDispatch); return }
+                await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true, force: force, receipt: receipt)
             }
         } else {
             busy = true; endingVoice = true
-            voiceTask = Task { await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true, force: force) }
+            voiceTask = Task { await muteVoice(event: "Codex Voice ended", feedbackAlreadyPlayed: feedbackAlreadyPlayed, reserved: true, force: force, receipt: receipt) }
         }
     }
     // Ethan's 2 Nov "have like a refresh button ... so I can toggle it on and
@@ -1065,8 +1399,8 @@ import SwiftUI
             Diagnostics.shared.record("voice.status.observed_end")
         }
     }
-    private func beginVoice(trigger: String, wakeRange: Range<Int>? = nil) {
-        guard enabled, detectionRunning, !busy, !quitting else { return }
+    private func beginVoice(trigger: String, wakeRange: Range<Int>? = nil, receipt: UUID? = nil) {
+        guard enabled, detectionRunning, !busy, !quitting else { finishCommand(receipt, .failedBeforeDispatch); return }
         // Reserve synchronously so an end phrase arriving before this Task's
         // first turn cancels the queued opening instead of starting a second action.
         busy = true
@@ -1079,7 +1413,7 @@ import SwiftUI
         finishedStartupObservation = nil
         let context = VoiceStartContext()
         voiceStartContext = context
-        startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, patterns: patterns(for: .wakePhrase))
+        startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, patterns: patterns(for: .wakePhrase), repeatCounts: CommandRepetition.enabled("wakePhrase"))
         context.prepareNewCall = { [weak self, weak context] in
             guard let self, let context, self.voiceStartContext === context,
                   var capture = self.startupSpeech, capture.id == context.id else { return }
@@ -1089,9 +1423,10 @@ import SwiftUI
             if !saved, self.startupSpeech?.id == context.id { self.startupSpeech = nil }
             if saved { Diagnostics.shared.record("voice.startup_speech.started", info: ["request": context.id.uuidString]) }
         }
-        voiceTask = Task { await openVoice(trigger: trigger, context: context) }
+        voiceTask = Task { await openVoice(trigger: trigger, context: context, receipt: receipt) }
     }
-    private func openVoice(trigger: String, context: VoiceStartContext, requiresListening: Bool = true) async {
+    private func openVoice(trigger: String, context: VoiceStartContext, requiresListening: Bool = true, receipt: UUID? = nil) async {
+        defer { finishCommand(receipt, .unknown) }
         guard enabled || !requiresListening, !quitting, !Task.isCancelled else { busy = false; return }
         shortcutNotice = VoiceBridge.shortcutSetupMessage()
         let token = generation
@@ -1125,6 +1460,7 @@ import SwiftUI
                 spotifyVolume.confirmMicrophoneMute(false, in: spotifyCall)
             }
             voiceStatusRefresh.confirmedLocalState(active: true, at: ProcessInfo.processInfo.systemUptime)
+            finishCommand(receipt, .confirmed)
             microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Chat is on"; status = "Chat on"
             detail = openedMicrophone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(spokenEndPhrase) to end chat."; lastEvent = trigger
         } catch {
@@ -1135,7 +1471,8 @@ import SwiftUI
             if !(error is CancellationError) { self.error = error.localizedDescription }
         }
     }
-    private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false, reserved: Bool = false, force: Bool = false) async {
+    private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false, reserved: Bool = false, force: Bool = false, receipt: UUID? = nil) async {
+        defer { finishCommand(receipt, .unknown) }
         guard enabled || voice.connected || force, !busy || reserved else { return }
         cancelStartupSpeech()
         let token = generation
@@ -1147,6 +1484,7 @@ import SwiftUI
         }
         do {
             let ended = try await voice.endIfPresent()
+            finishCommand(receipt, .confirmed)
             guard generation == token else { return }
             voiceStatusRefresh.confirmedLocalState(active: false, at: ProcessInfo.processInfo.systemUptime)
             showListening(); lastEvent = ended ? event : "Heard \(spokenEndPhrase) · Codex Voice is already off"
@@ -1165,6 +1503,9 @@ import SwiftUI
     }
     private func heard(_ text: String, timings: [(word: String, start: Double, end: Double)]) {
         guard enabled else { return }
+        // A rewritten transcript can have a different token layout from its timing hypothesis.
+        // Never attribute its command to an unrelated word in the previous timing batch.
+        receiptWordEnds = timings.map(\.word) == PhraseMatcher.words(text) ? timings.map(\.end) : []
         if saveTranscripts { archive.update(text, model: speechModel.rawValue, microphone: inputs.selectedName) }
         let changed = transcript != text
         if changed {
@@ -1177,9 +1518,12 @@ import SwiftUI
         videoPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         zoomPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         musicPhraseDetector.update(text, at: Diagnostics.now, timings: timings)
+        showVoiceDetector.update(text, at: Diagnostics.now, timings: timings)
         speakerOutputDetector.update(text, at: Diagnostics.now, timings: timings)
         appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
+        let repetitionText = CommandRepetition.tokens(text)
+        repetitions.update(repetitionText.words, timings: timings, boundaries: repetitionText.boundaries)
         // Keep collecting while a keyword waits for its audio pause. An accepted
         // End below cancels the startup file before dispatching the native command.
         if var capture = startupSpeech {
@@ -1205,8 +1549,7 @@ import SwiftUI
         // Every listed phrase for a command shares its detector, occurrence count and sound.
         // A phrase listed for different commands keeps its first owner in PhraseConfiguration.
         let wakePatterns = patterns(for: .wakePhrase), endPatterns = patterns(for: .sleepPhrase)
-        if let endPattern = endPatterns.first, !wakePatterns.isEmpty
-            && endPhrase.poll(at: Diagnostics.now, phrase: endPattern.text, similar: endPattern.similar, rejectNegated: true, ending: true, patterns: endPatterns) {
+        if let endPattern = endPatterns.first, endPhrase.poll(at: Diagnostics.now, phrase: endPattern.text, similar: endPattern.similar, rejectNegated: true, ending: true, patterns: endPatterns) {
             for action in VoiceAudioAction.allCases {
                 let entries = patterns(for: action).map(\.pattern)
                 if !entries.isEmpty { audioPhraseDetectors[action, default: StandaloneWake()].cancelPending(patterns: entries, endPatterns: endPatterns) }
@@ -1214,6 +1557,7 @@ import SwiftUI
             videoPhraseDetectors.cancelPending(aliases: videoPatterns, endPatterns: endPatterns) // ...and over video commands.
             zoomPhraseDetectors.cancelPending(aliases: zoomPatterns, endPatterns: endPatterns) // ...and desktop commands.
             musicPhraseDetector.cancelPending(patterns: musicPatterns.map(\.pattern), endPatterns: endPatterns)
+            showVoiceDetector.cancelPending(patterns: patterns(for: .showVoicePhrase), endPatterns: endPatterns)
             speakerOutputDetector.cancelPending(patterns: activeSpeakerCommands.map(\.pattern), endPatterns: endPatterns)
             appCommandDetector.consumeAll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
             cancelStartupSpeech()
@@ -1222,22 +1566,34 @@ import SwiftUI
             // Ethan's "buy chat" / Bye Chat gets its cue when recognized, even
             // while cancelling an opening or when Voice is already off. Native
             // status and errors still report the actual ending outcome separately.
+            repetitions.cancelPending()
+            guard let id = reserveSpeech("sleepPhrase", range: endPhrase.acceptedRange,
+                repeatAction: { [weak self] id in self?.manualMute(feedbackAlreadyPlayed: true, force: true, receipt: id) }) else { return }
             endFeedback.detectedEnd()
             feedback.play(PhraseSlot.sleepPhrase.cue)
-            if busy { manualMute(feedbackAlreadyPlayed: true) }
+            if busy { manualMute(feedbackAlreadyPlayed: true, receipt: id) }
             else {
-                voiceTask = Task { await muteVoice(event: "Heard \(spokenEndPhrase)", feedbackAlreadyPlayed: true) }
+                voiceTask = Task { await muteVoice(event: "Heard \(spokenEndPhrase)", feedbackAlreadyPlayed: true, receipt: id) }
             }
             return
         }
+        repetitions.poll()
         // Browser video commands: consumed whether or not the bridge is available, never busy-gated,
         // and never routed to beginVoice. Earlier wakes in the same transcript are consumed too.
-        let videoCommands = videoPhraseDetectors.poll(at: Diagnostics.now, aliases: videoPatterns)
-        if let command = VideoPhraseDetectors.admitted(videoCommands) {
-            for accepted in videoCommands {
-                standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: patterns(for: accepted.command.slot))
+        let videoCommands = videoPhraseDetectors.poll(at: Diagnostics.now, aliases: videoPatterns, directOnly: true,
+            embeddedCommands: [.pause, .play], onDecision: { command, decision in
+                Diagnostics.shared.record("video.phrase.evaluated", info: ["action": command.rawValue, "decision": decision])
+            })
+        let lastPlayback = videoCommands.lastIndex { $0.command.setsPlaybackState }
+        for (index, accepted) in videoCommands.enumerated() {
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: patterns(for: accepted.command.slot))
+            guard let id = reserveSpeech(accepted.command.slot.rawValue, range: accepted.range,
+                repeatAction: { [weak self] id in self?.requestVideo(accepted.command, receipt: id) }) else { continue }
+            if VideoCommand.isSuperseded(accepted.command, at: index, lastPlayback: lastPlayback) {
+                finishCommand(id, .superseded)
+            } else {
+                requestVideo(accepted.command, receipt: id)
             }
-            requestVideo(command)
         }
         let music = musicPatterns
         if let first = music.first,
@@ -1247,21 +1603,27 @@ import SwiftUI
             standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: music.map(\.pattern))
             requestMusic(music[index].slot)
         }
+        let showPatterns = patterns(for: .showVoicePhrase)
+        if let first = showPatterns.first,
+           showVoiceDetector.poll(at: Diagnostics.now, phrase: first.text, similar: first.similar,
+                                  rejectNegated: true, patterns: showPatterns, directOnly: true) {
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: showPatterns)
+            if !quitting, let id = reserveSpeech("showVoicePhrase", range: showVoiceDetector.acceptedRange,
+                repeatAction: { [weak self] id in self?.repeatShowVoice(receipt: id) }) {
+                repeatShowVoice(receipt: id)
+            }
+        }
         // A full prefix + destination is required. Consume matching app prefixes too: the
         // generic "Switch" app prefix must not also open an app named after a speaker.
         let speakerCommands = activeSpeakerCommands
-        if let first = speakerCommands.first,
-           speakerOutputDetector.poll(at: Diagnostics.now, phrase: first.pattern.text, similar: false,
-                rejectNegated: true, patterns: speakerCommands.map(\.pattern), directOnly: true),
-           let index = speakerOutputDetector.acceptedPatternIndex, speakerCommands.indices.contains(index) {
+        speakerOutputDetector.dispatchSpeaker(at: Diagnostics.now, commands: speakerCommands,
+            onDecision: { decision, _, _ in Diagnostics.shared.record("speaker.phrase.evaluated", info: ["decision": decision]) }
+        ) { output, range in
             standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: speakerCommands.map(\.pattern))
-            if let range = speakerOutputDetector.acceptedRange {
-                appCommandDetector.consume(overlapping: range, switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
-            }
-            if !quitting, !capturingStartupSpeech { requestSpeakerOutput(speakerCommands[index].output) }
+            appCommandDetector.consume(overlapping: range, switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
+            requestSpeakerOutput(output, range: range)
         }
-        // Zoom and app commands: same consumption rules, never busy-gated and never routed to
-        // beginVoice. While an opening is being captured for Voice, its words belong to Voice.
+        // The same direct-command and mention rules apply while recording the opening.
         let zooms = zoomPhraseDetectors.poll(at: Diagnostics.now, aliases: zoomPatterns, directOnly: true,
             onDecision: { command, decision in
                 Diagnostics.shared.record("desktop.zoom.evaluated", info: ["command": command.rawValue, "decision": decision])
@@ -1270,9 +1632,10 @@ import SwiftUI
             for accepted in zooms {
                 standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: patterns(for: accepted.command.slot))
             }
-            if !quitting, !capturingStartupSpeech { for accepted in zooms { requestZoom(accepted.command) } }
+            for accepted in zooms { requestZoom(accepted.command, range: accepted.range) }
         }
         let appCommands = appCommandDetector.poll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase),
+            reserved: patterns(for: .showVoicePhrase) + activeSpeakerCommands.map(\.pattern),
             onDecision: { command, decision, evidence in
                 // Counts and timing only, never words: separates a missed pause from discussion.
                 var numbers = ["left_words": Double(evidence.leftWords), "name_words": Double(evidence.nameWords)]
@@ -1281,7 +1644,7 @@ import SwiftUI
                 Diagnostics.shared.record("desktop.app.evaluated", numbers: numbers,
                     info: ["command": command.rawValue, "decision": decision, "timing": evidence.timing])
             })
-        if !appCommands.isEmpty, !quitting, !capturingStartupSpeech { performAppCommands(appCommands) }
+        if !appCommands.isEmpty, !quitting { performAppCommands(appCommands) }
         let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int, slot: PhraseSlot)? in
             let entries = patterns(for: action)
             guard let first = entries.first,
@@ -1293,21 +1656,38 @@ import SwiftUI
         if !actions.isEmpty {
             // Reserve synchronously, as beginVoice does. Consume busy commands
             // rather than replaying a surprise mute when an opening/End finishes.
-            guard !busy, !quitting else { return }
+            guard !quitting else { return }
+            if busy {
+                for item in actions {
+                    let id = reserveSpeech(item.action.rawValue, range: audioPhraseDetectors[item.action]?.acceptedRange,
+                        repeatAction: { [weak self] id in self?.repeatAudio(item.action, receipt: id) })
+                    finishCommand(id, .superseded)
+                }
+                return
+            }
             for slot in PhraseSlot.allCases.dropFirst(2) where !slot.controlsDesktop {
                 standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: patterns(for: slot)) // Consume fuzzy wakes too, so Hello Chad before mute cannot undo it.
             }
             busy = true
             let token = generation
+            let reservedActions = actions.compactMap { item -> (VoiceAudioAction, PhraseSlot, UUID)? in
+                guard let id = reserveSpeech(item.action.rawValue, range: audioPhraseDetectors[item.action]?.acceptedRange,
+                    repeatAction: { [weak self] id in self?.repeatAudio(item.action, receipt: id) }) else { return nil }
+                return (item.action, item.slot, id)
+            }
             voiceTask = Task {
-                defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
+                defer {
+                    for (_, _, id) in reservedActions { finishCommand(id, .unknown) }
+                    if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() }
+                }
                 do {
-                    for (action, _, slot) in actions { // A delayed transcript can contain both channels or opposite commands; apply them in spoken order.
+                    for (action, slot, id) in reservedActions { // A delayed transcript can contain both channels or opposite commands; apply them in spoken order.
                         Diagnostics.shared.record("voice.audio.requested", info: ["action": action.rawValue, "phrase_slot": slot.rawValue])
                         let spotifyCall = spotifyVolume.callEpoch
                         let active = try await voice.setAudio(action, onRecognized: { self.feedback.play(.microphoneDetected) }) // Inactive Voice gets no sound or key.
                         guard generation == token else { return }
-                        guard active else { continue }
+                        guard active else { finishCommand(id, .failedBeforeDispatch); continue }
+                        finishCommand(id, .confirmed)
                         confirmedVoiceStatusRead()
                         error = nil
                         if !action.controlsSpeakers {
@@ -1340,7 +1720,10 @@ import SwiftUI
             // scheduling another call or cancelling the work already underway.
             feedback.play(PhraseSlot.wakePhrase.cue)
             lastEvent = "Heard \(spokenWakePhrase) · finishing the current Voice action"
-        } else { beginVoice(trigger: "Heard \(spokenWakePhrase)", wakeRange: standaloneWake.acceptedRange) }
+        } else if let id = reserveSpeech("wakePhrase", range: standaloneWake.acceptedRange,
+            repeatAction: { [weak self] id in
+                self?.repeatWake(receipt: id)
+            }) { beginVoice(trigger: "Heard \(spokenWakePhrase)", wakeRange: standaloneWake.acceptedRange, receipt: id) }
     }
     // Stops, new wakes, desktop changes and quit keep the words heard so far,
     // labelled `interrupted` because the opening's end may be missing.
@@ -1396,6 +1779,7 @@ import SwiftUI
         updateListeningDelay = dockDelay
         if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
+        showVoiceTask?.cancel()
         voiceStatusTask?.cancel(); voiceStatusTask = nil
         voiceCalls.stop()
         voicePeerMailbox.stop()
@@ -1405,6 +1789,8 @@ import SwiftUI
         stopLocal()
         await voicePeerPriority.shutdown()
         await previous?.value
+        do { try await CodexVoiceSpeed.shared.shutdown() }
+        catch { Diagnostics.shared.failure("voice.defaults.restore_failed", error) }
         await speakerOutputTask?.value // Let the helper finish microphone recovery before exit.
         archive.flush()
         await startupSpeechFile.flush()

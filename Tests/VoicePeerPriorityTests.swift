@@ -7,6 +7,42 @@ import Foundation
         let thread = UUID(), session = UUID()
         let identifier = "\(thread):\(session)"
         let local = VoicePeerCall(token: identifier + ":42")!
+        var shown: [URL] = []
+        for status in [VoicePeerReceipt.Status.inactive, .unknown, .changed, .disabled, .ended, .active] {
+            let result = await ShowVoiceCommand.perform(resolve: { .init(status: status) }, recent: {
+                precondition(status == .inactive); return .none
+            }, open: { _, _ in
+                fatalError("A missing or ambiguous call must never navigate")
+            })
+            precondition(result == (status == .inactive ? .inactive : .unknown))
+        }
+        let show = await ShowVoiceCommand.perform(resolve: { .init(status: .active, call: local) }, recent: { fatalError("Do not consult history during a call") }, open: { pid, link in
+            precondition(pid == local.pid)
+            shown.append(link)
+            return true
+        })
+        precondition(show == .opened && shown.map(\.absoluteString) == ["codex://threads/" + thread.uuidString.lowercased()])
+        let failedShow = await ShowVoiceCommand.perform(resolve: { .init(status: .active, call: local) }, open: { _, _ in false })
+        precondition(failedShow == .failed)
+        let last = UUID()
+        let previous = await ShowVoiceCommand.perform(resolve: { .init(status: .inactive) },
+            recent: { .thread(last) }, open: { pid, link in
+                precondition(pid == nil && link.absoluteString == "codex://threads/" + last.uuidString.lowercased())
+                return true
+            })
+        precondition(previous == .openedPrevious && previous.didOpen)
+        let unavailable = await ShowVoiceCommand.perform(resolve: { .init(status: .inactive) },
+            recent: { .unknown }, open: { _, _ in fatalError("Unknown history cannot navigate") })
+        precondition(unavailable == .unknown)
+        var checks = 0
+        let race = await ShowVoiceCommand.perform(resolve: {
+            checks += 1
+            return checks == 1 ? .init(status: .inactive) : .init(status: .active, call: local)
+        }, recent: { .thread(last) }, open: { pid, link in
+            precondition(pid == local.pid && link.lastPathComponent == thread.uuidString.lowercased())
+            return true
+        })
+        precondition(race == .opened)
         let peer = VoicePeerCall(token: "\(UUID()):\(UUID()):43")!
         let active = VoiceCallObservation(presence: .active, callIdentifier: identifier, verifiedCallIdentifier: identifier)
         let ledgerOnly = VoiceCallObservation(presence: .active, callIdentifier: identifier)

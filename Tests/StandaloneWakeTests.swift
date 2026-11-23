@@ -2,6 +2,16 @@ import Foundation
 
 @main enum StandaloneWakeTests {
     static func main() {
+        for (words, shouldShow) in [("show voice", true), ("please show voice", true),
+                                     ("I said show voice", false), ("don't show voice", false),
+                                     ("show voice settings", false)] {
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1)
+            detector.update(words, at: 1)
+            let phrase = PhraseSlot.showVoicePhrase.defaultText
+            precondition(detector.poll(at: 1, phrase: phrase, similar: false, rejectNegated: true, directOnly: true) == shouldShow)
+            precondition(!detector.poll(at: 2, phrase: phrase, similar: false, rejectNegated: true, directOnly: true))
+        }
         var checks = 0
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1

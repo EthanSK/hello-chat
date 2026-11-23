@@ -1,6 +1,6 @@
 import Foundation
 
-// Ethan's "HUD" is the Heard (local model) transcript in the native window.
+// Ethan's "HUD" is the Live transcription view in the native window.
 // Preserve the model's actual text, punctuation and case while colouring only
 // complete matcher spans. Discussion filtering still owns activation separately.
 enum PhraseHighlights {

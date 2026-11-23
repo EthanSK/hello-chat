@@ -1,0 +1,4 @@
+{
+  "examples": "Zoom in three times, Zoom in 3",
+  "body": "Runs a command that many times, up to 100. Repeat count is on for every command by default. Say the number after the whole command, including any app or speaker name. Without a number, it runs once. For rewind, always include “times”, since a number alone can be a distance. For music, each run is another Play/Pause press, so an even number can leave playback as it was. Turn off Repeat count in a command’s gear on Home."
+}

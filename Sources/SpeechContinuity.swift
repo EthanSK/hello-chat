@@ -86,6 +86,13 @@ struct AudioProgressWatchdog {
 // busy. Reset recognition across that gap rather than combining unrelated
 // pieces of speech or permanently disabling the detector.
 struct SpeechContinuity {
+    // Hold two seconds of already captured live audio during brief CPU stalls.
+    // An empty queue delivers immediately. Longer overruns still reset recognition.
+    static let captureFrames: UInt32 = 4096
+    static func liveBufferCount(sampleRate: Double) -> Int {
+        Int(min(128, max(2, ceil(sampleRate * 2 / Double(captureFrames)))))
+    }
+    private(set) var missingFrames: UInt64 = 0
     private var next: UInt64? = 0
     private var discardBefore = -Double.infinity
     func accepts(capturedAt time: Double) -> Bool { time >= discardBefore }
@@ -98,6 +105,7 @@ struct SpeechContinuity {
     }
     mutating func hasGap(sequence: UInt64) -> Bool {
         defer { next = sequence &+ 1 }
+        missingFrames = next.flatMap { sequence >= $0 ? sequence - $0 : nil } ?? 0
         guard let next else { return false }
         return sequence != next
     }

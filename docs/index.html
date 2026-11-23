@@ -156,12 +156,14 @@
 <div class="reference-scroll"><table class="reference-table"><thead><tr><th scope="col">Say</th><th scope="col">What happens</th></tr></thead><tbody>
 <tr><td><strong>Hello Chat</strong></td><td>Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored.</td></tr>
 <tr><td><strong>Mute Chat</strong>, <strong>Mute mic</strong> / <strong>Unmute Chat</strong></td><td>Mutes or unmutes the active Voice microphone. Repeating a command keeps that state.</td></tr>
-<tr><td><strong>Silent Chat</strong>, <strong>Silence Chat</strong>, <strong>Mute speakers</strong> / <strong>Unsilence Chat</strong></td><td>Silences or restores Voice speaker audio. The microphone and call remain independent.</td></tr>
+<tr><td><strong>Silent Chat</strong>, <strong>Mute speakers</strong>, <strong>Silent speaker(s)</strong> / <strong>Unsilence Chat</strong>, <strong>Unsilent speaker(s)</strong></td><td>Silences or restores Voice speaker audio. The microphone and call remain independent.</td></tr>
 <tr><td><strong>Bye Chat</strong></td><td>Ends Voice, after checking Codex&#x27;s End Voice control is showing. Also cancels Voice while it&#x27;s opening, and ends a call you started yourself in Codex.</td></tr>
 <tr><td><strong>Pause music</strong> / <strong>Play music</strong></td><td>Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key.</td></tr>
 <tr><td><strong>Pause video</strong> / <strong>Play video</strong></td><td>Controls one Chrome video through <a href="https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install">Agent Flow Bridge</a>. Works with YouTube and standard web video players.</td></tr>
 <tr><td><strong>Switch app Chrome</strong> / <strong>Open app Chrome</strong></td><td>Both bring the app forward, opening it if it isn&#x27;t running. Accepts common names and clear mishearings such as “BS Code” for VS Code. Say the full app name when two apps sound similar.</td></tr>
-<tr><td><strong>Open Safari</strong></td><td>The short form works the same way, with an exact app name or a known alias.</td></tr>
+<tr><td><strong>Show me Codex</strong>, <strong>Show Codex</strong>, <strong>Show app Codex</strong> / <strong>Open Safari</strong></td><td>Brings the named app forward. Short forms accept an exact name or a saved spelling.</td></tr>
+<tr><td><strong>Show voice</strong></td><td>Opens the current Voice conversation in Codex, or the most recent saved Voice chat after a call.</td></tr>
+<tr><td><strong>Rewind video</strong></td><td>Moves the selected browser video back through Agent Flow Bridge, keeping its paused or playing state. Defaults to ten seconds; change the amount in Rewind video’s gear on Home. Explicit five- and ten-second phrases keep their distances.</td></tr>
 <tr><td><strong>Zoom in</strong> / <strong>Zoom out</strong></td><td>Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does.</td></tr>
 <tr><td><strong>Zoom in three times</strong>, <strong>Zoom in 3</strong></td><td>Runs a command that many times, up to 100. Repeat count is on for every command by default. Say the number after the whole command, including any app or speaker name. Without a number, it runs once. For rewind, always include “times”, since a number alone can be a distance. For music, each run is another Play/Pause press, so an even number can leave playback as it was. Turn off <strong>Repeat count</strong> in a command’s gear on Home.</td></tr>
 </tbody></table></div>
@@ -188,7 +190,7 @@
 <tr><td>Transcript Archive</td><td><strong>Save transcripts</strong> (on by default), the archive location, and this Mac’s optional backup configuration.</td></tr>
 <tr><td>Updates</td><td><strong>Check for Updates…</strong>, automatic checking and automatic downloads on release-configured builds.</td></tr>
 <tr><td>Diagnostics</td><td>Timing, errors and startup request/revision metadata, which exclude recognised words.</td></tr>
-<tr><td>Appearance</td><td><strong>Open windows on</strong> remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. <strong>View → Zoom In / Zoom Out / Actual Size</strong> works too.</td></tr>
+<tr><td>Appearance</td><td><strong>Open H Chat windows on</strong> remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. <strong>View → Zoom In / Zoom Out / Actual Size</strong> works too.</td></tr>
 </tbody></table></div>
 <!-- README:settings:end -->
         </div>

@@ -50,10 +50,19 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
 
 @main enum FeedbackSoundTests {
     @MainActor static func main() throws {
+        for slot in PhraseSlot.allCases {
+            precondition(FeedbackSounds.selected(nil, default: slot.cue) == slot.cue)
+            precondition(FeedbackSounds.selected("off", default: slot.cue) == nil)
+            for chosen in FeedbackSounds.Cue.allCases {
+                precondition(FeedbackSounds.selected(chosen.rawValue, default: slot.cue) == chosen)
+            }
+        }
+        precondition(FeedbackSounds.selected("default", default: nil) == nil)
+        precondition(FeedbackSounds.selected("Wake", default: nil) == .wake)
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
         typealias Cue = FeedbackSounds.Cue
-        let commandCues: Set<Cue> = [.silent, .videoPaused, .videoPlayed, .musicPause, .musicPlay, .switchApp, .openApp, .zoomIn, .zoomOut]
+        let commandCues: Set<Cue> = [.silent, .videoPaused, .videoPlayed, .rewind, .rewindFive, .rewindTen, .musicPause, .musicPlay, .switchApp, .openApp, .zoomIn, .zoomOut, .showVoice]
 
         // Each phrase slot owns a distinct sound, including the two ways to silence speakers.
         let slotCues = Set(PhraseSlot.allCases.map(\.cue))
@@ -66,7 +75,7 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
               "Audio wording picks its own confirmed-state sound")
         check(Set(VoiceAudioAction.allCases.flatMap(\.slots)) == Set(PhraseSlot.voiceSlots).subtracting([.wakePhrase, .sleepPhrase]),
               "Audio actions cover exactly the audio phrase fields")
-        check(VideoCommand.allCases.map(\.slot.cue) == [.videoPaused, .videoPlayed], "Video commands")
+        check(VideoCommand.allCases.map(\.slot.cue) == [.videoPaused, .videoPlayed, .rewindFive, .rewindTen, .rewind], "Video commands")
         check([AppCommandKind.switchApp, .openApp].map(\.slot.cue) == [.switchApp, .openApp], "App commands")
         check(ZoomDirection.allCases.map(\.slot.cue) == [.zoomIn, .zoomOut], "Zoom commands")
 
@@ -113,7 +122,7 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
         check(speakerCue("Quiet now", patterns: edited) == .speakersMuted, "Edited speaker wording keeps its slot's sound")
         check(speakerCue("I said quiet now", patterns: edited) == nil, "A phrase mention has no speaker sound")
         let titles = PhraseSlot.allCases.map(\.soundTitle)
-        check(Set(titles).count == titles.count && titles.contains("Silent") && titles.contains("Silence"),
+        check(Set(titles).count == titles.count && titles.contains("Silent (Codex Voice speakers)") && titles.contains("Silence (Codex Voice speakers)"),
               "The two speaker-silence previews are independently named")
 
         // Assets: exactly one short, audible, unclipped 16-bit mono file per cue.
@@ -196,7 +205,7 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
 
         for command in VideoCommand.allCases {
             check(VideoCommandOutcome.changed.confirms(command), "Changed video reply owns its result cue")
-            check(VideoCommandOutcome.unchanged(command == .pause ? "already-paused" : "already-playing").confirms(command), "Already-requested state still acknowledges the command")
+            check(VideoCommandOutcome.unchanged(command.unchangedReason).confirms(command), "Already-requested state still acknowledges the command")
             for outcome: VideoCommandOutcome in [.unavailable, .rejected, .unconfirmed, .unchanged("no-video"), .unchanged("play-blocked"), .unchanged("video-ended")] {
                 check(!outcome.confirms(command), "A failed/unconfirmed video action cannot emit a success cue")
             }

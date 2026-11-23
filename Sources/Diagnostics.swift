@@ -61,5 +61,57 @@ final class Diagnostics: @unchecked Sendable {
         recentLock.lock(); defer { recentLock.unlock() }
         return recent.suffix(8).joined(separator: "\n")
     }
+    private struct CommandRecord {
+        var at: Double
+        var time: String
+        var label: String
+        var summary: String
+    }
+
+    // Called on the log queue. A receipt can finish after a newer command, including
+    // after log rotation. Keep the latest outcome for each receipt in speech order.
+    private func commandRecords() throws -> [CommandRecord] {
+        var records: [CommandRecord] = []
+        var index: [String: Int] = [:]
+        for name in ["events.previous.jsonl", "events.jsonl"] {
+            let source = directory.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: source.path) else { continue }
+            let data = try Data(contentsOf: source)
+            for line in data.split(separator: 10) {
+                guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                      event["event"] as? String == "command.history",
+                      let time = event["time"] as? String, let command = event["command"] as? String,
+                      let result = event["result"] as? String, let summary = event["summary"] as? String else { continue }
+                let at = event["spoken_at"] as? Double ?? dateFormatter.date(from: time)?.timeIntervalSince1970 ?? 0
+                let record = CommandRecord(at: at, time: time, label: "\(command) · \(result)", summary: summary)
+                if let receipt = event["receipt"] as? String {
+                    if let i = index[receipt] { records[i] = record; continue }
+                    index[receipt] = records.count
+                }
+                records.append(record)
+            }
+        }
+        return records.sorted { $0.at < $1.at }
+    }
+
+    func latestCommandSummary() -> String? {
+        queue.sync { try? commandRecords().last?.summary }
+    }
+
+    func exportCommandHistory() throws -> URL {
+        try queue.sync {
+            var lines = try commandRecords().map {
+                "\($0.time)  \($0.label)" + ($0.summary == $0.label ? "" : " — " + $0.summary)
+            }
+            if lines.isEmpty { lines.append("No spoken commands recorded in this history yet.") }
+            lines.append("\nEarlier events and technical details are in the diagnostic logs at \(directory.path).")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                   attributes: [.posixPermissions: 0o700])
+            let url = directory.appendingPathComponent("Command history.txt")
+            try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+            return url
+        }
+    }
+
     func flush() { queue.sync {} }
 }

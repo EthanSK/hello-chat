@@ -5,6 +5,75 @@ import Foundation
     static func main() throws {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
+        for slot in PhraseSlot.allCases {
+            let custom = "My lantern"
+            let scoped = PhraseDictionaries(savedByTrigger: [
+                slot.rawValue: ["stock lantern"],
+                slot.spellingKey(for: custom): ["a much longer custom lantern alternative"]
+            ])
+            let matcher = PhrasePattern(slot: slot, text: custom, similar: true, dictionaries: scoped)
+            let alternative = "a much longer custom lantern alternative"
+            check(matcher.kind(for: alternative) == .dictionary && matcher.matches(in: PhraseMatcher.words(alternative)).count == 1, "Custom spellings match including long forms")
+            check(matcher.kind(for: custom) == .exact && matcher.kind(for: "stock lantern") == nil, "Stock and custom triggers stay separate")
+            check(PhrasePattern(slot: slot, text: custom, similar: false, dictionaries: scoped).kind(for: alternative) == nil, "Disabled spellings stay saved but inactive")
+            let other = PhraseSlot.allCases.first { $0 != slot }!
+            check(PhrasePattern(slot: other, text: custom, similar: true, dictionaries: scoped).kind(for: alternative) == nil, "Custom spellings stay in their own slot")
+            check(PhrasePattern(slot: slot, text: slot.defaultText, similar: true, dictionaries: scoped).kind(for: "stock lantern") == .dictionary, "Existing saved slot keys still match")
+        }
+        let stockDefaults = UserDefaults(suiteName: "HChatStockSpellings-" + UUID().uuidString)!
+        PhraseList.seedDefaults(in: stockDefaults)
+        let aliases = PhraseList.decode(stockDefaults.object(forKey: PhraseList.defaultsKey))
+        let stockRows = Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { ($0, [$0.defaultText] + (aliases[$0] ?? [])) })
+        let active = PhraseConfiguration(rows: stockRows)
+        let configured = PhraseDictionaries(savedByTrigger: [:], active: active)
+        for slot in PhraseSlot.allCases {
+            let builtIn = slot.stockSpellings(for: slot.defaultText)
+            check(!builtIn.isEmpty, "Every primary command has a finite spelling list")
+            for phrase in stockRows[slot] ?? [] {
+                let pattern = PhrasePattern(slot: slot, text: phrase, similar: true, dictionaries: configured)
+                for spelling in slot.stockSpellings(for: phrase) {
+                    check(pattern.kind(for: spelling) == .dictionary,
+                          "Visible stock spelling is recognized for its own row: \(phrase): \(spelling)")
+                }
+            }
+        }
+        let mic = PhrasePattern(slot: .mutePhrase, text: "Mute mic", similar: true, dictionaries: configured)
+        check(mic.matches(in: PhraseMatcher.words("un mute mike")).isEmpty, "Split un must not mute a microphone")
+        let speaker = PhrasePattern(slot: .silencePhrase, text: "Silence speakers", similar: true, dictionaries: configured)
+        check(speaker.matches(in: PhraseMatcher.words("un silence the speakers")).isEmpty, "Split un must not silence speakers")
+        let unsilence = PhrasePattern(slot: .unsilencePhrase, text: "Unsilence Chat", similar: true, dictionaries: configured)
+        for (utterance, expected) in [("Unsilenced shot", true), ("Unsilenced chat", true),
+                                      ("Can you please unsilenced shot?", true), ("I heard an unsilenced shot", false),
+                                      ("Unsilenced shot rang out", false), ("Don't unsilenced shot", false),
+                                      ("The phrase unsilenced shot", false), ("On the silence chat", false)] {
+            var restore = StandaloneWake()
+            restore.audio(level: 0.2, seconds: 0.1)
+            restore.update(utterance, at: 1)
+            check(restore.poll(at: 1, phrase: unsilence.text, similar: true, rejectNegated: true, patterns: [unsilence]) == expected,
+                  "Recent Unsilence recognition is scoped to the intended request: " + utterance)
+            check(!restore.poll(at: 2, phrase: unsilence.text, similar: true, rejectNegated: true, patterns: [unsilence]),
+                  "Repeating the unchanged recognition never restores the speaker twice")
+        }
+        let silence = PhrasePattern(slot: .silencePhrase, text: "Silence Chat", similar: true, dictionaries: configured)
+        var opposite = StandaloneWake()
+        opposite.audio(level: 0.2, seconds: 0.1)
+        opposite.update("On the silence chat", at: 1)
+        check(!opposite.poll(at: 1, phrase: silence.text, similar: true, rejectNegated: true, patterns: [silence]),
+              "The ambiguous recognition cannot mute the call either")
+        let show = PhrasePattern(slot: .showVoicePhrase, text: "Show voice", similar: true, dictionaries: configured)
+        check(show.matches(in: PhraseMatcher.words("Show voice memos")).isEmpty, "The Voice Memos app is not the running call")
+        var weak = StandaloneWake()
+        weak.audio(level: 0.2, seconds: 0.1)
+        weak.update("as well. Chat.", at: 1)
+        let wakePattern = PhrasePattern(slot: .wakePhrase, text: "Hello Chat", similar: true, dictionaries: configured)
+        check(!weak.poll(at: 1, phrase: wakePattern.text, similar: true, patterns: [wakePattern]), "Built-in forms preserve weak wake split filtering")
+        let overridden = PhraseDictionaries(savedByTrigger: [PhraseSlot.mutePhrase.spellingKey(for: "Mute mic"): []], active: active)
+        check(PhrasePattern(slot: .mutePhrase, text: "Mute mic", similar: true, dictionaries: overridden).kind(for: "Mute Mike") == nil,
+              "An explicit empty override disables built-in variants for an extra row")
+        let claims = PhraseConfiguration(rows: [.switchAppPhrase: ["Bring up"], .pauseVideoPhrase: ["Freeze frame"]])
+        let protected = PhraseDictionaries(savedByTrigger: [PhraseSlot.switchAppPhrase.spellingKey(for: "Bring up"): ["Bring it up", "Freeze frame"]], active: claims)
+        let prefix = PhrasePattern(slot: .switchAppPhrase, text: "Bring up", similar: true, dictionaries: protected)
+        check(prefix.kind(for: "Bring it up") == .dictionary && prefix.kind(for: "Freeze frame") == nil, "A new exact trigger wins over another action's custom spelling")
         let alias = "custom lantern"
         let oldInvented = "Hlelo Chta"
         let explicit = PhrasePattern(slot: .wakePhrase, text: "Hello Chat", similar: true,

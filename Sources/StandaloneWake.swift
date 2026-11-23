@@ -4,7 +4,12 @@ import Foundation
 // counter per command, mention/negation rejection, and consumption independent of the action.
 struct CommandPhraseDetectors<Command: CaseIterable & Hashable> {
     private var detectors = Dictionary(uniqueKeysWithValues: Command.allCases.map { ($0, StandaloneWake()) })
-    mutating func reset() { for command in Command.allCases { detectors[command] = StandaloneWake() } }
+    // Different keyword spellings can be a revision of the same audio ("five" becoming "ten").
+    private var usedOccurrences: [(Command, StandaloneWake.Occurrence)] = []
+    mutating func reset() {
+        usedOccurrences.removeAll()
+        for command in Command.allCases { detectors[command] = StandaloneWake() }
+    }
     mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
         for command in Command.allCases { detectors[command, default: StandaloneWake()].audio(level: level, seconds: seconds, at: time) }
     }
@@ -27,19 +32,23 @@ struct CommandPhraseDetectors<Command: CaseIterable & Hashable> {
                        onDecision: ((Command, String) -> Void)? = nil) -> [(command: Command, range: Range<Int>)] {
         poll(at: time, aliases: patterns.mapValues { [$0] }, directOnly: directOnly, onDecision: onDecision)
     }
-    mutating func poll(at time: Double, aliases: [Command: [PhrasePattern]], directOnly: Bool = false,
+    mutating func poll(at time: Double, aliases: [Command: [PhrasePattern]], directOnly: Bool = false, directCommands: Set<Command> = [], embeddedCommands: Set<Command> = [],
                        onDecision: ((Command, String) -> Void)? = nil) -> [(command: Command, range: Range<Int>)] {
-        Command.allCases.compactMap { command -> (command: Command, range: Range<Int>)? in
+        var matches: [(command: Command, range: Range<Int>)] = []
+        for command in Command.allCases {
             guard let list = aliases[command]?.filter({ !PhraseMatcher.words($0.text).isEmpty }), let pattern = list.first,
                   detectors[command, default: StandaloneWake()].poll(at: time, phrase: pattern.text, similar: pattern.similar,
-                      rejectNegated: true, ending: pattern.ending, patterns: list, directOnly: directOnly,
-                      onDecision: { decision, _, _ in onDecision?(command, decision) }),
-                  let range = detectors[command]?.acceptedRange else { return nil }
-            return (command, range)
-        }.sorted { $0.range.lowerBound < $1.range.lowerBound }
+                      rejectNegated: true, ending: pattern.ending, patterns: list, directOnly: directOnly || directCommands.contains(command), embeddedCommand: embeddedCommands.contains(command),
+                      collectOccurrences: true, onDecision: { decision, _, _ in onDecision?(command, decision) })
+            else { continue }
+            for occurrence in detectors[command]?.occurrences ?? [] {
+                if usedOccurrences.contains(where: { $0.0 != command && $0.1.overlaps(occurrence) }) { continue }
+                usedOccurrences.append((command, occurrence))
+                matches.append((command, occurrence.words))
+            }
+        }
+        return matches.sorted { $0.range.lowerBound < $1.range.lowerBound }
     }
-    // Directional commands are idempotent, so the last one spoken decides the final state.
-    static func admitted(_ accepted: [(command: Command, range: Range<Int>)]) -> Command? { accepted.last?.command }
 }
 
 // Ethan removed the command pause: YouTube keeps supplying words, so waiting for
@@ -48,7 +57,11 @@ struct CommandPhraseDetectors<Command: CaseIterable & Hashable> {
 struct StandaloneWake {
     static let commandPauseSeconds = 0.0
     private let requiredPause: TimeInterval
-    init(requiredPause: TimeInterval = Self.commandPauseSeconds) { self.requiredPause = requiredPause }
+    private let speakerRoute: Bool
+    init(requiredPause: TimeInterval = Self.commandPauseSeconds, speakerRoute: Bool = false) {
+        self.requiredPause = requiredPause
+        self.speakerRoute = speakerRoute
+    }
     // Keep the model's existing utterance boundary independent of command gating.
     static let endSilenceSeconds = 0.6
     static let microphonePhrases = PhraseMatcher.microphonePhrases
@@ -80,10 +93,19 @@ struct StandaloneWake {
     private var waitingForPause = false
     private var configuration: [PhrasePattern] = []
     private var rejectsNegated = false
+    struct Occurrence {
+        let words: Range<Int>
+        let audio: Range<Double>?
+        func overlaps(_ other: Self) -> Bool {
+            if let audio, let compared = other.audio { return audio.overlaps(compared) }
+            return words.overlaps(other.words)
+        }
+    }
+    private(set) var occurrences: [Occurrence] = []
     private(set) var acceptedRange: Range<Int>?
     private(set) var acceptedPatternIndex: Int?
 
-    mutating func reset() { self = StandaloneWake(requiredPause: requiredPause) }
+    mutating func reset() { self = StandaloneWake(requiredPause: requiredPause, speakerRoute: speakerRoute) }
     mutating func resetContext() {
         context = []; sentenceStarts = []; desktopBoundaries = []; audioBoundary = 0
         wordTimings = nil
@@ -91,6 +113,7 @@ struct StandaloneWake {
         consumedAudioRanges.removeAll()
         waitingForPause = false
         audioTime = nil
+        occurrences.removeAll()
         acceptedRange = nil
         acceptedPatternIndex = nil
     }
@@ -120,7 +143,7 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; desktopBoundaries = boundaries; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil, directOnly: Bool = false,
+    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil, directOnly: Bool = false, embeddedCommand: Bool = false, collectOccurrences: Bool = false,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
         let patterns = patterns ?? ([phrase] + alternatives).map { PhrasePattern(text: $0, similar: similar, ending: ending, dictionaries: dictionaries) }
         if configuration != patterns || rejectsNegated != rejectNegated {
@@ -143,6 +166,12 @@ struct StandaloneWake {
         }
         var candidates = patternByRange.keys.map { (start: $0.lowerBound, end: $0.upperBound) }
         candidates.sort { left, right in left.start == right.start ? left.end < right.end : left.start < right.start }
+        if speakerRoute {
+            // "Kitchen speakers" may extend "Kitchen" in a streaming revision. Nested names
+            // at one start refer to the same output by SpeakerOutputSettings validation.
+            var starts = Set<Int>()
+            candidates = candidates.reversed().filter { starts.insert($0.start).inserted }.reversed()
+        }
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
         let audioRanges: [Range<Double>?] = candidates.map { match in
             guard let alignedTimings else { return nil }
@@ -150,6 +179,7 @@ struct StandaloneWake {
             return start.isFinite && end.isFinite && start <= end ? start..<max(end, start.nextUp) : nil // Fallback words may share one instant; keep their consumed identity.
         }
         waitingForPause = false
+        occurrences.removeAll(keepingCapacity: true)
         var accepted: (start: Int, end: Int)?
         for (index, match) in candidates.enumerated() {
             if let range = audioRanges[index] {
@@ -162,7 +192,18 @@ struct StandaloneWake {
                 && $0.dictionaries[PhraseMatcher.words($0.text).joined()] == nil }
                 && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                 && sentenceStarts.contains { $0 > match.start && $0 < match.end }
-            if (directOnly && !isDirectCommand(start: match.start, end: match.end)) ||
+            let range = match.start..<match.end
+            let standaloneUnsilence = patternByRange[range].map { patterns[$0.index].needsStandaloneUnsilence(context[range]) } ?? false
+            if standaloneUnsilence {
+                let (_, end) = contextBounds(start: match.start, end: match.end, directOnly: true)
+                let trailing = context[match.end..<end]
+                if !isDirectCommand(start: match.start, end: match.end, allowEmbedded: embeddedCommand) || !trailing.allSatisfy({ $0 == "please" || $0 == "now" }) {
+                    consumed = index + 1
+                    rememberConsumed(audioRanges[index])
+                    continue
+                }
+            }
+            if (directOnly && !isDirectCommand(start: match.start, end: match.end, allowEmbedded: embeddedCommand)) ||
                 isMention(start: match.start, end: match.end, rejectNegated: rejectNegated, directOnly: directOnly) || weakSplit {
                 consumed = index + 1
                 rememberConsumed(audioRanges[index])
@@ -191,7 +232,9 @@ struct StandaloneWake {
                 }
             }
             accepted = match
-            break
+            // If one delayed hypothesis contains two physical output requests, the last destination wins.
+            if collectOccurrences { occurrences.append(Occurrence(words: match.start..<match.end, audio: audioRanges[index])) }
+            if !speakerRoute && !collectOccurrences { break }
         }
         acceptedRange = accepted.map { $0.start..<$0.end }
         acceptedPatternIndex = acceptedRange.flatMap { patternByRange[$0]?.index }
@@ -249,6 +292,7 @@ struct StandaloneWake {
                 boundaries.first(where: { $0 >= end }) ?? context.count)
     }
     private func isMention(start: Int, end: Int, rejectNegated: Bool, directOnly: Bool) -> Bool {
+        if DesktopSpeechBoundaries.introducesQuotation(words: context, before: start, sentences: sentenceStarts) { return true }
         let (sentenceStart, sentenceEnd) = contextBounds(start: start, end: end, directOnly: directOnly)
         let left = Array(context[max(min(audioBoundary, start), sentenceStart)..<start].suffix(3))
         let right = Array(context[end..<sentenceEnd].prefix(3))
@@ -274,7 +318,7 @@ struct StandaloneWake {
         return false
     }
 
-    private func isDirectCommand(start: Int, end: Int) -> Bool {
+    private func isDirectCommand(start: Int, end: Int, allowEmbedded: Bool = false) -> Bool {
         let (sentenceStart, sentenceEnd) = contextBounds(start: start, end: end, directOnly: true)
         let left = context[max(min(audioBoundary, start), sentenceStart)..<start]
         let right = context[end..<sentenceEnd].drop(while: { $0 == "please" || $0 == "now" })
@@ -283,6 +327,26 @@ struct StandaloneWake {
         // continued playback act like a silence gate. Preserve explicit plans and zoom's
         // target-taking prose; ordinary mention/negation checks still run in isMention.
         let deferredOrQualified: Set<String> = ["later", "tomorrow", "tonight", "after", "when", "if", "unless", "on", "into"]
-        return left.allSatisfy(politeOpeners.contains) && !(right.first.map(deferredOrQualified.contains) ?? false)
+        guard !(right.first.map(deferredOrQualified.contains) ?? false) else { return false }
+        if left.allSatisfy(politeOpeners.contains) { return true }
+        // Ethan's 23 November interruption: narration + “pause video” + narration.
+        // Absolute browser playback commands do not need a silence gap or a polite opener.
+        // Keep plans, quotations and references out; isMention still applies after this test. — GPT-6.1 Sol
+        if allowEmbedded {
+            let governed: Set<String> = ["i", "we", "you", "they", "he", "she", "it", "ll", "will", "would", "should",
+                "can", "could", "might", "may", "must", "to", "want", "wanna", "need", "try", "trying",
+                "think", "thinking", "thought", "mean", "means", "meant", "pressed", "pressing", "clicked", "clicking"]
+            if !left.suffix(3).contains(where: governed.contains) { return true }
+        }
+        // Ethan's "also switch speaker kitchen" and "but switch audio kitchen" arrived
+        // inside a single recognition segment with other speech. A conjunction can start a
+        // fresh imperative. Keep the ordinary quote, negation and qualified-command guards.
+        guard speakerRoute, let conjunction = left.lastIndex(where: { $0 == "also" || $0 == "but" }),
+              left[left.index(after: conjunction)...].allSatisfy(politeOpeners.contains) else { return false }
+        let previous = left[..<conjunction].last
+        let governed: Set<String> = ["i", "we", "you", "they", "he", "she", "it", "ll", "can", "could", "may",
+                                     "might", "must", "should", "will", "would", "to", "not", "never", "t",
+                                     "anything", "nothing", "all", "everything", "only"]
+        return previous.map { !governed.contains($0) } ?? true
     }
 }

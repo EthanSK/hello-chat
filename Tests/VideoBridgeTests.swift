@@ -5,7 +5,8 @@ import Foundation
 private final class FakeTransport: VideoBridgeTransport {
     var onReply: (@MainActor (VideoBridgeReply) -> Void)?
     var posts: [(requestId: String, action: String, issuedAt: Int)] = []
-    func post(requestId: String, action: String, issuedAt: Int) { posts.append((requestId, action, issuedAt)) }
+    var lastSeconds: Int?
+    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?) { lastSeconds = seconds; posts.append((requestId, action, issuedAt)) }
 }
 
 private final class FakeTimers {
@@ -59,7 +60,19 @@ private final class FakeTimers {
         check(spellings.allSatisfy { PhraseMatcher.equivalent($0, to: "Pause video", similar: true) }, "Every displayed spelling is accepted")
         do { _ = try PhraseDictionary.parse("Play video", for: .pauseVideoPhrase); preconditionFailure("Opposite default accepted") }
         catch { checks += 1 }
-        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase], "Video slots follow the Voice slots")
+        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase], "Video slots follow the Voice slots")
+
+        for command in [VideoCommand.rewindFive, .rewindTen] {
+            let phrase = command.slot.defaultText
+            for (spoken, expected) in [(phrase, true), ("I should have a " + phrase, false), ("Don't " + phrase, false)] {
+                var detector = VideoPhraseDetectors()
+                detector.audio(level: 0.25, seconds: 0.12)
+                detector.update(spoken, at: 1)
+                let accepted = detector.poll(at: 1, aliases: [command: [PhrasePattern(text: phrase, similar: false)]],
+                                             directCommands: [.rewindFive, .rewindTen])
+                check((accepted.last?.command == command) == expected, "Rewind recognizes only a direct distance command")
+            }
+        }
 
         // Detection: mention, negation and occurrence rules, independent of bridge availability.
         let patterns: [VideoCommand: PhrasePattern] = [.pause: pause, .play: play]
@@ -81,10 +94,48 @@ private final class FakeTimers {
             var prose = detectors(text)
             check(prose.poll(at: 1, patterns: patterns).isEmpty, "Prose or negation is rejected: \(text)")
         }
+        var futureTense = detectors("I’ll play the video later")
+        check(futureTense.poll(at: 1, patterns: patterns, directOnly: true).isEmpty, "A plan to play later is not a direct playback request")
         var both = detectors("Pause the video. Play the video.")
         let accepted = both.poll(at: 1, patterns: patterns)
-        check(accepted.map(\.command) == [.pause, .play] && VideoPhraseDetectors.admitted(accepted) == .play,
+        check(accepted.map(\.command) == [.pause, .play] && VideoCommand.isSuperseded(.pause, at: 0, lastPlayback: 1) && !VideoCommand.isSuperseded(.play, at: 1, lastPlayback: 1),
               "Commands keep spoken order; the last direction decides")
+        let allVideo = Dictionary(uniqueKeysWithValues: VideoCommand.allCases.map {
+            ($0, [PhrasePattern(slot: $0.slot, text: $0.slot.defaultText, similar: true, dictionaries: .init())])
+        })
+        var defaultRewind = detectors("Rewind video")
+        check(defaultRewind.poll(at: 1, aliases: allVideo, directCommands: [.rewind]).map(\.command) == [.rewind], "Generic rewind matches")
+        defaultRewind.update("Rewind video five seconds", at: 2)
+        check(defaultRewind.poll(at: 2, aliases: allVideo, directCommands: [.rewind, .rewindFive]).isEmpty, "Revision never seeks twice")
+        var explicitFive = detectors("Rewind video five seconds")
+        check(explicitFive.poll(at: 1, aliases: allVideo, directCommands: [.rewind, .rewindFive]).map(\.command) == [.rewindFive], "Explicit duration wins")
+        var wrongDuration = detectors("Rewind video by fifteen seconds")
+        check(wrongDuration.poll(at: 1, aliases: allVideo, directCommands: [.rewind, .rewindFive, .rewindTen]).isEmpty, "Unsupported distance does not use the default")
+        check(VideoCommand.rewind.resolved(rewindSeconds: 5) == .rewindFive && VideoCommand.rewind.resolved(rewindSeconds: 10) == .rewindTen &&
+              VideoCommand.rewind.resolved(rewindSeconds: 17) == .rewind && VideoCommand.rewindFive.resolved(rewindSeconds: 10) == .rewindFive, "The preference applies to the generic phrase and preserves explicit distances")
+        func checkBatch(_ detector: inout VideoPhraseDetectors) -> [VideoCommand] {
+            let matches = detector.poll(at: 2, aliases: allVideo, directCommands: [.rewindFive, .rewindTen])
+            let lastPlayback = matches.lastIndex { $0.command.setsPlaybackState }
+            return matches.enumerated().compactMap { index, match in
+                VideoCommand.isSuperseded(match.command, at: index, lastPlayback: lastPlayback) ? nil : match.command
+            }
+        }
+        var independent = detectors("Pause video. Rewind video ten seconds. Rewind video ten seconds.")
+        check(checkBatch(&independent) == [.pause, .rewindTen, .rewindTen], "Keep independent commands and genuine repeated seeks in one revision")
+        var revised = detectors("")
+        func updateRewind(_ text: String, startsAt: Double) {
+            let timing = PhraseMatcher.words(text).enumerated().map { index, word in
+                let start = startsAt + Double(index) * 0.2
+                return (word: word, start: start, end: start + 0.15)
+            }
+            revised.update(text, at: 1, timings: timing)
+        }
+        updateRewind("Rewind video five seconds", startsAt: 1)
+        check(checkBatch(&revised) == [.rewindFive], "First seek requested")
+        updateRewind("Rewind video ten seconds", startsAt: 1)
+        check(checkBatch(&revised).isEmpty, "Same audio revised to another distance cannot seek twice")
+        updateRewind("Rewind video five seconds. Rewind video ten seconds.", startsAt: 4)
+        check(checkBatch(&revised).contains(.rewindTen), "A separate spoken seek survives")
         let end = PhrasePattern(slot: .sleepPhrase, text: "Bye Chat", similar: true, dictionaries: .init())
         var ended = detectors("Pause the video. Bye chat.")
         ended.cancelPending(patterns: patterns, endPattern: end)
@@ -103,6 +154,18 @@ private final class FakeTimers {
         laterWake.audio(level: 0.2, seconds: 0.1); laterWake.update("Pause the video. Hello chat", at: 1)
         laterWake.cancelPending(patterns: [wakePattern], endPattern: pause)
         check(laterWake.poll(at: 1, phrase: wakePattern.text, similar: true, patterns: [wakePattern]), "A wake after the video command still works")
+
+        var mixedNarration = detectors("Play video as I was kind of pause video trying to see if there was actually any good")
+        let mixedAccepted = mixedNarration.poll(at: 1, aliases: allVideo, directOnly: true, embeddedCommands: [.pause, .play])
+        check(mixedAccepted.map(\.command) == [.play, .pause], "The reported narration-interrupted pause reaches dispatch")
+        for prose in ["I want to pause video", "I said pause video", "it just pause video", "This will play video", "The pause video command", "Don't pause video", "I’ll play video later", "I clicked pause video"] {
+            var spoken = detectors(prose)
+            check(spoken.poll(at: 1, aliases: allVideo, directOnly: true, embeddedCommands: [.pause, .play]).isEmpty,
+                  "Embedded playback keeps references and plans blocked: \(prose)")
+        }
+        var timedNarration = detectors("Some narration. Pause video trying to see")
+        check(timedNarration.poll(at: 1, aliases: allVideo, directOnly: true, embeddedCommands: [.pause, .play]).map(\.command) == [.pause],
+              "Playback interruption has no post-keyword quiet requirement")
 
         // Client: real availability only from a compatible reply; no replay; bounded timers.
         let transport = FakeTransport(), timers = FakeTimers()
@@ -177,6 +240,52 @@ private final class FakeTimers {
         bridge.stop()
         check(bridge.pendingCount == 0 && timers.live == 0 && outcomes.count == count, "Stop clears every pending request and timer")
         clock += 1
+        let current = FakeTransport()
+        let deadlines = FakeTimers()
+        var gateResults: [VideoCommandOutcome] = []
+        let checked = VideoBridge(transport: current, schedule: deadlines.schedule)
+        checked.sendIfAvailable(.play) { gateResults.append($0) }
+        check(current.posts.map(\.action) == ["status"], "Playback waits for the extension handshake")
+        deadlines.fireLast()
+        check(current.posts.map(\.action) == ["status"] && gateResults == [.unavailable], "Disconnected extension does not receive playback")
+        checked.sendIfAvailable(.pause) { gateResults.append($0) }
+        let request = current.posts.last!
+        checked.receive(.init(requestId: request.requestId, action: request.action, state: "available", protocolVersion: 1))
+        check(current.posts.map(\.action) == ["status", "status", "pause"], "A live compatible extension receives the action once")
+        let paused = current.posts.last!
+        checked.receive(.init(requestId: paused.requestId, action: paused.action, state: "done", changed: true, protocolVersion: 1))
+        check(gateResults == [.unavailable, .changed], "The action's own reply confirms it")
+        checked.sendIfAvailable(.rewindTen) { gateResults.append($0) }
+        let rewindCheck = current.posts.last!
+        check(rewindCheck.action == "rewindStatus", "Rewind requires its specific capability probe")
+        checked.receive(.init(requestId: rewindCheck.requestId, action: rewindCheck.action, state: "rejected", protocolVersion: 1))
+        check(current.posts.last?.action == "rewindStatus" && gateResults.last == .unavailable, "An older extension cannot receive seek commands")
+        checked.sendIfAvailable(.rewind, seconds: 17) { gateResults.append($0) }
+        let customCheck = current.posts.last!
+        check(customCheck.action == "seekStatus", "Custom distance requires a live custom-seek receiver")
+        checked.receive(.init(requestId: customCheck.requestId, action: "seekStatus", state: "done", changed: false, reason: "custom-seek-supported", protocolVersion: 1))
+        let customRequest = current.posts.last!
+        check(customRequest.action == "rewind" && current.lastSeconds == 17, "Custom seconds are carried once to the player")
+        checked.receive(.init(requestId: customRequest.requestId, action: "rewind", state: "done", changed: true, reason: "rewound", protocolVersion: 1, movedSeconds: 3))
+        check(gateResults.last == .rewound(3), "A clamped seek reports the actual distance")
+        let countBeforeInvalid = current.posts.count
+        checked.sendIfAvailable(.rewind, seconds: 0) { gateResults.append($0) }
+        check(gateResults.last == .rejected && current.posts.count == countBeforeInvalid, "Invalid seconds send no request")
+        for command in [VideoCommand.pause, .rewindTen, .rewind] {
+            let start = current.posts.count
+            checked.sendIfAvailable(command, seconds: 17, shouldSend: { false }) { gateResults.append($0) }
+            let probe = current.posts.last!
+            let reason = command == .rewind ? "custom-seek-supported" : (command == .rewindTen ? "rewind-supported" : nil)
+            checked.receive(.init(requestId: probe.requestId, action: probe.action,
+                state: command == .pause ? "available" : "done", changed: false, reason: reason, protocolVersion: 1))
+            check(current.posts.count == start + 1 && gateResults.last == .rejected,
+                  "A cancelled repeat cannot dispatch after its availability probe")
+        }
+        let rewindRepeat = PhrasePattern(slot: .rewindVideoPhrase, text: "Rewind video", similar: false, dictionaries: .init())
+        check(rewindRepeat.matches(in: PhraseMatcher.words("Rewind video three times")).count == 1,
+              "Generic rewind accepts an explicit repetition argument")
+        check(rewindRepeat.matches(in: PhraseMatcher.words("Rewind video three seconds")).isEmpty,
+              "A distance argument cannot become generic rewind repeats")
         print("Passed \(checks) video bridge checks")
     }
 }

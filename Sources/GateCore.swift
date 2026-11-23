@@ -57,9 +57,9 @@ struct MicrophoneOwnership {
 // Voice, browser, music and desktop fields retain their own display groups.
 enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
-    case pauseVideoPhrase, playVideoPhrase
+    case pauseVideoPhrase, playVideoPhrase, rewindVideoPhrase, rewindFivePhrase, rewindTenPhrase
     case pauseMusicPhrase, playMusicPhrase
-    case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase
+    case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -72,19 +72,24 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return "Unsilence phrase"
         case .pauseVideoPhrase: return "Pause video phrase"
         case .playVideoPhrase: return "Play video phrase"
+        case .rewindVideoPhrase: return "Rewind video phrase"
+        case .rewindFivePhrase: return "Rewind five seconds phrase"
+        case .rewindTenPhrase: return "Rewind ten seconds phrase"
         case .pauseMusicPhrase: return "Pause music phrase"
         case .playMusicPhrase: return "Play music phrase"
         case .switchAppPhrase, .openAppPhrase: return "App prefix"
         case .zoomInPhrase: return "Zoom in phrase"
         case .zoomOutPhrase: return "Zoom out phrase"
+        case .showVoicePhrase: return "Show Voice phrase"
         }
     }
     // Shown under the field. App prefixes are followed by an app name; both bring an app forward,
     // opening it if needed (Ethan, 14 November 2026: "open should switch ... make it interchangeable").
     var example: String? {
         switch self {
-        case .switchAppPhrase: return "Say a prefix followed by an app name. Open brings it forward too."
-        case .pauseMusicPhrase: return "Both music phrases send one Play/Pause press to the current media session."
+        case .switchAppPhrase: return "Say a phrase followed by an app name."
+        case .rewindVideoPhrase: return "A phrase with a duration uses that duration."
+
         default: return nil
         }
     }
@@ -99,19 +104,29 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return "Unsilence Chat"
         case .pauseVideoPhrase: return "Pause video"
         case .playVideoPhrase: return "Play video"
+        case .rewindVideoPhrase: return "Rewind video"
+        case .rewindFivePhrase: return "Rewind video five seconds"
+        case .rewindTenPhrase: return "Rewind video ten seconds"
         case .pauseMusicPhrase: return "Pause music"
         case .playMusicPhrase: return "Play music"
         case .switchAppPhrase: return "Switch app"
         case .openAppPhrase: return "Open app"
         case .zoomInPhrase: return "Zoom in"
         case .zoomOutPhrase: return "Zoom out"
+        case .showVoicePhrase: return "Show voice"
         }
     }
     // Browser-video phrases go through Agent Flow Bridge and never reach Codex Voice.
-    var controlsVideo: Bool { self == .pauseVideoPhrase || self == .playVideoPhrase }
+    var controlsVideo: Bool { [.pauseVideoPhrase, .playVideoPhrase].contains(self) || isRewind }
+    var isRewind: Bool { [.rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase].contains(self) }
+    var settingsTitle: String {
+        if isRewind { return "Rewind video" }
+        if controlsMusic { return self == .pauseMusicPhrase ? "Pause music" : "Play music" }
+        return action.settingsTitle
+    }
     var controlsMusic: Bool { self == .pauseMusicPhrase || self == .playMusicPhrase }
     // Desktop phrases act on Mac apps and never reach Codex Voice either.
-    var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase].contains(self) }
+    var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase].contains(self) }
     static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop }
     static let videoSlots = allCases.filter(\.controlsVideo)
     static let musicSlots = allCases.filter(\.controlsMusic)
@@ -121,7 +136,10 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     static func settingsGroups(_ slots: [PhraseSlot]) -> [[PhraseSlot]] {
         var groups: [[PhraseSlot]] = []
         for slot in slots {
-            if let index = groups.firstIndex(where: { $0.first?.action == slot.action }) { groups[index].append(slot) }
+            if !slot.controlsMusic, let index = groups.firstIndex(where: { group in
+                guard let first = group.first else { return false }
+                return first.action == slot.action || (first.isRewind && slot.isRewind)
+            }) { groups[index].append(slot) }
             else { groups.append([slot]) }
         }
         return groups
@@ -129,6 +147,61 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     var ending: Bool { self == .sleepPhrase }
     var identifier: String { self == .sleepPhrase ? "endPhrase" : rawValue }
     func isDefault(_ text: String) -> Bool { PhraseMatcher.words(text) == PhraseMatcher.words(defaultText) }
+    func spellingKey(for text: String) -> String {
+        isDefault(text) ? rawValue : rawValue + ":" + PhraseList.key(text)
+    }
+    func stockSpellings(for text: String) -> [String] {
+        let additions = addedStockSpellings(for: text)
+        let existing = isDefault(text) ? Array(PhraseMatcher.knownSpellings(for: text, similar: true, ending: ending).dropFirst()) : []
+        var seen = Set([PhraseList.key(text)])
+        return (existing + additions).filter { seen.insert(PhraseList.key($0)).inserted }
+    }
+    func addedStockSpellings(for text: String) -> [String] {
+        Self.stockSpellingAdditions[self]?[PhraseList.key(text)] ?? []
+    }
+    // Literal recognition forms keyed to shipped trigger text. A row must exist in the
+    // current configuration before its forms participate, and deleting it stays effective.
+    private static let stockSpellingAdditions: [Self: [String: [String]]] = {
+        var rows: [Self: [String: [String]]] = [
+            .wakePhrase: ["Hey Chat": ["Hey Chad", "Hay Chat", "Hey Chatt"], "Start chat": ["Start chatt", "Start the chat"]],
+            .sleepPhrase: ["Goodbye Chat": ["Good buy Chat", "Goodbye Chatt", "Goodbye Charts"], "End chat": ["End chatt", "End the chat"]],
+            .mutePhrase: ["Mute Chat": ["Mute Chatt"], "Mute mic": ["Mute Mike", "Mute the mic", "Mute microphone"]],
+            .unmutePhrase: ["Unmute Chat": ["Unmute Chatt", "Unmute mic", "Unmute Mike", "Unmute the mic", "Unmute microphone"]],
+            .silentPhrase: ["Silent Chat": ["Silent Chatt"], "Mute speakers": ["Mute the speakers", "Mute speaker", "Mute the speaker"],
+                            "Silent speakers": ["Silent the speakers"], "Silent speaker": ["Silent the speaker"]],
+            .silencePhrase: ["Silence Chat": ["Silence Chatt"], "Silence speakers": ["Silence the speakers"],
+                             "Silence speaker": ["Silence the speaker"]],
+            .unsilencePhrase: ["Unsilence Chat": ["Unsilence Chatt", "Unsilenced shot", "Unmute speakers", "Unmute speaker", "Unmute the speakers", "Unmute the speaker"], "Unsilent speakers": ["Unsilent the speakers"],
+                               "Unsilent speaker": ["Unsilent the speaker"], "Unsilence speakers": ["Unsilence the speakers", "Unsilenced speakers", "Unsilenced the speakers"],
+                               "Unsilence speaker": ["Unsilence the speaker", "Unsilenced speaker", "Unsilenced the speaker"]],
+            .pauseVideoPhrase: ["Pause video": ["Pause vid", "Paws vid"]],
+            .playVideoPhrase: ["Play video": ["Play vid", "Resume the video", "Resume this video"]],
+            .rewindVideoPhrase: ["Rewind video": ["Rewind the video", "Rewind this video", "Rewind vid"]],
+            .pauseMusicPhrase: ["Pause music": ["Pause the music", "Paws music", "Paws the music"]],
+            .playMusicPhrase: ["Play music": ["Play the music", "Resume music", "Resume the music"]],
+            .switchAppPhrase: ["Switch app": ["Switch apps", "Switch the app"], "Switch up": ["Switch upp"],
+                               "Switch to": ["Switch too"]],
+            .openAppPhrase: ["Open app": ["Open apps", "Open the app"], "Show app": ["Show apps", "Show the app"],
+                             "Show me": ["Show mee"]],
+            .zoomInPhrase: ["Zoom in": ["Zoom inn", "Zoom it in"]],
+            .zoomOutPhrase: ["Zoom out": ["Zoom it out", "Zoom back out"]],
+            .showVoicePhrase: ["Show voice": ["Show the voice chat", "Show voice chat", "Show Codex Voice",
+                                              "Sho voice"]],
+        ]
+        for (slot, number, numeral) in [(Self.rewindFivePhrase, "five", "5"), (.rewindTenPhrase, "ten", "10")] {
+            rows[slot] = [
+                "Rewind video \(number) seconds": ["Rewind video \(number) secs", "Rewind video by \(number) seconds"],
+                "Rewind video \(numeral) seconds": ["Rewind video \(numeral) secs"],
+                "Rewind \(number) seconds": ["Rewind \(number) secs", "Rewind by \(number) seconds", "Skip back \(number) seconds"],
+                "Rewind \(numeral) seconds": ["Rewind \(numeral) secs"],
+                "Rewind the video \(number) seconds": ["Rewind the video \(number) secs"],
+                "Rewind the video \(numeral) seconds": ["Rewind the video \(numeral) secs"],
+                "Go back \(number) seconds": ["Go back \(number) secs"],
+                "Go back \(numeral) seconds": ["Go back \(numeral) secs"],
+            ]
+        }
+        return rows.mapValues { forms in Dictionary(uniqueKeysWithValues: forms.map { (PhraseList.key($0.key), $0.value) }) }
+    }()
     func savedValue(in defaults: UserDefaults = .standard) -> String {
         guard let saved = defaults.string(forKey: rawValue) else { return defaultText }
         // Standardize only the old shipped lowercase audio defaults. Custom text stays verbatim.
@@ -146,30 +219,39 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .unsilencePhrase: return .unsilenceSpeakers
         case .pauseVideoPhrase: return .pauseVideo
         case .playVideoPhrase: return .playVideo
+        case .rewindVideoPhrase: return .rewind
+        case .rewindFivePhrase: return .rewindFive
+        case .rewindTenPhrase: return .rewindTen
         case .pauseMusicPhrase, .playMusicPhrase: return .mediaPlayPause
         case .switchAppPhrase, .openAppPhrase: return .app
         case .zoomInPhrase: return .zoomIn
         case .zoomOutPhrase: return .zoomOut
+        case .showVoicePhrase: return .showVoice
         }
     }
 }
 
 enum PhraseAction: String, CaseIterable {
-    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, mediaPlayPause, app, zoomIn, zoomOut
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, app, zoomIn, zoomOut, showVoice
+    // Ethan’s “brackets Codex” identifies the four call audio rows in Home and their phrase editors.
     var settingsTitle: String {
         switch self {
-        case .wake: return "Wake phrases"
-        case .end: return "End phrases"
-        case .muteMicrophone: return "Mute microphone"
-        case .unmuteMicrophone: return "Unmute microphone"
-        case .silenceSpeakers: return "Silence speakers"
-        case .unsilenceSpeakers: return "Unsilence speakers"
+        case .wake: return "Wake phrase (Codex Voice)"
+        case .end: return "End phrase (Codex Voice)"
+        case .muteMicrophone: return "Mute microphone (Codex Voice)"
+        case .unmuteMicrophone: return "Unmute microphone (Codex Voice)"
+        case .silenceSpeakers: return "Silence speakers (Codex Voice)"
+        case .unsilenceSpeakers: return "Unsilence speakers (Codex Voice)"
         case .pauseVideo: return "Pause video"
         case .playVideo: return "Play video"
+        case .rewind: return "Rewind video"
+        case .rewindFive: return "Rewind video 5 seconds"
+        case .rewindTen: return "Rewind video 10 seconds"
         case .mediaPlayPause: return "Music"
-        case .app: return "App prefixes"
+        case .app: return "Switch app"
         case .zoomIn: return "Zoom in"
         case .zoomOut: return "Zoom out"
+        case .showVoice: return "Show Voice"
         }
     }
     var slots: [PhraseSlot] { PhraseSlot.allCases.filter { $0.action == self } }
@@ -185,23 +267,40 @@ struct PhraseRow: Identifiable, Equatable {
 
 enum PhraseList {
     static let defaultsKey = "phraseAliases"
+    static let editableShortFormsKey = "appShortFormsAreEditable"
     // Store each batch once. A deleted row stays deleted when a later version adds defaults.
     static func seedDefaults(in defaults: UserDefaults, conflictsWithSpeaker: (PhrasePattern) -> Bool = { _ in false }) {
         let batches: [(key: String, additions: [(PhraseSlot, [String])])] = [
             ("phraseDefaults20261115", [(.wakePhrase, ["Hey Chat"]), (.sleepPhrase, ["Goodbye Chat"]),
                                        (.switchAppPhrase, ["Switch up", "Switch to", "Switch"])]),
-            ("mutePhraseDefaults20261118", [(.mutePhrase, ["Mute mic"]), (.silentPhrase, ["Mute speakers"])])
+            ("voiceStartEndAliases20261122", [(.wakePhrase, ["Start chat"]), (.sleepPhrase, ["End chat"])]),
+            ("rewindVideoPhrases1", [
+                (.rewindFivePhrase, ["Rewind video 5 seconds", "Rewind five seconds", "Rewind 5 seconds", "Rewind the video five seconds", "Rewind the video 5 seconds", "Go back five seconds", "Go back 5 seconds"]),
+                (.rewindTenPhrase, ["Rewind video 10 seconds", "Rewind ten seconds", "Rewind 10 seconds", "Rewind the video ten seconds", "Rewind the video 10 seconds", "Go back ten seconds", "Go back 10 seconds"])]),
+            ("mutePhraseDefaults20261118", [(.mutePhrase, ["Mute mic"]), (.silentPhrase, ["Mute speakers"])]),
+            // “Silent speakers and unsilent speakers, or speaker singular” are Codex Voice
+            // actions. They use the same directional controls and editable rows as Silent Chat.
+            ("codexVoiceSpeakerPhrases20261121", [
+                (.silentPhrase, ["Silent speakers", "Silent speaker"]),
+                (.silencePhrase, ["Silence speakers", "Silence speaker"]),
+                (.unsilencePhrase, ["Unsilent speakers", "Unsilent speaker", "Unsilence speakers", "Unsilence speaker"])]),
+            // Ethan, 20 November 2026: "Show app Codex", "Show Codex", "Show me Codex". Keep each prefix editable.
+            // The short forms require an exact app name or spelling. Show voice has its own slot.
+            ("appShowPrefixDefaults20261121", [(.openAppPhrase, ["Show app", "Show me", "Show", "Open"])])
         ]
         for batch in batches where !defaults.bool(forKey: batch.key) {
             let saved = defaults.object(forKey: defaultsKey)
             var rows = decode(saved)
             let dictionaries = defaults.dictionary(forKey: "phraseDictionaries") as? [String: [String]] ?? [:]
             var seen = Set(PhraseSlot.allCases.flatMap { slot in
-                [slot.savedValue(in: defaults)] + (rows[slot] ?? []) + (dictionaries[slot.rawValue] ?? [])
+                let phrases = [slot.savedValue(in: defaults)] + (rows[slot] ?? [])
+                return phrases + phrases.flatMap { dictionaries[slot.spellingKey(for: $0)] ?? [] }
             }.map(key))
             for (slot, phrases) in batch.additions where slot.isDefault(slot.savedValue(in: defaults)) {
                 // The two speaker trigger families share a panel. Respect a customized primary in either.
-                if slot == .silentPhrase && !PhraseSlot.silencePhrase.isDefault(PhraseSlot.silencePhrase.savedValue(in: defaults)) { continue }
+                if slot.action == .silenceSpeakers && !slot.action.slots.allSatisfy({ $0.isDefault($0.savedValue(in: defaults)) }) { continue }
+                // Switch app and Open app also share one panel.
+                if slot == .openAppPhrase && !PhraseSlot.switchAppPhrase.isDefault(PhraseSlot.switchAppPhrase.savedValue(in: defaults)) { continue }
                 for phrase in phrases where !seen.contains(key(phrase)) {
                     let pattern = PhrasePattern(slot: slot, text: phrase, similar: false, dictionaries: .init())
                     guard !conflictsWithSpeaker(pattern) else { continue }
@@ -210,6 +309,13 @@ enum PhraseList {
                 }
             }
             defaults.set(encode(rows, preserving: saved), forKey: defaultsKey)
+            if batch.key == "appShowPrefixDefaults20261121",
+               PhraseSlot.openAppPhrase.isDefault(PhraseSlot.openAppPhrase.savedValue(in: defaults)),
+               PhraseSlot.switchAppPhrase.isDefault(PhraseSlot.switchAppPhrase.savedValue(in: defaults)) {
+                // If a longer custom speaker phrase blocked the Open row, keep the old
+                // "Open Safari" shortcut. Its exact speaker phrase still owns its own words.
+                defaults.set(seen.contains(key("Open")), forKey: editableShortFormsKey)
+            }
             defaults.set(true, forKey: batch.key)
         }
     }
@@ -351,6 +457,39 @@ struct PhraseDictionaries: Equatable {
         normalized = spellings.mapValues { Set($0.map { PhraseMatcher.words($0).joined() }) }
         spans = normalized.mapValues { $0.map(\.count).max() ?? 0 }
     }
+    init(savedByTrigger saved: [String: [String]], active configuration: PhraseConfiguration? = nil) {
+        var owners: [String: PhraseAction] = [:]
+        if let configuration {
+            for slot in PhraseSlot.allCases {
+                for text in configuration.phrases(for: slot) { owners[PhraseList.key(text)] = slot.action }
+            }
+        }
+        func respectingExactClaims(_ entries: [String], for slot: PhraseSlot) -> [String] {
+            entries.filter { owners[PhraseList.key($0)].map { $0 == slot.action } ?? true }
+        }
+        var forms: [String: [String]] = [:]
+        if let configuration {
+            for slot in PhraseSlot.allCases {
+                for phrase in configuration.phrases(for: slot) {
+                    let key = slot.spellingKey(for: phrase)
+                    if !slot.addedStockSpellings(for: phrase).isEmpty, saved[key] == nil {
+                        let stock = slot.stockSpellings(for: phrase)
+                        let destination = slot.isDefault(phrase) ? PhraseList.key(phrase) : key
+                        forms[destination] = respectingExactClaims(stock, for: slot)
+                    }
+                }
+            }
+        }
+        for (key, entries) in saved {
+            guard let slotKey = key.split(separator: ":", maxSplits: 1).first,
+                  let slot = PhraseSlot(rawValue: String(slotKey)) else { continue }
+            let destination = key == slot.rawValue ? PhraseList.key(slot.defaultText) : key
+            // A later edit can give an exact trigger another action. Preserve saved spellings
+            // and withhold the conflicting alternative until that exact trigger is removed.
+            forms[destination] = respectingExactClaims(entries, for: slot)
+        }
+        self.init(forms)
+    }
     subscript(_ key: String) -> [String]? { spellings[key] }
     func contains(_ candidate: String, for key: String) -> Bool { normalized[key]?.contains(candidate) == true }
     func maximumSpan(for key: String) -> Int { spans[key] ?? 0 }
@@ -362,14 +501,44 @@ struct PhrasePattern: Equatable {
     let similar: Bool
     let ending: Bool
     let dictionaries: PhraseDictionaries
-    init(text: String, similar: Bool, ending: Bool = false, dictionaries: PhraseDictionaries = .init()) {
-        self.text = text; self.similar = similar; self.ending = ending; self.dictionaries = dictionaries
+    private let slot: PhraseSlot?
+    init(text: String, similar: Bool, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), slot: PhraseSlot? = nil) {
+        self.text = text; self.similar = similar; self.ending = ending; self.dictionaries = dictionaries; self.slot = slot
     }
     init(slot: PhraseSlot, text: String, similar: Bool, dictionaries: PhraseDictionaries) {
-        self.init(text: text, similar: similar && slot.isDefault(text), ending: slot.ending, dictionaries: dictionaries)
+        if !slot.isDefault(text), let entries = dictionaries[slot.spellingKey(for: text)] {
+            self.init(text: text, similar: similar, ending: slot.ending,
+                      dictionaries: PhraseDictionaries([PhraseList.key(text): entries]), slot: slot)
+        } else {
+            self.init(text: text, similar: similar && slot.isDefault(text), ending: slot.ending, dictionaries: dictionaries, slot: slot)
+        }
     }
-    func matches(in tokens: [String], timings: [(word: String, start: Double, end: Double)]? = nil) -> [(start: Int, end: Int)] {
-        PhraseMatcher.matches(in: tokens, phrase: text, similar: similar, ending: ending, timings: timings, dictionaries: dictionaries)
+    // The local recognizer heard an isolated “Unsilenced shot” for Ethan's request.
+    // This one dictionary entry also occurs in ordinary prose, so require a direct utterance.
+    func needsStandaloneUnsilence(_ words: ArraySlice<String>) -> Bool {
+        slot == .unsilencePhrase && words.elementsEqual(["unsilenced", "shot"])
+            && !words.elementsEqual(PhraseMatcher.words(text))
+    }
+    func matches(in tokens: [String], timings: [(word: String, start: Double, end: Double)]? = nil, forReservation: Bool = false) -> [(start: Int, end: Int)] {
+        let blockSplitUn = slot.map { [.muteMicrophone, .silenceSpeakers, .pauseVideo].contains($0.action) } ?? false
+        return PhraseMatcher.matches(in: tokens, phrase: text, similar: similar, ending: ending, timings: timings,
+                                     dictionaries: dictionaries, blockSplitUn: blockSplitUn).filter { match in
+            let next = tokens[safe: match.end]
+            switch slot {
+            case .rewindVideoPhrase:
+                // A bare number remains the existing distance argument. Only an explicit
+                // times suffix belongs to the shared repetition path. — GPT-6.1 Sol
+                if case .value(_, let used) = CommandRepetition.count(in: tokens, after: match.end),
+                   tokens[match.end + used - 1] == "times" { return true }
+                let following = next == "by" ? tokens[safe: match.end + 1] : next
+                return !["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                         "eleven", "twelve", "thirteen", "fourteen", "fifteen", "twenty", "thirty",
+                         "seconds", "minutes"].contains(following ?? "") && following.flatMap(Int.init) == nil
+            case .showVoicePhrase:
+                return !["memos", "memo", "over", "control"].contains(next ?? "") && (forReservation || next != "settings")
+            default: return true
+            }
+        }
     }
     func kind(for candidate: String) -> PhraseMatcher.MatchKind? {
         PhraseMatcher.matchKind(candidate, to: text, similar: similar, ending: ending, dictionaries: dictionaries)
@@ -380,6 +549,19 @@ struct PhrasePattern: Equatable {
 // Use real word spans, never synthesized hypothesis-arrival timestamps, to
 // recognize the same audio boundary already used by the microphone detector.
 enum DesktopSpeechBoundaries {
+    // A short hesitation can split a quoted example from “a case where” or “it picked up”.
+    // Keep the grammatical lead-in across acoustic pauses, until the next written sentence.
+    // Match only an immediate reported-speech construction, never the general topic.
+    static func introducesQuotation(words: [String], before start: Int, sentences: [Int]) -> Bool {
+        let beginning = max(sentences.last(where: { $0 <= start }) ?? 0, start - 6)
+        var lead = words[beginning..<start]
+        if let last = lead.last, ["l", "lol", "like"].contains(last) { lead = lead.dropLast() }
+        let endings = [["case", "where"], ["example", "where"], ["it", "picked", "up"],
+                       ["it", "heard"], ["heard", "it", "say"], ["heard", "you", "say"],
+                       ["when", "i", "say"], ["i", "said"], ["you", "said"], ["you", "said", "it"]]
+        return endings.contains { lead.suffix($0.count).elementsEqual($0) }
+    }
+
     static func indices(words: [String], timings: [(word: String, start: Double, end: Double)]?, gap: Double) -> [Int] {
         guard let timings, timings.map(\.word) == words, timings.count > 1 else { return [] }
         return (1..<timings.count).filter { index in
@@ -427,10 +609,10 @@ struct PhraseMatcher {
         let expected = words(phrase), compact = expected.joined()
         guard !compact.isEmpty else { return [] }
         guard similar || videoVariants[expected.joined(separator: " ")] != nil else { return [phrase] }
-        guard let slot = PhraseSlot.allCases.first(where: { $0.isDefault(phrase) && $0.ending == ending }) else { return [phrase] }
-        if similar, let entries = dictionaries[words(slot.defaultText).joined()] {
+        if similar, let entries = dictionaries[compact] {
             return [phrase] + entries.filter { words($0).joined() != compact }
         }
+        guard PhraseSlot.allCases.contains(where: { $0.isDefault(phrase) && $0.ending == ending }) else { return [phrase] }
         var candidates: Set<String>
         if usesWakeDictionary(expected, similar: similar, ending: ending) {
             candidates = wakeVariants.union(weakWakeVariants)
@@ -518,13 +700,13 @@ struct PhraseMatcher {
     }
     private static func equivalentCompact(_ actual: String, expected: [String], compact: String, similar: Bool, allowEndAddressEdit: Bool, dictionaries: PhraseDictionaries = .init()) -> Bool {
         if actual == compact { return !compact.isEmpty }
+        if similar, dictionaries[compact] != nil {
+            return dictionaries.contains(actual, for: compact)
+        }
         guard defaultEndings[compact] == allowEndAddressEdit else { return false }
         let naturalVideoVariant = videoVariants[expected.joined(separator: " ")]?.contains(actual) == true &&
             !actual.hasPrefix("paws")
         if !similar { return naturalVideoVariant }
-        if dictionaries[compact] != nil {
-            return dictionaries.contains(actual, for: compact) // Explicit overrides replace generated alternatives, including the open-ended wake rule.
-        }
         if usesWakeDictionary(expected, similar: similar, ending: allowEndAddressEdit) {
             return wakeVariants.contains(actual) || weakWakeVariants.contains(actual)
         }
@@ -537,7 +719,8 @@ struct PhraseMatcher {
         return videoVariants[expected.joined(separator: " ")]?.contains(actual) == true
     }
     static func matches(in tokens: [String], phrase: String, similar: Bool, ending: Bool = false,
-                        timings: [(word: String, start: Double, end: Double)]? = nil, dictionaries: PhraseDictionaries = .init()) -> [(start: Int, end: Int)] {
+                        timings: [(word: String, start: Double, end: Double)]? = nil, dictionaries: PhraseDictionaries = .init(),
+                        blockSplitUn: Bool = false) -> [(start: Int, end: Int)] {
         let expected = words(phrase)
         guard !expected.isEmpty else { return [] }
         let compact = expected.joined()
@@ -547,7 +730,7 @@ struct PhraseMatcher {
         var result: [(start: Int, end: Int)] = [], start = 0
         while start < tokens.count {
             if start > 0, tokens[start - 1] == "un",
-               controlPhrases.contains(expected.joined(separator: " ")) || videoPhrases.contains(expected.joined(separator: " ")),
+               blockSplitUn || controlPhrases.contains(expected.joined(separator: " ")) || videoPhrases.contains(expected.joined(separator: " ")),
                expected.first?.hasPrefix("un") == false {
                 start += 1; continue // A split "un mute" / "un silence" / "un pause" must never also match the opposite command.
             }

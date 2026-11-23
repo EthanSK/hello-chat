@@ -4,21 +4,6 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-// A fresh unique call identity can survive Electron replacing its AX nodes on activation.
-// It is supplementary evidence for an already identified native End, never proof from input IO. — GPT-6.1 Sol
-enum VoiceCallMembership {
-    static func validator() -> (() -> Bool)? {
-        guard let app = VoiceBridge.currentApplication(), let launched = app.launchDate,
-              let expected = VoiceTimeline.sessions(database: VoiceTimeline.databaseURL(), since: launched)?.startedAtMilliseconds,
-              expected.count == 1 else { return nil }
-        let pid = app.processIdentifier
-        return {
-            guard let current = VoiceBridge.currentApplication(), current.processIdentifier == pid,
-                  current.launchDate == launched else { return false }
-            return VoiceTimeline.sessions(database: VoiceTimeline.databaseURL(), since: launched)?.startedAtMilliseconds == expected
-        }
-    }
-}
 import SQLite3
 
 struct VoiceTimeline {
@@ -32,6 +17,41 @@ struct VoiceTimeline {
     // Temporary calls can be memory-only, so their actual controls still win.
     static func hasActiveCall(database: URL, since: Date) -> Bool? {
         activeSessions(database: database, since: since).map { !$0.isEmpty }
+    }
+
+    enum RecentChat: Equatable { case thread(UUID), none, unknown }
+
+    // "Last known Voice chat" means the most recently started saved local call.
+    // Use the same ledger even after H Chat or Codex restarts. Its catalogue
+    // excludes missing chats, and ordinary chat activity never changes the order.
+    static func mostRecentChat(database: URL) -> RecentChat {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK,
+              let db else { if let db { sqlite3_close(db) }; return .unknown }
+        defer { sqlite3_close(db) }
+        let sql = """
+            SELECT l.thread_id, MAX(json_extract(l.payload_json, '$.occurredAtMs')) AS started
+            FROM thread_timeline_ledger l
+            JOIN local_thread_catalog c ON c.host_id = l.host_id AND c.thread_id = l.thread_id
+            WHERE l.host_id = 'local' AND c.missing_candidate = 0
+              AND l.record_id LIKE 'session:%:started' AND json_valid(l.payload_json)
+              AND json_extract(l.payload_json, '$.type') = 'session-started'
+              AND json_type(l.payload_json, '$.occurredAtMs') = 'integer'
+            GROUP BY l.thread_id ORDER BY started DESC LIMIT 2
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return .unknown }
+        defer { sqlite3_finalize(statement) }
+        let first = sqlite3_step(statement)
+        if first == SQLITE_DONE { return .none }
+        guard first == SQLITE_ROW, let raw = sqlite3_column_text(statement, 0),
+              let id = UUID(uuidString: String(cString: raw)) else { return .unknown }
+        let started = sqlite3_column_int64(statement, 1)
+        switch sqlite3_step(statement) {
+        case SQLITE_DONE: return .thread(id)
+        case SQLITE_ROW: return sqlite3_column_int64(statement, 1) == started ? .unknown : .thread(id)
+        default: return .unknown
+        }
     }
 
     // Verify the same session's End even if a replacement has since started.
@@ -112,6 +132,8 @@ struct VoiceTimeline {
 
 @MainActor final class VoiceCallMonitor {
     var onChange: ((VoiceCallObservation) -> Void)?
+    var onSessionStarted: ((Date) -> Void)?
+    private var lastSessionStart: Int64?
     private var tracker = VoiceCallTracker()
     private var started = false
     private var generation = UUID()
@@ -184,6 +206,10 @@ struct VoiceTimeline {
                     return (read, state.pid, callElements, observedAt)
                 }.value
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
+                if let started = evidence.0.ledger?.startedAtMilliseconds.values.max(), started != self.lastSessionStart {
+                    self.lastSessionStart = started
+                    self.onSessionStarted?(Date(timeIntervalSince1970: Double(started) / 1_000))
+                }
                 let result = self.tracker.observe(evidence.0)
                 self.installAccessibilityObserver(pid: evidence.1, callElements: evidence.2)
                 self.installFileObservers()
@@ -279,6 +305,22 @@ struct VoiceTimeline {
             }
             source.setCancelHandler { close(descriptor) }
             fileSources[path] = source; source.resume()
+        }
+    }
+}
+
+// A fresh unique call identity can survive Electron replacing its AX nodes on activation.
+// It is supplementary evidence for an already identified native End, never proof from input IO. — GPT-6.1 Sol
+enum VoiceCallMembership {
+    static func validator() -> (() -> Bool)? {
+        guard let app = VoiceBridge.currentApplication(), let launched = app.launchDate,
+              let expected = VoiceTimeline.sessions(database: VoiceTimeline.databaseURL(), since: launched)?.startedAtMilliseconds,
+              expected.count == 1 else { return nil }
+        let pid = app.processIdentifier
+        return {
+            guard let current = VoiceBridge.currentApplication(), current.processIdentifier == pid,
+                  current.launchDate == launched else { return false }
+            return VoiceTimeline.sessions(database: VoiceTimeline.databaseURL(), since: launched)?.startedAtMilliseconds == expected
         }
     }
 }

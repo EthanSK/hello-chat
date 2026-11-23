@@ -282,17 +282,37 @@ import Foundation
         precondition(confirmed && bestEffortSent)
 
         var mailboxState = state(), mailboxEvents: [String] = []
+        var launchBoundaries: [Date?] = []
         let mailboxContext = VoiceStartContext()
         mailboxContext.prepareNewCall = { mailboxEvents.append("mailbox") }
         let mailboxVoice = NativeVoice(transport: .init(snapshot: { mailboxState }, send: { command, _ in
             mailboxEvents.append(command); mailboxState = state(.listening)
-        }, activate: { _ in fatalError("Global Start must not make Codex frontmost") }))
+        }, activate: { _ in fatalError("Global Start must not make Codex frontmost") },
+        prepareNewVoiceSpeed: { pid, _ in precondition(pid == 123); mailboxEvents.append("speed") },
+        finishLaunchDefaults: { _, sent in launchBoundaries.append(sent) }))
         _ = try await mailboxVoice.start(context: mailboxContext)
-        precondition(mailboxEvents == ["mailbox", VoiceBridge.startCommand] && mailboxContext.requestedNewCall)
+        precondition(mailboxEvents == ["speed", "mailbox", VoiceBridge.startCommand] && mailboxContext.requestedNewCall)
         let reusedMailboxContext = VoiceStartContext()
         reusedMailboxContext.prepareNewCall = { fatalError("Reusing a live call must not replace startup speech") }
         _ = try await mailboxVoice.start(context: reusedMailboxContext)
-        precondition(!reusedMailboxContext.requestedNewCall)
+        precondition(!reusedMailboxContext.requestedNewCall && mailboxEvents == ["speed", "mailbox", VoiceBridge.startCommand])
+
+        precondition(launchBoundaries.count == 2 && launchBoundaries[0] != nil && launchBoundaries[1] == nil)
+        var rollbackOnError = false
+        var appeared = state()
+        let appearedDuringSpeedChange = NativeVoice(transport: .init(snapshot: { appeared },
+            send: { _, _ in fatalError("A call opened during speed preparation") }, activate: { _ in },
+            prepareNewVoiceSpeed: { _, _ in appeared = state(.listening) }))
+        let reused = try await appearedDuringSpeedChange.start()
+        precondition(reused == .listening)
+        let unavailableSpeed = NativeVoice(transport: .init(snapshot: { state() },
+            send: { _, _ in fatalError("Start must wait for the shared preference") }, activate: { _ in },
+            prepareNewVoiceSpeed: { _, _ in throw BridgeError.message("Test configuration error") },
+            finishLaunchDefaults: { _, sent in rollbackOnError = sent == nil }))
+        do { _ = try await unavailableSpeed.start(); fatalError("Expected configuration failure") } catch is BridgeError { }
+
+        precondition(rollbackOnError)
+
         var desktop = DesktopSessionState.locked
         var sessionCommands: [String] = [], sessionState = state()
         let sessionVoice = NativeVoice(transport: .init(snapshot: { sessionState }, send: { command, _ in
@@ -432,6 +452,7 @@ import Foundation
         precondition(recoveredInitialApp == .muted && lookupReads == 2,
                      "A transient initial application lookup recovers before deciding Voice is absent")
 
+        var preparedForColdLaunch = false
         var launched = false, launchCount = 0, readinessReads = 0, launchCommands: [String] = []
         let closedApp = NativeVoice(transport: .init(snapshot: {
             var value = state()
@@ -443,7 +464,14 @@ import Foundation
         }, send: { command, _ in
             precondition(readinessReads >= 3, "Never deliver to a process before its actual readiness")
             launchCommands.append(command)
-        }, activate: { _ in }, launch: { launched = true; launchCount += 1 }), minimumLaunchWait: 0)
+        }, activate: { _ in }, launch: {
+            precondition(preparedForColdLaunch, "Set speed before the cold desktop reads its initial configuration")
+            launched = true
+            launchCount += 1
+        }, prepareNewVoiceSpeed: { pid, _ in
+            precondition(pid == nil && !launched && !preparedForColdLaunch)
+            preparedForColdLaunch = true
+        }), minimumLaunchWait: 0)
         _ = try await closedApp.start()
         precondition(launchCount == 1 && launchCommands == ["realtimeVoice"] && closedApp.connected,
                      "A closed Codex launches once, waits for readiness, then receives only the global Voice action")
@@ -1093,6 +1121,48 @@ import Foundation
         quitBeforeTask.cancel()
         releaseQuitRead?.resume(returning: state())
         await quitBeforeTask.value
+        if let cli = ProcessInfo.processInfo.environment["HELLOCHAT_TEST_CODEX_CLI"] {
+            try await temporaryVoiceDefaults(executable: URL(fileURLWithPath: cli))
+        }
         print("Passed native Voice transport checks including stale closed-call and active-call cleanup. No desktop events or real calls sent.")
+    }
+
+    // Real configuration protocol, isolated from all user config and login data.
+    static func temporaryVoiceDefaults(executable: URL) async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let env = ["CODEX_HOME": dir.path, "PATH": "/usr/bin:/bin", "HOME": dir.path]
+        let file = dir.appendingPathComponent("config.toml"), receipt = dir.appendingPathComponent("launch/receipt.json")
+        let manager = CodexVoiceSpeed(receipt: receipt)
+        let original = "model_reasoning_effort = \"max\"\n"
+        try original.write(to: file, atomically: true, encoding: .utf8)
+        let start = Date(), id = UUID()
+        try await manager.prepare(id, executable: executable, environment: env)
+        let prepared = try String(contentsOf: file, encoding: .utf8)
+        precondition(prepared.contains(CodexVoiceSpeed.model) && prepared.contains(CodexVoiceSpeed.tier)
+                     && prepared.contains("model_reasoning_effort = \"high\""))
+        try await manager.finish(id, sent: start, executable: executable, environment: env)
+        try await manager.observedSessionStart(start.addingTimeInterval(-1), executable: executable, environment: env)
+        precondition(FileManager.default.fileExists(atPath: receipt.path))
+        try await manager.observedSessionStart(start.addingTimeInterval(1), executable: executable, environment: env)
+        let restored = try String(contentsOf: file, encoding: .utf8)
+        precondition(restored == original && !FileManager.default.fileExists(atPath: receipt.path))
+        let next = UUID()
+        try await manager.prepare(next, executable: executable, environment: env)
+        let manual = try String(contentsOf: file, encoding: .utf8).replacingOccurrences(of: CodexVoiceSpeed.model, with: "gpt-6.1-sol").replacingOccurrences(of: "\"high\"", with: "\"medium\"")
+        try manual.write(to: file, atomically: true, encoding: .utf8)
+        let restarted = CodexVoiceSpeed(receipt: receipt)
+        try await restarted.recover(executable: executable, environment: env)
+        let after = try String(contentsOf: file, encoding: .utf8)
+        precondition(after.contains("gpt-6.1-sol") && after.contains("model_reasoning_effort = \"medium\"") && !after.contains("service_tier"))
+        let timeoutID = UUID()
+        try await restarted.prepare(timeoutID, executable: executable, environment: env)
+        try await restarted.finish(timeoutID, sent: Date(), executable: executable, environment: env, timeout: 0.01)
+        for _ in 0..<100 where FileManager.default.fileExists(atPath: receipt.path) { try await Task.sleep(for: .milliseconds(25)) }
+        precondition(!FileManager.default.fileExists(atPath: receipt.path))
+        let timedOut = try String(contentsOf: file, encoding: .utf8)
+        precondition(timedOut == after)
+        print("Passed isolated native Codex launch-default writes, session boundary, rollback, crash recovery and manual override checks")
     }
 }

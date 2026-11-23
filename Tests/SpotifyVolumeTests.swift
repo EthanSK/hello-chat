@@ -1,6 +1,7 @@
 // Exercise volume ownership and crash recovery with injected Spotify/storage.
 // These tests never send Apple Events or touch real playback and call controls.
 import Foundation
+import SwiftUI
 
 @main enum SpotifyVolumeTests {
     static func check(_ condition: Bool) { precondition(condition) }
@@ -36,6 +37,11 @@ import Foundation
     }
 
     static func main() throws {
+        var savedLimit = 50
+        var edits: [Int] = []
+        let field = Binding(get: { savedLimit }, set: { savedLimit = $0; edits.append($0) }).changes(in: 0...100)
+        for number in [50, 50, 40, 40, 40, -2, 0, 101, 100, 40] { field.wrappedValue = number }
+        precondition(edits == [40, 0, 100, 40], "Only a changed, bounded setting may trigger a Spotify volume check")
         let f = Fixture(), s = f.session()
         check(try s.reconcile(.active) == .lowered)
         precondition(f.volume == 50 && f.receipt?.original == 80 && f.receipt?.cap == 50)
@@ -50,6 +56,40 @@ import Foundation
         _ = try s.reconcile(.inactive)
         precondition(f.writes.count == 2, "Duplicate End does nothing")
         try microphonePhraseVolume()
+        let settings = UserDefaults(suiteName: "HChatVolumeTests-"+UUID().uuidString)!
+        check(SpotifyVolumePolicy.limit(in: settings) == 50)
+        settings.set(-2, forKey: SpotifyVolumePolicy.preferenceKey)
+        check(SpotifyVolumePolicy.limit(in: settings) == 0)
+        settings.set(111, forKey: SpotifyVolumePolicy.preferenceKey)
+        check(SpotifyVolumePolicy.limit(in: settings) == 100)
+        settings.removeObject(forKey: SpotifyVolumePolicy.preferenceKey)
+        for limit in [0, 31, 100] {
+            let f = Fixture(), session = f.session()
+            _ = try session.reconcile(.active, limit: limit)
+            check(f.volume == min(80, limit))
+            _ = try session.reconcile(.inactive)
+            check(f.volume == 80 && f.receipt == nil)
+        }
+        let live = Fixture(), liveSession = live.session()
+        _ = try liveSession.reconcile(.active, limit: 25)
+        _ = try liveSession.reconcile(.active, limit: 42, limitEdited: true)
+        check(live.writes == [25, 42] && live.receipt?.original == 80)
+        _ = try liveSession.reconcile(.active, microphoneMuted: true, limit: 42)
+        _ = try liveSession.reconcile(.active, microphoneMuted: true, limit: 12, limitEdited: true)
+        check(live.volume == 80)
+        _ = try liveSession.reconcile(.active, microphoneMuted: false, limit: 12)
+        check(live.volume == 12)
+        live.volume = 69
+        _ = try liveSession.reconcile(.active, limit: 62, limitEdited: true)
+        _ = try liveSession.reconcile(.inactive)
+        check(live.volume == 69)
+        let interrupted = Fixture(), interruptedSession = interrupted.session()
+        _ = try interruptedSession.reconcile(.active, limit: 41)
+        interrupted.failWrite = true
+        do { _ = try interruptedSession.reconcile(.active, limit: 11, limitEdited: true); fatalError("Expected failed write") } catch {}
+        interrupted.failWrite = false
+        _ = try interrupted.session().reconcile(.inactive)
+        check(interrupted.volume == 80 && interrupted.receipt == nil)
 
         let quiet = Fixture(); quiet.volume = 45
         let quietSession = quiet.session()

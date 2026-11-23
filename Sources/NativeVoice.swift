@@ -8,12 +8,14 @@ import Foundation
     let id = UUID()
     var preserveCallOnCancellation = false
     var prepareNewCall: (() async -> Void)?
+    var sentAt: Date?
+    var defaultsExecutable: URL?
     private(set) var requestedNewCall = false
     func didRequestNewCall() { requestedNewCall = true }
 }
 
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
-// starts no App Server. Start uses Codex's global "Voice chat hotkey"; the
+// uses a configuration-only client for the shared speed. Start uses Codex's global "Voice chat hotkey"; the
 // composer's "Toggle voice chat" remains untouched. End stays dedicated.
 @MainActor final class NativeVoice {
     struct Transport {
@@ -30,6 +32,8 @@ import Foundation
         var outputSnapshot: (() async -> VoiceSnapshot)? = nil
         var frontmostPID: (() -> Int32?)? = nil
         var restoreFocus: (Int32) -> Void = { _ in }
+        var prepareNewVoiceSpeed: (@MainActor (Int32?, VoiceStartContext) async throws -> Void)? = nil
+        var finishLaunchDefaults: (@MainActor (VoiceStartContext, Date?) async throws -> Void)? = nil
         static var live: Self {
             Self(snapshot: {
                     await Task.detached(priority: .utility) {
@@ -83,6 +87,17 @@ import Foundation
                  }, frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
                  restoreFocus: { pid in
                     _ = NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+                 }, prepareNewVoiceSpeed: { pid, opening in
+                    guard UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true else { return }
+                    let exe = try CodexVoiceSpeed.executable(pid: pid)
+                    opening.defaultsExecutable = exe
+                    try await CodexVoiceSpeed.shared.prepare(opening.id, executable: exe)
+                    Diagnostics.shared.record("voice.defaults.prepared", info: [
+                        "model": CodexVoiceSpeed.model, "effort": CodexVoiceSpeed.effort, "tier": CodexVoiceSpeed.tier
+                    ])
+                 }, finishLaunchDefaults: { opening, sent in
+                    guard let exe = opening.defaultsExecutable else { return }
+                    try await CodexVoiceSpeed.shared.finish(opening.id, sent: sent, executable: exe)
                  })
         }
     }
@@ -109,8 +124,19 @@ import Foundation
 
     // A confirmed call can still lack a readable microphone control.
     @discardableResult func start(context: VoiceStartContext? = nil, onRequestAccepted: () -> Void = {}) async throws -> MicrophoneState? {
-        try checkStartAllowed()
         let opening = context ?? VoiceStartContext()
+        let result: MicrophoneState?
+        do { result = try await open(opening, onRequestAccepted: onRequestAccepted) }
+        catch {
+            try await transport.finishLaunchDefaults?(opening, nil)
+            throw error
+        }
+        try await transport.finishLaunchDefaults?(opening, opening.requestedNewCall ? opening.sentAt : nil)
+        return result
+    }
+
+    private func open(_ opening: VoiceStartContext, onRequestAccepted: () -> Void) async throws -> MicrophoneState? {
+        try checkStartAllowed()
         let starting = Diagnostics.now
         diagnostics?.record("voice.open.requested")
         // Ethan wants the start sound to acknowledge each accepted wake, even
@@ -138,6 +164,12 @@ import Foundation
         }
         let waitForApplication = state.pid == nil || state.applicationLaunching || !state.applicationHasWindow
             || (!state.applicationReady && state.controlsComplete)
+        // A newly launched desktop can read its saved speed as soon as its renderer starts.
+        let prepareBeforeLaunch = state.pid == nil && transport.launch != nil
+        if prepareBeforeLaunch {
+            try await transport.prepareNewVoiceSpeed?(nil, opening)
+            try checkStartAllowed()
+        }
         var lastObservedPID = state.pid
         var relaunchedAfterExit = false
         var launchedAt = transport.now()
@@ -212,6 +244,8 @@ import Foundation
             // Ethan's file handoff removes the need to make Codex frontmost or
             // navigate a composer. Start is already a global native action.
             // Keep the fresh reuse check, without the old activation delay.
+            if !prepareBeforeLaunch { try await transport.prepareNewVoiceSpeed?(pid, opening) }
+            try checkStartAllowed()
             let activated = await snapshot()
             try checkStartAllowed()
             guard activated.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
@@ -233,6 +267,7 @@ import Foundation
                 do {
                     await opening.prepareNewCall?()
                     try checkStartAllowed()
+                    opening.sentAt = Date()
                     try await transport.send(VoiceBridge.startCommand, pid)
                     lastVoicePID = pid
                     opening.didRequestNewCall()

@@ -59,7 +59,7 @@ private struct NativeTranscript: NSViewRepresentable {
         text.textContainer?.lineFragmentPadding = 0
         text.textContainer?.widthTracksTextView = true
         text.setAccessibilityIdentifier("heardText")
-        text.setAccessibilityLabel("Heard transcript")
+        text.setAccessibilityLabel("Live transcription")
         scroll.documentView = text
         context.coordinator.scroll = scroll
         scroll.contentView.postsBoundsChangedNotifications = true

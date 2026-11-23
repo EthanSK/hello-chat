@@ -23,18 +23,48 @@ struct AppCommandCandidate: Equatable {
     let kind: AppCommandKind
     let name: String            // The spoken app name, as heard.
     let bare: Bool              // "Open Safari" without the "app" word: needs a confident match.
+    var wordRange: Range<Int>? = nil
     let alternateName: String?  // "Open app store" can also mean the App Store.
+
+    // Exact installed names and saved aliases win: “Live 12” remains an app name.
+    // Only a whole valid suffix after a confidently known app can become a repeat count. — GPT-6.1 Sol
+    func separatingCount(among apps: [AppCandidate], spellings: AppNameSpellings) -> Self {
+        switch AppResolver.resolve(name, among: apps, allowFuzzy: false, spellings: spellings) {
+        case .match, .ambiguous: return self
+        case .none: break
+        }
+        let words = PhraseMatcher.words(name)
+        guard words.count > 1 else { return self }
+        for end in 1..<words.count {
+            guard case .value(_, let used) = CommandRepetition.count(in: words, after: end), end + used == words.count else { continue }
+            let base = words.prefix(end).joined(separator: " ")
+            guard case .match = AppResolver.resolve(base, among: apps, allowFuzzy: false, spellings: spellings) else { continue }
+            let range = wordRange.map { $0.lowerBound..<($0.upperBound - used) }
+            return Self(kind: kind, name: base, bare: bare, wordRange: range, alternateName: nil)
+        }
+        return self
+    }
+
+    // Timing locates an utterance for Voice's receipt. It isn't part of the app request.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.kind == rhs.kind && lhs.name == rhs.name && lhs.bare == rhs.bare && lhs.alternateName == rhs.alternateName
+    }
 }
 
 // App names need a real speech boundary. ASR can briefly punctuate "open Chrome settings"
 // as two sentences while it is still revising the same utterance.
 struct AppCommandDetector {
+    // Pre-upgrade custom prefixes retain their implicit short form. After migration, the
+    // stock Open, Show and Show me rows can each be edited or deleted independently.
+    var usesEditableShortForms = false
     static let finalizationSeconds = 0.8
     static let maximumNameWords = 4
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     // Only polite openers may precede a prefix; everything else (negation, "I said", a wake
-    // phrase, discussion) makes it ordinary speech. Bare "open" is stricter still.
-    private static let prefixLeftWords: Set<String> = ["please", "ok", "okay", "now", "can", "you", "could", "would", "and", "then"]
+    // phrase, discussion) makes it ordinary speech. Bare "open" is stricter still. "Again" is
+    // Ethan's retry after a missed command (20 November 2026 archive: "again show app codex");
+    // it is accepted before a listed prefix, never before a bare short form such as "Show Codex".
+    private static let prefixLeftWords: Set<String> = ["please", "ok", "okay", "now", "can", "you", "could", "would", "and", "then", "again"]
     private static let bareLeftWords: Set<String> = ["please", "ok", "okay", "now"]
     private var context: [String] = []
     private var sentenceStarts: [Int] = []
@@ -56,6 +86,8 @@ struct AppCommandDetector {
     private var checkedRevision = -1
     private var waiting = false
 
+    init(usesEditableShortForms: Bool = false) { self.usesEditableShortForms = usesEditableShortForms }
+
     // Word-free evidence for diagnostics: why a prefix was or wasn't admitted.
     struct Evidence: Equatable {
         var leftWords = 0
@@ -65,7 +97,7 @@ struct AppCommandDetector {
         var elapsed: Double?     // Pause after the name used for finalization.
     }
 
-    mutating func reset() { self = AppCommandDetector() }
+    mutating func reset() { self = AppCommandDetector(usesEditableShortForms: usesEditableShortForms) }
     mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
         audioTime = time
         if level < 0.02 { quiet += seconds }
@@ -124,12 +156,16 @@ struct AppCommandDetector {
     }
     // Each listed phrase is a prefix for its own section. Only Open app phrases have the bare short
     // form ("Open Safari"); Switch app phrases never gain one.
-    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern],
+    // `reserved` lists another command's own phrases (Show voice). Words that form one of them are
+    // never an app request, whether or not that command itself was accepted, so "Show voice" can't
+    // become "Show" followed by an app named Voice.
+    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern], reserved: [PhrasePattern] = [],
                        onDecision: ((AppCommandKind, String, Evidence) -> Void)? = nil) -> [AppCommandCandidate] {
         guard heardSpeech, checkedRevision != revision || waiting else { return [] }
         checkedRevision = revision; waiting = false
         var result: [AppCommandCandidate] = []
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
+        let reservedRanges = reserved.flatMap { $0.matches(in: context, timings: wordTimings, forReservation: true) }.map { $0.start..<$0.end }
         for (index, prefix) in prefixes(switchPrefixes: switchPrefixes, openPrefixes: openPrefixes).enumerated() {
             if suppressedStarts.contains(prefix.start) { continue }
             if let range = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
@@ -148,6 +184,11 @@ struct AppCommandDetector {
             } else { elapsed = quiet }
             var evidence = Self.evidence(prefix: prefix.start, end: sentenceEnd, timings: alignedTimings)
             evidence.elapsed = elapsed.isFinite ? elapsed : nil
+            if reservedRanges.contains(where: { $0.overlaps(prefix.start..<sentenceEnd) }) {
+                consume(index: index, start: prefix.start, end: prefix.end)
+                onDecision?(prefix.kind, "rejected_reserved", evidence)
+                continue
+            }
             if sentenceEnd < context.count, alignedTimings != nil, elapsed + 1e-9 < Self.finalizationSeconds {
                 consume(index: index, start: prefix.start, end: prefix.end)
                 onDecision?(prefix.kind, "rejected_no_audio_boundary", evidence)
@@ -160,9 +201,11 @@ struct AppCommandDetector {
             // heard after it says nothing about the words before it.
             let leftStart = max(audioBoundaries.last(where: { $0 <= prefix.start }) ?? 0, sentenceStart)
             let left = context[leftStart..<prefix.start]
-            let name = Self.trimmed(Array(context[prefix.end..<sentenceEnd]), kind: prefix.kind)
+            let show = context[prefix.start] == "show"
+            let name = Self.trimmed(Array(context[prefix.end..<sentenceEnd]), kind: prefix.kind, show: show)
             evidence.leftWords = left.count; evidence.nameWords = name.count
-            guard left.allSatisfy((prefix.bare ? Self.bareLeftWords : Self.prefixLeftWords).contains) else {
+            guard left.allSatisfy((prefix.bare ? Self.bareLeftWords : Self.prefixLeftWords).contains),
+                  !DesktopSpeechBoundaries.introducesQuotation(words: context, before: prefix.start, sentences: sentenceStarts) else {
                 consume(index: index, start: prefix.start, end: prefix.end)
                 onDecision?(prefix.kind, "rejected_context", evidence); continue
             }
@@ -171,15 +214,19 @@ struct AppCommandDetector {
             // it. Leave it unconsumed without polling unchanged text or adding another wait.
             if name.isEmpty, sentenceEnd == context.count { continue }
             consume(index: index, start: prefix.start, end: prefix.end)
-            guard (1...Self.maximumNameWords).contains(name.count), !Self.isDiscussion(name) else {
+            let hasCount = (1..<max(1, name.count)).contains { end in
+                if case .value(_, let used) = CommandRepetition.count(in: name, after: end) { return end <= Self.maximumNameWords && end + used == name.count }
+                return false
+            }
+            guard ((1...Self.maximumNameWords).contains(name.count) || hasCount), !Self.isDiscussion(name) else {
                 onDecision?(prefix.kind, "rejected_name_or_discussion", evidence); continue
             }
             var alternate: String?
             if prefix.kind == .openApp, !prefix.bare, prefix.start + 1 < prefix.end, context[prefix.end - 1] == "app" {
-                let bareName = Self.trimmed(Array(context[(prefix.end - 1)..<sentenceEnd]), kind: .openApp)
+                let bareName = Self.trimmed(Array(context[(prefix.end - 1)..<sentenceEnd]), kind: .openApp, show: show)
                 if bareName.count <= Self.maximumNameWords { alternate = bareName.joined(separator: " ") }
             }
-            result.append(AppCommandCandidate(kind: prefix.kind, name: name.joined(separator: " "), bare: prefix.bare, alternateName: alternate))
+            result.append(AppCommandCandidate(kind: prefix.kind, name: name.joined(separator: " "), bare: prefix.bare, wordRange: prefix.start..<(sentenceEnd - (context[sentenceEnd - 1] == "please" ? 1 : 0)), alternateName: alternate))
             onDecision?(prefix.kind, "accepted", evidence)
         }
         return result
@@ -204,10 +251,14 @@ struct AppCommandDetector {
         return discussionLeads.contains(first) || name.contains(where: discussionVerbs.contains)
     }
     // "Switch app to Chrome", "Open the App Store", "Open Safari please".
-    private static func trimmed(_ words: [String], kind: AppCommandKind) -> [String] {
+    // Show (Ethan, 20 November 2026: "Show me Codex", "Show Codex", "Show app Codex") keeps
+    // "the" in the requested name: "show me the code" or "show the notes" is ordinary speech,
+    // not a request for VS Code (whose bundle name is Code) or Notes.
+    private static func trimmed(_ words: [String], kind: AppCommandKind, show: Bool = false) -> [String] {
         var name = words[...]
         if kind == .switchApp, name.first == "to" { name = name.dropFirst() }
-        if name.first == "the" { name = name.dropFirst() }
+
+        if !show, name.first == "the" { name = name.dropFirst() }
         if name.last == "please" { name = name.dropLast() }
         return Array(name)
     }
@@ -218,13 +269,17 @@ struct AppCommandDetector {
         let patterns = switchPrefixes.map { ($0, AppCommandKind.switchApp) } + openPrefixes.map { ($0, AppCommandKind.openApp) }
         let classified = patterns.map { pattern, fallback in
             let first = PhraseMatcher.words(pattern.text).first
-            return (pattern, first == "open" ? AppCommandKind.openApp : (first == "switch" ? .switchApp : fallback))
+            return (pattern, (first == "open" || first == "show") ? AppCommandKind.openApp : (first == "switch" ? .switchApp : fallback))
         }
         for (pattern, kind) in classified {
-            for match in pattern.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, kind, false)) }
+            let words = PhraseMatcher.words(pattern.text)
+            let strict = kind == .openApp && (words == ["open"] || words == ["show"] || words == ["show", "me"])
+            for match in pattern.matches(in: context, timings: wordTimings) { found.append((match.start, match.end, kind, strict)) }
         }
         let full = found
         for (pattern, kind) in classified where kind == .openApp {
+            let words = PhraseMatcher.words(pattern.text)
+            if words == ["show", "app"] || (usesEditableShortForms && words == ["open", "app"]) { continue }
             guard let bare = Self.barePrefix(for: pattern) else { continue }
             for match in bare.matches(in: context, timings: wordTimings) where !full.contains(where: { $0.start == match.start }) {
                 found.append((match.start, match.end, .openApp, true))
@@ -279,7 +334,8 @@ struct AppNameSpellings: Equatable, Sendable {
     static let defaultsKey = "appNameSpellings"
     static let maximumSpellings = 100
     static let maximumLength = 120
-    static let defaults: [String: [String]] = [
+    // The 15 November table followed by each later upgrade's additions, in the same order.
+    private static let originalDefaults: [String: [String]] = [
         "com.google.Chrome": ["Chrome"],
         "com.openai.chat": ["Chat GPT"],
         "com.openai.codex": ["Codex", "Chat GPT", "Code X", "Code ex"],
@@ -293,13 +349,80 @@ struct AppNameSpellings: Equatable, Sendable {
         "com.ethansk.OBScene": ["OB Scene"],
         "com.pioneerdj.rekordboxdj": ["Record box", "Record books"],
     ]
+    static let defaults = upgrades.reduce(into: originalDefaults) { result, upgrade in
+        for (id, spellings) in upgrade.additions { result[id, default: []].append(contentsOf: spellings) }
+    }
+    // Ethan, 20 November 2026: "open app codecs ... codex needs to be a spelling of the app" and
+    // "add a bunch of sensible ones" that speech recognition gets wrong. The archive heard
+    // "codecs", then "switch app Kodaks" at 00:04 on 21 November; his saved list already had "Codec". Ableton's bundle name is only "Live".
+    // A saved list replaces an app's built-ins, so these reach it only through this one-time
+    // upgrade: it appends the batch's new spellings and nothing else. An older built-in absent
+    // from the saved list stays deleted, an explicit empty list stays empty, a spelling another
+    // app already uses is skipped, and the marker keeps a later deletion deleted.
+    static let upgrades: [(marker: String, additions: [String: [String]])] = [
+        ("appNameSpellingDefaults20261121", [
+            "com.openai.chat": ["Chat GBT", "Chad GPT"],
+            "com.openai.codex": ["Codec", "Codecs", "Kodaks", "Code decks", "Chat GBT", "Chad GPT"],
+            "com.microsoft.VSCode": ["Visual Studio"],
+            "com.ethansk.VoiceInkPlusPlus": ["Agents Flow", "Agent Flows"],
+            "com.ethan.agentic-mouse": ["Agent Mouse", "A genetic mouse"],
+            "com.anthropic.claudefordesktop": ["Clawed"],
+            "notion.id": ["Notions"],
+            "com.ethansk.obs-plus-plus": ["OBS plus"],
+            "com.ethansk.OBScene": ["OB Seen"],
+            "com.pioneerdj.rekordboxdj": ["Record boxes"],
+            "com.ableton.live": ["Ableton", "Ableton Live", "Abelton"],
+        ]),
+    ]
     var overrides: [String: [String]] = [:]
 
     init(overrides: [String: [String]] = [:]) { self.overrides = overrides }
     init(saved: Any?) {
         overrides = (saved as? [String: [String]] ?? [:]).mapValues { Self.cleaned($0) }
     }
-    func spellings(for id: String) -> [String] { Self.cleaned(overrides[id] ?? Self.defaults[id] ?? []) }
+    // The saved settings, after any upgrade not yet applied to them. Other saved apps, unknown
+    // bundle IDs and the saved text of existing entries are written back unchanged.
+    static func load(from defaults: UserDefaults = .standard) -> AppNameSpellings {
+        var saved = defaults.object(forKey: defaultsKey)
+        for upgrade in upgrades where !defaults.bool(forKey: upgrade.marker) {
+            if let current = saved as? [String: [String]] {
+                let next = upgraded(current, adding: upgrade.additions)
+                if next != current { defaults.set(next, forKey: defaultsKey); saved = next }
+            }
+            defaults.set(true, forKey: upgrade.marker)
+        }
+        return AppNameSpellings(saved: saved)
+    }
+    static func upgraded(_ saved: [String: [String]], adding additions: [String: [String]]) -> [String: [String]] {
+        var result = saved
+        for id in saved.keys.sorted() {
+            guard let new = additions[id], let values = saved[id], !cleaned(values).isEmpty else { continue }
+            var list = values
+            var keys = Set(cleaned(values).map(AppResolver.key))
+            for spelling in new {
+                let key = AppResolver.key(spelling)
+                guard !key.isEmpty, cleaned(list).count < maximumSpellings, keys.insert(key).inserted else { continue }
+                let others = (AppNameSpellings(overrides: result).aliases[key] ?? []).filter { $0 != id }
+                guard others.isEmpty || isChatGPTFamily(key, ids: others + [id]) else { continue }
+                list.append(spelling)
+            }
+            result[id] = list
+        }
+        return result
+    }
+    func spellings(for id: String) -> [String] {
+        if let saved = overrides[id] { return Self.cleaned(saved) }
+        let original = Set((Self.originalDefaults[id] ?? []).map(AppResolver.key))
+        return Self.cleaned(Self.defaults[id] ?? []).filter { spelling in
+            let key = AppResolver.key(spelling)
+            if original.contains(key) { return true }
+            // A newly suggested alias must not take a spelling a different app already owns.
+            let owners = overrides.compactMap { owner, saved in
+                saved.contains(where: { AppResolver.key($0) == key }) ? owner : nil
+            }
+            return owners.isEmpty || Self.isChatGPTFamily(key, ids: owners + [id])
+        }
+    }
 
     var aliases: [String: [String]] {
         var result: [String: [String]] = [:]
@@ -315,6 +438,11 @@ struct AppNameSpellings: Equatable, Sendable {
             }
         }
         return result
+    }
+    func commandTarget(_ name: String) -> String {
+        let key = AppResolver.key(name)
+        let ids = aliases[key] ?? []
+        return ids.count == 1 ? ids[0].lowercased() : key
     }
     static func cleaned(_ values: [String]) -> [String] {
         var seen: Set<String> = []
@@ -366,8 +494,10 @@ struct AppNameSpellings: Equatable, Sendable {
             }
         }.map(\.displayName)
     }
+    // The ChatGPT app and Codex's ChatGPT presentation share these names in a fixed order.
+    static let chatGPTKeys: Set<String> = ["chatgpt", "chatgbt", "chadgpt"]
     static func isChatGPTFamily(_ key: String, ids: [String]) -> Bool {
-        key == "chatgpt" && Set(ids).isSubset(of: ["com.openai.chat", "com.openai.codex"])
+        chatGPTKeys.contains(key) && Set(ids).isSubset(of: ["com.openai.chat", "com.openai.codex"])
     }
 }
 

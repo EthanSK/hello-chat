@@ -7,7 +7,7 @@ description: Implement, diagnose, test, install, or release this repository's na
 
 ## Continuous improvement
 
-Keep useful, verified project lessons in [LEARNINGS.md](../../../LEARNINGS.md). Update this skill when an established workflow changes, preserving user preferences and unrelated behavior. Keep historical incidents in the learnings file, not this operating contract; do not record secrets or private device details in public files.
+Keep useful, verified project lessons in [LEARNINGS.md](../../../LEARNINGS.md). Update this skill when an established workflow changes, preserving user preferences and unrelated behavior. Keep historical incidents in the learnings file, not this operating contract; do not record secrets or private device details in public files. Mark agent-initiated guidance with a dated Self-improved note and verified reason; distinguish explicit user preferences.
 
 ## Skill usage announcement
 
@@ -30,9 +30,23 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 - Recognition and model assets stay local. Never silently add network transcription, voice identification, or background microphone behavior. Model pinning and downloads belong to [SpeechModels.json](../../../Resources/SpeechModels.json) and [fetch-speech-models.py](../../../scripts/fetch-speech-models.py).
 - Use injected transports and recorded fixtures for tests. Never automate real Codex Voice calls in tests. Recorded recognition and key-translation checks do not prove physical-microphone or live Voice acceptance.
 
+## Home and settings design
+
+
+- Ethan wants “a settings cog icon button where you can configure each one” and an info icon beside each Home title. Keep one Home entry per distinct command. Combine interchangeable app prefixes and the single configurable rewind action. Keep directional commands distinct. Use Codex Voice in brackets for call controls and make Mac output selection distinguishable.
+- Put what H Chat heard under **Live transcription** and the most recent command outcome directly below it, with access to command history. A highlighted phrase means it was heard. Show “sent”, confirmed effects, failures and uncertain results accurately.
+- Keep one editable home for each setting. Show the current value once. Use a custom number for an amount like rewind seconds. Do not make the user add a phrase to choose a duration. Keep existing custom phrases, spellings, sounds and explicit distances when simplifying.
+- Hide a Home phrase caption when its only text repeats the command title. Keep custom phrases, multiple alternatives, empty states and speaker destinations visible. Use the same spelling-count control below each phrase, including speaker prefixes.
+- Count the same alternate spellings the editor shows. Keep the main phrase separate from its alternatives. Remove duplicate lists, floating labels and instructions that repeat the controls. Use simple language for microphone scope, device availability and real loading.
+- Give each command its own gear and sound control. Use a consistent way to finish editing. If a group of fields must be validated together, let the user safely discard an unfinished edit. Keep long menus scrollable when the pointer is over a control.
+- For a full UI pass, audit Home, every gear, individual phrase and spelling editors, speaker names and destinations, app spellings, effects, Settings, diagnostics and the menu-bar menu. Capture and inspect the actual rendered screens with representative saved values, including scrolled content. Exercise loading, editing and scrolling with live transcription updates. Identify any surfaces or physical interactions still unverified.
+- Work with Opus before settling taste decisions for this project, using Ethan’s existing subscription. Treat his questions about a visible inconsistency as requests to fix it when inspection confirms a problem.
+
+- Every command should support a trailing repeat count by default through the shared reservation/scheduler path, including future actions. Keep the default-on checkbox and explanatory tooltip in each command’s settings. Preserve explicit numeric arguments, one execution without a count, action-time checks, one utterance receipt and revised-transcript totals. Never turn one repeated request into competing fallback actions. User-requested — 2026-11-23.
+
 ## Voice and keyboard behavior
 
-- Ethan prefers the automatic Spotify voice-call volume at 50%, replacing 30%; this is a persistent preference, not a temporary manual override. Preserve prior-volume restoration, already-quieter volume and manual adjustments. The implementation and UI share the policy in [SpotifyVolumeSession.swift](../../../Sources/SpotifyVolumeSession.swift). User-requested — 2026-11-07.
+- Preserve the user’s saved Spotify maximum rather than resetting it to a factory value. Keep prior-volume restoration, already-quieter volume and manual adjustments. The implementation and UI share the policy in [SpotifyVolumeSession.swift](../../../Sources/SpotifyVolumeSession.swift); private preference history records personal values. User-requested — 2026-11-07; corrected 2026-11-22.
 
 - Preserve an active Codex call on normal H Chat Quit: detach local listening/control work without sending End. Explicit spoken/button End remains separate. Inspect [GateModel.swift](../../../Sources/GateModel.swift), [NativeVoice.swift](../../../Sources/NativeVoice.swift), and [NativeVoiceTests.swift](../../../Tests/NativeVoiceTests.swift).
 - User-requested — 2026-11-05: “just because I'm on a call” does not mean H Chat should be blocked from being closed and restarted. Build, install and restart H Chat when needed during a Codex Voice call; preserve the call and Agent Flow recording themselves. Do not ask Ethan to end them or treat their microphone activity as an update blocker. Finish H Chat's own in-flight operations and flush its files before replacement. Wake and end phrases also stay enabled while Agent Flow records.

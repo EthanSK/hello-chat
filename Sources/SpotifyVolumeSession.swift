@@ -11,6 +11,10 @@ enum VoiceCallPresence: String { case active, inactive, unknown }
 enum SpotifyVolumePolicy {
     // Ethan's persistent voice-call preference is 50%, replacing 30%.
     static let maximumVolume = 50
+    static let preferenceKey = "spotifyVoiceVolumeLimit"
+    static func limit(in defaults: UserDefaults = .standard) -> Int {
+        min(100, max(0, defaults.object(forKey: preferenceKey) as? Int ?? maximumVolume))
+    }
 }
 
 struct VoiceCallObservation: Equatable {
@@ -144,6 +148,7 @@ struct SpotifyVolumeLease: Codable, Equatable {
     var confirmed: Bool
     var callIdentifier: String?
     let cap: Int?
+    var previousApplied: Int? // Original expected slider position during an in-call cap edit.
     // Optional for receipts written before the spoken microphone controls
     // affected Spotify. A call can have a restore receipt even while muted.
     var mutePhase: MutePhase?
@@ -166,7 +171,7 @@ struct SpotifyVolumeLease: Codable, Equatable {
     // the requested integer. A crash before saving the readback still owns
     // that value, but only while the receipt is unconfirmed.
     func owns(_ value: Int) -> Bool {
-        value == applied || (!confirmed && original > appliedCap && applied == appliedCap && value == appliedCap - 1)
+        value == applied || (!confirmed && value == previousApplied) || (!confirmed && original > appliedCap && applied == appliedCap && value == appliedCap - 1)
     }
 }
 
@@ -207,7 +212,8 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     // Save BEFORE sending the volume change. A crash between the event and its
     // reply must not lose the original value or save the cap as the next original.
     func reconcile(_ call: VoiceCallPresence, preservingManualOverride: Bool = false,
-                   callIdentifier: String? = nil, microphoneMuted: Bool? = nil) throws -> Result {
+                   callIdentifier: String? = nil, microphoneMuted: Bool? = nil,
+                   limit: Int = SpotifyVolumePolicy.maximumVolume, limitEdited: Bool = false) throws -> Result {
         if !loaded {
             let saved = try access.load()
             if let saved, !saved.valid { throw CocoaError(.fileReadCorruptFile) }
@@ -234,10 +240,17 @@ final class SpotifyVolumeSession: @unchecked Sendable {
                 if microphoneMuted ?? (saved.mutePhase != nil) {
                     return try restoreWhileMuted(saved, current: current)
                 }
-                return try lowerWhileListening(saved, current: current)
+                if limitEdited, saved.confirmed, saved.owns(current), saved.mutePhase == nil, saved.appliedCap != limit {
+                    var updated = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, limit),
+                                                    callIdentifier: saved.callIdentifier, cap: limit)
+                    updated.previousApplied = current
+                    try keep(updated)
+                    return try apply(updated)
+                }
+                return try lowerWhileListening(saved, current: current, limit: limit)
             }
-            let saved = SpotifyVolumeLease(original: current, applied: min(current, SpotifyVolumePolicy.maximumVolume),
-                                           callIdentifier: callIdentifier)
+            let saved = SpotifyVolumeLease(original: current, applied: min(current, limit),
+                                           callIdentifier: callIdentifier, cap: limit)
             if microphoneMuted == true {
                 var restored = saved
                 restored.mutePhase = .restored
@@ -287,15 +300,15 @@ final class SpotifyVolumeSession: @unchecked Sendable {
         return restore ? .restored : .unchanged
     }
 
-    private func lowerWhileListening(_ saved: SpotifyVolumeLease, current: Int) throws -> Result {
+    private func lowerWhileListening(_ saved: SpotifyVolumeLease, current: Int, limit: Int) throws -> Result {
         if saved.mutePhase == .restored || (saved.mutePhase == .restoring && current == saved.original) {
             guard current == saved.original else { return try preserveManualChange(saved) }
-            let next = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, SpotifyVolumePolicy.maximumVolume),
-                                          callIdentifier: saved.callIdentifier)
+            let next = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, limit),
+                                          callIdentifier: saved.callIdentifier, cap: limit)
             try keep(next)
             return try apply(next)
         }
-        if !saved.confirmed && current == saved.original { return try apply(saved) }
+        if !saved.confirmed && current == (saved.previousApplied ?? saved.original) { return try apply(saved) }
         guard saved.owns(current) else { return try preserveManualChange(saved) }
         if !saved.confirmed || saved.mutePhase == .restoring { try confirm(saved, applied: current) }
         return .unchanged
@@ -314,8 +327,9 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     }
 
     private func apply(_ saved: SpotifyVolumeLease) throws -> Result {
-        let actual = saved.original != saved.applied
-            ? try access.write(saved.applied, saved.original, saved.appliedCap == SpotifyVolumePolicy.maximumVolume)
+        let expected = saved.previousApplied ?? saved.original
+        let actual = expected != saved.applied
+            ? try access.write(saved.applied, expected, saved.version != 1)
             : saved.applied
         try confirm(saved, applied: actual)
         return saved.original == saved.applied ? .unchanged : .lowered

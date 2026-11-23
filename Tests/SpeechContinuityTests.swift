@@ -42,6 +42,18 @@ import Foundation
         precondition(!continuity.hasGap(sequence: 1))
         precondition(continuity.hasGap(sequence: 9))
         precondition(!continuity.hasGap(sequence: 10))
+        // At 48 kHz a simulated 1.45s stall overflows the former 12-buffer queue. Preserve
+        // the command's last word, then verify a longer stall still drops stale input.
+        let capacity = SpeechContinuity.liveBufferCount(sampleRate: 48_000)
+        precondition(capacity == 24 && SpeechContinuity.liveBufferCount(sampleRate: 96_000) == 47)
+        let (burst, input) = AsyncStream<UInt64>.makeStream(bufferingPolicy: .bufferingNewest(capacity))
+        for frame in 0..<17 { if case .dropped = input.yield(UInt64(frame)) { fatalError("Dropped command audio") } }
+        input.finish()
+        var burstFrames = [UInt64]()
+        for await frame in burst { burstFrames.append(frame) }
+        precondition(burstFrames == (0..<17).map(UInt64.init))
+        var lost = SpeechContinuity()
+        precondition(!lost.hasGap(sequence: 0) && lost.hasGap(sequence: 4) && lost.missingFrames == 3)
         // Exercise the same queue policy with an actual dropped-buffer event.
         let (stream, continuation) = AsyncStream<UInt64>.makeStream(bufferingPolicy: .bufferingNewest(2))
         continuation.yield(0); continuation.yield(1)

@@ -38,6 +38,16 @@ import Darwin
             precondition(data.count <= 1024)
             for line in data.split(separator: 10) { _ = try JSONSerialization.jsonObject(with: Data(line)) }
         }
+        log.record("command.history", numbers: ["spoken_at": 4], info: ["receipt": "a", "command": "Rewind video", "result": "Heard", "summary": "Rewind video · Heard"])
+        log.record("command.history", numbers: ["spoken_at": 5], info: ["receipt": "b", "command": "Switch speakers", "result": "Confirmed", "summary": "Switch speakers · Confirmed"])
+        log.record("command.history", numbers: ["spoken_at": 4], info: ["receipt": "a", "command": "Rewind video", "result": "Confirmed", "summary": "Rewound the video by 6 seconds"])
+        log.record("command.history", numbers: ["spoken_at": 3], info: ["receipt": "c", "command": "Pause music", "result": "Sent", "summary": "Pause music · Sent"])
+        let history = try String(contentsOf: log.exportCommandHistory(), encoding: .utf8)
+        precondition(history.contains("Rewound the video by 6 seconds") && history.contains("Pause music · Sent"))
+        precondition(!history.contains("parallel.fixture"))
+        precondition(log.latestCommandSummary() == "Switch speakers · Confirmed")
+        let exported = try String(contentsOf: log.exportCommandHistory(), encoding: .utf8)
+        precondition(!exported.contains("Rewind video · Heard") && exported.contains("Rewound the video by 6 seconds"))
         print("Passed diagnostics checks: valid ordered JSON, bounded rotation, private file permissions and bounded recent events.")
     }
 }

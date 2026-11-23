@@ -25,7 +25,7 @@ struct WindowDisplaySettings: View {
     @State private var screens = NSScreen.screens
 
     var body: some View {
-        Picker("Open windows on", selection: $preferred) {
+        Picker("Open H Chat windows on", selection: $preferred) {
             Text("Default display").tag("")
             ForEach(screens, id: \.self) { screen in
                 Text(screen.localizedName).tag(WindowDisplay.identifier(screen))
@@ -35,7 +35,7 @@ struct WindowDisplaySettings: View {
             }
         }
         .accessibilityIdentifier("preferredDisplay")
-        Text("Applies to new windows and after restarting. Uses an available display if your choice is disconnected.")
+        Text("Home and Settings open on this display. If it’s disconnected, H Chat uses an available display.")
             .foregroundStyle(.secondary)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
                 screens = NSScreen.screens

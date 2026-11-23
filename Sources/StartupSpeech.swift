@@ -375,6 +375,7 @@ struct StartupSpeechBuffer {
     static let openLimitSeconds = 30.0
     let id: UUID
     private let patterns: [PhrasePattern] // Every listed wake phrase anchors the opening.
+    private let repeatCounts: Bool
     private var anchorStart: Int?
     private var baseline: [String]?
     private var completed = ""
@@ -395,8 +396,8 @@ struct StartupSpeechBuffer {
     init(id: UUID, text: String, wakeRange: Range<Int>?, pattern: PhrasePattern) {
         self.init(id: id, text: text, wakeRange: wakeRange, patterns: [pattern])
     }
-    init(id: UUID, text: String, wakeRange: Range<Int>?, patterns: [PhrasePattern]) {
-        self.id = id; self.patterns = patterns
+    init(id: UUID, text: String, wakeRange: Range<Int>?, patterns: [PhrasePattern], repeatCounts: Bool = false) {
+        self.id = id; self.patterns = patterns; self.repeatCounts = repeatCounts
         anchorStart = wakeRange?.lowerBound
         baseline = wakeRange == nil ? PhraseMatcher.words(text) : nil
         observe(text)
@@ -443,6 +444,7 @@ struct StartupSpeechBuffer {
                   let match = patterns.flatMap({ $0.matches(in: window) })
                     .min(by: { abs($0.start + lower - anchorStart) < abs($1.start + lower - anchorStart) }) else { alignment = .unmatchedWake; unchangedSeconds = 0; return }
             offset = match.end + lower
+            if repeatCounts, case .value(_, let used) = CommandRepetition.count(in: words, after: offset) { offset += used }
             alignment = .wake
         } else if let baseline {
             guard words.starts(with: baseline) else { alignment = .unmatchedBaseline; unchangedSeconds = 0; return }

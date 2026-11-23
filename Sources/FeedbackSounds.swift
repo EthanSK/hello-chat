@@ -56,9 +56,9 @@ struct VoiceEndFeedback {
         case microphoneDetected = "MicrophoneDetected", microphoneMuted = "MicrophoneMuted", microphoneUnmuted = "MicrophoneUnmuted"
         case speakersMuted = "SpeakersMuted", speakersUnmuted = "SpeakersUnmuted"
         case silent = "Silent"
-        case videoPaused = "VideoPaused", videoPlayed = "VideoPlayed"
+        case videoPaused = "VideoPaused", videoPlayed = "VideoPlayed", rewind = "Rewind", rewindFive = "RewindFive", rewindTen = "RewindTen"
         case musicPause = "MusicPause", musicPlay = "MusicPlay"
-        case switchApp = "SwitchApp", openApp = "OpenApp", zoomIn = "ZoomIn", zoomOut = "ZoomOut"
+        case switchApp = "SwitchApp", openApp = "OpenApp", zoomIn = "ZoomIn", zoomOut = "ZoomOut", showVoice = "ShowVoice"
     }
     private var sounds: [Cue: AVAudioPlayer] = [:]
     var loadedCues: Set<Cue> { Set(sounds.keys) }
@@ -70,7 +70,18 @@ struct VoiceEndFeedback {
             }
         }
     }
-    func play(_ cue: Cue) {
+    nonisolated static func preferenceKey(_ control: String) -> String { "commandSound." + control }
+    nonisolated static func selected(_ value: String?, default cue: Cue?) -> Cue? {
+        if value == "off" { return nil }
+        return value.flatMap(Cue.init(rawValue:)) ?? cue
+    }
+    func play(_ cue: Cue) { play(control: cue.rawValue, default: cue) }
+    func play(control: String, default cue: Cue?) {
+        let selection = UserDefaults.standard.string(forKey: Self.preferenceKey(control))
+        guard let selected = Self.selected(selection, default: cue) else { return }
+        sample(selected)
+    }
+    func sample(_ cue: Cue) {
         guard UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true else {
             Diagnostics.shared.record("feedback.skipped", info: ["cue": cue.rawValue, "reason": "disabled"])
             return
@@ -114,16 +125,26 @@ extension PhraseSlot {
         case .unsilencePhrase: return .speakersUnmuted
         case .pauseVideoPhrase: return .videoPaused
         case .playVideoPhrase: return .videoPlayed
+        case .rewindVideoPhrase: return .rewind
+        case .rewindFivePhrase: return .rewindFive
+        case .rewindTenPhrase: return .rewindTen
         case .pauseMusicPhrase: return .musicPause
         case .playMusicPhrase: return .musicPlay
         case .switchAppPhrase: return .switchApp
         case .openAppPhrase: return .openApp
         case .zoomInPhrase: return .zoomIn
         case .zoomOutPhrase: return .zoomOut
+        case .showVoicePhrase: return .showVoice
         }
     }
     var soundTitle: String {
         // The phrase editor groups these together; keep their existing sound choices distinct.
+        switch self {
+        case .mutePhrase, .unmutePhrase, .unsilencePhrase: return action.settingsTitle
+        case .silentPhrase: return "Silent (Codex Voice speakers)"
+        case .silencePhrase: return "Silence (Codex Voice speakers)"
+        default: break
+        }
         if self == .switchAppPhrase { return "Switch app" }
         if self == .openAppPhrase { return "Open app" }
         for suffix in [" phrase", " prefix"] where label.hasSuffix(suffix) { return String(label.dropLast(suffix.count)) }

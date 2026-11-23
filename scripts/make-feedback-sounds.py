@@ -109,3 +109,10 @@ write("ZoomOut", voice(0.34, lambda t: 1500.0 / 5 ** (t / 0.34), SWEEP, lambda t
 # Silent is a bubble that drops, then jumps up and pops. Silence keeps its original chime.
 write("Silent", voice(0.26, lambda t: (1050.0 / 4 ** (t / 0.085)) if t < 0.085 else (760.0 * 2 ** ((t - 0.085) / 0.175)),
                       BUBBLE, lambda t: math.exp(-10 * t)))
+
+# A rising two-note bell acknowledges opening the active Voice conversation.
+write("ShowVoice", hits(0.31, (0.035, 0.09, 0.205), (1746, 1556, 2093), WOOD, 43, 0.06))
+
+write("Rewind", hits(0.37, (0.0, 0.085, 0.185), (1397, 932, 740), SQUAREISH, 40, 0.1))
+write("RewindFive", hits(0.39, (0.0, 0.065, 0.23), (880, 698, 523), SQUAREISH, 38, 0.1))
+write("RewindTen", hits(0.39, (0.0, 0.155, 0.21, 0.29), (1568, 1175, 880, 659), SQUAREISH, 38, 0.1))
