@@ -1,13 +1,12 @@
-/* HelloChat. The page is built from the app icon: harbour-teal ink, the mint speech bubble and its
-   five rounded bars. The bubble is the one loud thing: a scripted transcript where an accepted
-   phrase turns into the icon's dark bar, and the bars trace the rising Wake sound and falling End
+/* HelloChat. Harbour-teal ink and a mint transcript bubble frame the scripted speech demo.
+   An accepted phrase gets a dark highlight, and the five bars trace the rising Wake and falling End
    sound without playing either. Everything else is cool paper and quiet native-Mac detail.
    System fonts only: SF Rounded for spoken words, the system face for reading, SF Mono for labels
    and commands. Amber appears only for a mishearing match and the Opening… state. */
 
 :root {
-  --harbour: #122633;   /* icon background: ink, pills, code, footer */
-  --mint: #42d4ab;      /* icon bubble */
+  --harbour: #122633;   /* ink, pills, code, footer */
+  --mint: #42d4ab;      /* transcript bubble */
   --spray: #eef4f1;     /* page paper */
   --sheet: #fbfdfc;     /* native form groups */
   --tide: #4a606d;      /* secondary text */
@@ -79,7 +78,7 @@ kbd {
 }
 .skip-link:focus { top: 12px; }
 
-/* A phrase you say: the icon's mint, wherever it appears in running text. */
+/* A phrase you say uses the transcript bubble's mint. */
 .phrase {
   padding: 0 0.16em;
   border-radius: 0.3em;
@@ -177,7 +176,7 @@ kbd {
   background: var(--mint);
   color: var(--harbour);
 }
-/* The icon's tail: it leaves the flat bottom about one corner-radius in and leans left. */
+/* The transcript bubble's tail leans left. */
 .speech::after {
   content: "";
   position: absolute;
@@ -236,7 +235,7 @@ kbd {
   box-decoration-break: clone;
   transition: background-color 0.28s ease, color 0.28s ease;
 }
-/* Accepted commands become the icon's dark bar. */
+/* Accepted commands get a dark highlight. */
 .match.is-set.match-wake,
 .match.is-set.match-end { background: var(--harbour); color: var(--mint); }
 .match.is-set.match-alias { background: var(--amber); }
@@ -254,7 +253,7 @@ kbd {
   transform: scaleY(var(--rest));
   transition: transform 0.09s linear;
 }
-/* Rest heights are the icon's bars: 100, 220, 330, 180 and 110. */
+/* Rest heights keep the five waveform bars visually distinct. */
 .meter span:nth-child(1) { --rest: 0.3; --i: 0; }
 .meter span:nth-child(2) { --rest: 0.67; --i: 1; }
 .meter span:nth-child(3) { --rest: 1; --i: 2; }

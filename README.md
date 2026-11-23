@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/icon.svg" width="112" height="112" alt="Hello Chat icon: a mint speech bubble with five dark waveform bars"></p>
+<p align="center"><img src="docs/icon.svg" width="112" height="112" alt="Hello Chat icon"></p>
 
 # Hello Chat
 
@@ -74,7 +74,7 @@ Normal builds update through **Check for Updates…** or automatic updates.
 
 - resolves FluidAudio 0.17.7, pinned exactly in `Package.swift`;
 - downloads each model file at its pinned Hugging Face revision, checks its SHA-256 against `Resources/SpeechModels.json` and bundles it, so the finished app is about 1.09 GB;
-- generates the icon with `scripts/make-icon.swift`, and, when they're missing, two short test recordings with macOS's `say` (Daniel voice);
+- renders `Resources/AppIcon.svg` at every required size with `scripts/make-icon.swift`, and, when they're missing, two short test recordings with macOS's `say` (Daniel voice);
 - copies the sounds, the FluidAudio licence and the third-party notices;
 - signs and verifies `.build.noindex/HelloChat.app`, then prints its path.
 

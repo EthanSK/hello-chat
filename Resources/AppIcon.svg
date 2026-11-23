@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="hl-tile" gradientUnits="userSpaceOnUse" x1="0" y1="72" x2="0" y2="952">
+      <stop offset="0" stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#EDE5D6"/>
+    </linearGradient>
+    <linearGradient id="hl-ink" gradientUnits="userSpaceOnUse" x1="0" y1="268" x2="0" y2="824">
+      <stop offset="0" stop-color="#5A78FF"/>
+      <stop offset="0.55" stop-color="#2E46EE"/>
+      <stop offset="1" stop-color="#1A27B5"/>
+    </linearGradient>
+    <linearGradient id="hl-rim" gradientUnits="userSpaceOnUse" x1="0" y1="72" x2="0" y2="952">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#6B5A3E" stop-opacity="0"/>
+      <stop offset="1" stop-color="#6B5A3E" stop-opacity="0.2"/>
+    </linearGradient>
+  </defs>
+  <path d="M952 512C952 944 944 952 512 952C80 952 72 944 72 512C72 80 80 72 512 72C944 72 952 80 952 512Z" fill="url(#hl-tile)"/>
+  <path d="M949 512C949 941 941 949 512 949C83 949 75 941 75 512C75 83 83 75 512 75C941 75 949 83 949 512Z" fill="none" stroke="url(#hl-rim)" stroke-width="4"/>
+  <path d="M372 294H442V384A70 70 0 0 0 582 384V294H652A140 140 0 0 1 792 434V594A140 140 0 0 1 652 734H582V644A70 70 0 0 0 442 644C442 762 360 830 232 850V434A140 140 0 0 1 372 294Z" fill="#1B2590" fill-opacity="0.06"/>
+  <path d="M372 280H442V370A70 70 0 0 0 582 370V280H652A140 140 0 0 1 792 420V580A140 140 0 0 1 652 720H582V630A70 70 0 0 0 442 630C442 750 360 816 232 836V420A140 140 0 0 1 372 280Z" fill="#1B2590" fill-opacity="0.1"/>
+  <path d="M372 268H442V358A70 70 0 0 0 582 358V268H652A140 140 0 0 1 792 408V568A140 140 0 0 1 652 708H582V618A70 70 0 0 0 442 618C442 736 360 804 232 824V408A140 140 0 0 1 372 268Z" fill="url(#hl-ink)"/>
+</svg>

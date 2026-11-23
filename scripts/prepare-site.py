@@ -3,7 +3,7 @@
 
 Run after editing README's command/settings tables or website assets. --check
 runs without writes after generation in the Website workflow, so published
-references cannot silently drift from README. The icon generator remains authoritative for art.
+references cannot silently drift from README. Resources/AppIcon.svg owns the art.
 """
 import argparse
 import hashlib
@@ -58,13 +58,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Check references and assets without writing files")
     args = parser.parse_args()
+    icon_source = root / "Resources/AppIcon.svg"
     if not args.check:
+        shutil.copyfile(icon_source, docs / "icon.svg")
         with tempfile.TemporaryDirectory(prefix="hellochat-site-") as temp:
             subprocess.run(["swift", str(root / "scripts/make-icon.swift"), temp], check=True)
             icon = Path(temp) / "icon-512.png"
             shutil.copyfile(icon, docs / "app-icon.png")
             subprocess.run(["swift", str(root / "scripts/render-site-image.swift"), str(icon), str(docs / "og.png")], check=True)
     stale: list[str] = []
+    if (docs / "icon.svg").read_bytes() != icon_source.read_bytes():
+        stale.append("icon.svg")
     references = {"commands": "| Say | What happens |", "settings": "| Section | Contents |"}
     readme = (root / "README.md").read_text()
     pattern = re.compile(r'(?P<base>(?:https://ethansk\.github\.io)?(?:/hello-chat/|\./))(?P<asset>[A-Za-z0-9_.-]+)\?v=[A-Za-z0-9]+')
