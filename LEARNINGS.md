@@ -299,3 +299,5 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 ## Speaker output commands
 
 - Speaker routing uses the existing local audio-switch helper as the source of protected output names and microphone-restoration policy. Do not offer arbitrary devices as equally protected: the helper recognises its configured speaker microphones and preserves a concurrent ordinary microphone choice. An unavailable helper or output is a reported failure, not a successful switch. Text recognition and a preview do not establish a physical route or a Voice app's actual stream.
+
+- Bluetooth reconnect subprocesses inherit H Chat’s responsible-app privacy identity. Its packaged Info.plist must include NSBluetoothAlwaysUsageDescription before blueutil touches IOBluetooth; otherwise macOS aborts the subprocess before a connection attempt. A connected CoreAudio output can bypass that subprocess, so a successful later route selection does not exercise reconnect permission. Preserve the one-shot shared helper and verify metadata separately from an actual disconnected-speaker command.

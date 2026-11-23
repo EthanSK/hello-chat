@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Listen locally for your wake and end phrases while turned on.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Connect to your saved Bluetooth speakers when you switch output.</string>
 	<key>SUAllowsAutomaticUpdates</key>
 	<true/>
 	<key>SUAutomaticallyUpdate</key>
