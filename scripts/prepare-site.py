@@ -3,7 +3,7 @@
 
 Run after editing README's command/settings tables or website assets. --check
 runs without writes after generation in the Website workflow, so published
-references cannot silently drift from README. Resources/AppIcon.svg owns the art.
+references cannot silently drift from README. Resources/AppIcon.svg owns the art. — GPT-6.1 Sol
 """
 import argparse
 import hashlib
