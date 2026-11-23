@@ -53,7 +53,7 @@ def main() -> None:
     # system cannot discover every shipped action and its preconfigured shortcut.
     data = json.loads((metadata / 'extract.actionsdata').read_bytes())
     expected = {'StartChatIntent', 'EndChatIntent', 'MuteChatMicrophoneIntent', 'UnmuteChatMicrophoneIntent',
-                'SilenceChatSpeakersIntent', 'RestoreChatSpeakersIntent', 'ChatStatusIntent'}
+                'SilenceChatSpeakersIntent', 'RestoreChatSpeakersIntent', 'SetVoiceUltrafastIntent', 'ChatStatusIntent'}
     assert set(data['actions']) == expected, 'Missing App Intents metadata'
     assert {shortcut['actionIdentifier'] for shortcut in data['autoShortcuts']} == expected, 'Missing App Shortcuts'
     assert all(action['isDiscoverable'] and not action['openAppWhenRun'] for action in data['actions'].values())

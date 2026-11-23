@@ -929,6 +929,15 @@ import SwiftUI
             }
         case .end:
             manualMute(force: true)
+        case .ultrafast:
+            busy = true
+            voiceTask = Task {
+                defer { if generation == token { busy = false; voiceTask = nil } }
+                let result = await CodexChatSpeed.currentVoice()
+                guard generation == token, !quitting else { return }
+                if result.succeeded { lastEvent = result.message }
+                else { error = result.message }
+            }
         case .muteMicrophone, .unmuteMicrophone, .silenceSpeakers, .unsilenceSpeakers:
             let audio: VoiceAudioAction
             switch action {
@@ -936,7 +945,7 @@ import SwiftUI
             case .unmuteMicrophone: audio = .unmuteMicrophone
             case .silenceSpeakers: audio = .silenceSpeakers
             case .unsilenceSpeakers: audio = .unsilenceSpeakers
-            case .start, .end, .status: preconditionFailure("Handled above")
+            case .start, .end, .ultrafast, .status: preconditionFailure("Handled above")
             }
             busy = true
             voiceTask = Task {
@@ -977,6 +986,7 @@ import SwiftUI
         case .unmuteMicrophone: return "Chat microphone is on."
         case .silenceSpeakers: return "Chat speakers are muted."
         case .unsilenceSpeakers: return "Chat speakers are on."
+        case .ultrafast: return "Ultrafast selected for the next turn."
         case .status: return "Chat status is unknown."
         }
     }

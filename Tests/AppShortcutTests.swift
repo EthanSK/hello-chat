@@ -17,6 +17,7 @@ import Foundation
                       try await UnmuteChatMicrophoneIntent().perform().value,
                       try await SilenceChatSpeakersIntent().perform().value,
                       try await RestoreChatSpeakersIntent().perform().value,
+                      try await SetVoiceUltrafastIntent().perform().value,
                       try await ChatStatusIntent().perform().value]
         precondition(received == HChatShortcutAction.allCases)
         precondition(values == received.map(\.rawValue))
@@ -30,6 +31,6 @@ import Foundation
             _ = try await StartChatIntent().perform()
             preconditionFailure("An uninitialized app must not report success")
         } catch HChatShortcutError.unavailable {}
-        print("App Shortcuts: seven real intent routes, result values and failure propagation passed; no live controls.")
+        print("App Shortcuts: eight real intent routes, result values and failure propagation passed; no live controls.")
     }
 }

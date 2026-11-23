@@ -70,15 +70,35 @@ struct VoiceBridge {
         return "Voice shortcuts saved. Restart Codex to apply them."
     }
 
+    // Reused by native chat navigation; one verified bundle lookup for both paths. — GPT-6.1 Sol
+    static func applicationURL() throws -> URL {
+        guard let url = currentApplication()?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
+              Bundle(url: url)?.bundleIdentifier == "com.openai.codex" else {
+            throw BridgeError.message("Install Codex, then try again.")
+        }
+        return url
+    }
+
+    // Shared native deep-link navigation, previously ShowVoiceCommand.openThread. — GPT-6.1 Sol
+    @MainActor static func openChat(_ pid: Int32?, _ link: URL) async -> Bool {
+        guard DesktopSessionState.current == .interactive, !Task.isCancelled,
+              let url = try? applicationURL() else { return false }
+        if let pid, currentApplication()?.processIdentifier != pid { return false }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        do {
+            let opened = try await NSWorkspace.shared.open([link], withApplicationAt: url, configuration: configuration)
+            return opened.bundleIdentifier == "com.openai.codex" && !opened.isTerminated && (pid == nil || opened.processIdentifier == pid)
+        } catch { return false }
+    }
+
     @MainActor static func launchCodex() async throws {
         // Set defaults before launch so this new Codex process can register them.
         try prepareShortcuts()
         // Closing Codex's last window can leave its process running. Send the
         // normal reopen request in that case too; never create a second instance.
-        guard let url = currentApplication()?.bundleURL ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.openai.codex"),
-              Bundle(url: url)?.bundleIdentifier == "com.openai.codex" else {
-            throw BridgeError.message("Install Codex, then try again.")
-        }
+        let url = try applicationURL()
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = false
         configuration.activates = true

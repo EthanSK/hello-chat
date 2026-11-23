@@ -4,7 +4,7 @@ import AppIntents
 import Foundation
 
 enum HChatShortcutAction: String, CaseIterable {
-    case start, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, status
+    case start, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, ultrafast, status
 }
 
 enum HChatShortcutError: LocalizedError {
@@ -71,6 +71,14 @@ struct RestoreChatSpeakersIntent: AppIntent {
     }
 }
 
+struct SetVoiceUltrafastIntent: AppIntent {
+    static var title: LocalizedStringResource = "Set Voice to Ultrafast"
+    static var description = IntentDescription("Set the current Codex Voice chat to Ultrafast for its next turn.")
+    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
+        .result(value: try await HChatShortcutActions.perform(.ultrafast))
+    }
+}
+
 struct ChatStatusIntent: AppIntent {
     static var title: LocalizedStringResource = "Get chat status"
     static var description = IntentDescription("Check Codex Voice without changing its microphone or speakers.")
@@ -93,6 +101,8 @@ struct HChatShortcuts: AppShortcutsProvider {
                     shortTitle: "Silence speakers", systemImageName: "speaker.slash")
         AppShortcut(intent: RestoreChatSpeakersIntent(), phrases: ["Restore chat speakers with \(.applicationName)"],
                     shortTitle: "Restore speakers", systemImageName: "speaker.wave.2")
+        AppShortcut(intent: SetVoiceUltrafastIntent(), phrases: ["Set Voice to Ultrafast with \(.applicationName)"],
+                    shortTitle: "Voice Ultrafast", systemImageName: "bolt.fill")
         AppShortcut(intent: ChatStatusIntent(), phrases: ["Get chat status with \(.applicationName)"],
                     shortTitle: "Chat status", systemImageName: "info.circle")
     }

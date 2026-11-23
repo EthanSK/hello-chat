@@ -11,6 +11,15 @@ import Darwin
 @main enum Main {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--codex-chat-speed" {
+            guard arguments.count == 3, let thread = UUID(uuidString: arguments[1]),
+                  arguments[2] == "check" || CodexChatSpeed.Speed.allCases.contains(where: { $0.rawValue.lowercased() == arguments[2] })
+            else { print("invalid"); exit(2) }
+            let speed = CodexChatSpeed.Speed.allCases.first { $0.rawValue.lowercased() == arguments[2] }
+            let result = CodexChatSpeed.perform(thread: thread, speed: speed)
+            print(String(decoding: try! JSONEncoder().encode(result), as: UTF8.self))
+            exit(["observed", "unchanged", "confirmed"].contains(result.status) ? 0 : 1)
+        }
         if ["--voice-peer-status", "--voice-peer-end", "--voice-peer-confirm-end"].contains(arguments.first ?? "") {
             let receipt: VoicePeerReceipt
             let expires = Date().timeIntervalSince1970 + 4
@@ -1060,6 +1069,10 @@ struct SettingsView: View {
             Section("About") {
                 LabeledContent("Version", value: AppVersion.display).accessibilityIdentifier("appVersion")
             }
+            Section("Voice chats") {
+                Button("Set Voice to Ultrafast") { Task { _ = try? await model.performShortcut(.ultrafast) } }
+                    .disabled(model.busy).accessibilityIdentifier("setVoiceUltrafast")
+            }
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
                     .accessibilityIdentifier("automaticListening")
@@ -1252,6 +1265,8 @@ struct MenuView: View {
         Button(model.chatActionTitle) { model.toggleChat() }
         .disabled(model.busy && model.status != "Connecting")
         Button("Refresh chat status") { model.refreshVoice() }
+            .disabled(model.busy)
+        Button("Set Voice to Ultrafast") { Task { _ = try? await model.performShortcut(.ultrafast) } }
             .disabled(model.busy)
         Divider()
         Button("Hello Chat") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }

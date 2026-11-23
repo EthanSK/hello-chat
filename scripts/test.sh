@@ -2,8 +2,11 @@
 # Compile and run the local regression suites with injected transports, never live Voice calls.
 set -euo pipefail
 cd "${0:A:h:h}"
+speed_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Tests/CodexChatSpeedTests.swift)
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
+swiftc -swift-version 5 -parse-as-library $speed_sources -o "$build_dir/CodexChatSpeedTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+"$build_dir/CodexChatSpeedTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppShortcuts.swift Tests/AppShortcutTests.swift -o "$build_dir/AppShortcutTests" -framework AppIntents
 "$build_dir/AppShortcutTests"
 swiftc -swift-version 5 -parse-as-library Sources/SpotifyVolumeSession.swift Tests/SpotifyVolumeTests.swift -o "$build_dir/SpotifyVolumeTests"

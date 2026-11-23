@@ -118,6 +118,11 @@ enum VoicePeerControl {
     static func status() -> VoicePeerReceipt {
         guard let configuration = VoicePeerConfiguration.installed else { return .init(status: .disabled) }
         let role = configuration.role, schedule = configuration.schedule
+        return localStatus(role: role, schedule: schedule)
+    }
+
+    // Single-Mac actions need actual local Voice evidence without enabling peer control. — GPT-6.1 Sol
+    static func localStatus(role: VoicePeerConfiguration.Role? = nil, schedule: VoicePeerSchedule? = nil) -> VoicePeerReceipt {
         guard let app = VoiceBridge.currentApplication(), let launch = app.launchDate else {
             let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
                 .contains { !$0.isTerminated }

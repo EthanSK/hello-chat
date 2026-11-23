@@ -50,7 +50,9 @@ Speech recognition runs on your Mac, by default with the bundled Nemotron model 
 
 ## Siri and Apple Vocal Shortcuts
 
-Hello Chat provides seven native actions in Apple's Shortcuts app: Start chat, End chat, Mute chat microphone, Unmute chat microphone, Silence chat speakers, Restore chat speakers and Get chat status. They use the same Codex controls as the app. Start can work while local listening is off; it does not turn the local speech model on. Get chat status only reads the current state.
+Hello Chat provides eight native actions in Apple's Shortcuts app: Start chat, End chat, Mute chat microphone, Unmute chat microphone, Silence chat speakers, Restore chat speakers, Set Voice to Ultrafast and Get chat status. They use the same Codex controls as the app. Start can work while local listening is off; it does not turn the local speech model on. Get chat status only reads the current state.
+
+**Set Voice to Ultrafast**, also in Settings and the menu bar, opens the current local Voice chat and selects Ultrafast in Codex’s native Speed menu. It keeps that chat’s model, reasoning and draft. The selection applies to its next turn; it does not change a running turn or the realtime speaking voice. If Voice is off, the chat name is ambiguous, more than one chat pane is open or you start interacting during selection, the action refuses rather than guessing. This control does not change new-chat defaults.
 
 On a supported Mac, **System Settings → Accessibility → Vocal Shortcuts** can map a personally trained phrase to one of those actions or a saved shortcut containing it. Apple processes Vocal Shortcuts audio on the device. Train it with your own voice; this app cannot supply your enrollment. Siri is another way to invoke the preconfigured app shortcuts.
 
