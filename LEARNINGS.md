@@ -218,6 +218,10 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 
 - User correction, 8 November 2026: the Heard section must not grow indefinitely. Scrolling and selection apply only within the current recognition batch, preserving the pre-history implementation’s existing reset/quiet rules. The accumulating TranscriptHistory layer added in 976808c was an unintended behavior change and is removed; bind the native reader to GateModel.transcript and reset its held view at listener.onSession. Do not reintroduce cross-batch retention. SpeechOnset’s 2-second quiet boundary, model utterance completion and SpeechRollover’s 120-second / 45-second-plus-0.8-second-quiet thresholds remain recognizer-owned and unchanged. The JSON transcript archive and startup speech mailbox are separate and must retain their own existing boundaries.
 
+## Confirming Voice startup
+
+- The desktop can show an End control and create a provisional thread before starting its Voice transport. A wake on a pending End-only panel must neither confirm the call nor send another Start. Confirm from a readable Voice microphone control, or corroborate End with Codex audio input or an active saved Voice session from the same process. Keep the existing deadline and preserve a late or manually recovered call on timeout. Tests inject the pending panel, a repeated wake, the final pre-send race, and a later connection without dispatching real shortcuts.
+
 ## Cross-Mac Voice startup
 
 - Two Macs can each own an independent Codex Voice call and audio route. Switching a system output affects its own Mac. Check both hosts before attributing continued speech or duplicate work to an audio-control regression.

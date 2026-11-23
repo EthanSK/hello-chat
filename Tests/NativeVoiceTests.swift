@@ -745,34 +745,92 @@ import Foundation
         _ = try await endNew.value
         precondition(strictEnds == 1 && directEnds == 0, "Explicit cancellation still cleans up its late opening")
 
-        // An exact End action establishes a call, but not its microphone state.
-        // Confirm the call without guessing a microphone state or toggling it.
+        // An exact End action plus a saved Voice session can establish an
+        // existing call with no readable microphone control or input.
         var endOnlyState = state(.listening)
         let endOnly = NativeVoice(transport: .init(snapshot: { endOnlyState }, send: { _, _ in
             fatalError("Unknown existing microphone must not authorize a start or cleanup End")
         }, activate: { _ in fatalError("Existing End-only call must not activate a start") }))
         _ = try await endOnly.start() // Establish a stale cached connected flag.
         endOnlyState = state(); endOnlyState.endControlAvailable = true
+        endOnlyState.savedVoiceActive = true
         var endOnlyCues = 0
         let unknownMicrophone = try await endOnly.start(onRequestAccepted: { endOnlyCues += 1 })
         precondition(endOnlyCues == 1, "An accepted End-only reuse still acknowledges the wake")
         precondition(unknownMicrophone == nil && endOnly.connected,
-                     "Exact existing End confirms Voice while preserving unknown microphone state and sending nothing")
+                     "End and its corroborating session preserve an unknown microphone state and send nothing")
 
         var newlyOpened = state()
         var newlyOpenedCommands: [String] = []
         let newlyEndOnly = NativeVoice(transport: .init(snapshot: { newlyOpened }, send: { command, _ in
             newlyOpenedCommands.append(command)
-            if command == VoiceBridge.startCommand { newlyOpened.endControlAvailable = true }
+            if command == VoiceBridge.startCommand {
+                newlyOpened.endControlAvailable = true
+                newlyOpened.inputRunning = true
+            }
             else if command == VoiceBridge.endCommand { newlyOpened = state() }
             else { fatalError("Unknown microphone must never authorize a mute toggle") }
         }, activate: { _ in }))
         let newUnknownMicrophone = try await newlyEndOnly.start()
         precondition(newUnknownMicrophone == nil && newlyEndOnly.connected && newlyOpenedCommands == [VoiceBridge.startCommand],
-                     "Our own start is confirmed by End without timing out or immediately ending the successful call")
+                     "End plus Codex input confirms Start without guessing the microphone state")
         let endedNewUnknown = try await newlyEndOnly.endIfPresent()
         precondition(endedNewUnknown && newlyOpenedCommands == [VoiceBridge.startCommand, VoiceBridge.endCommand] && !newlyEndOnly.connected,
                      "A call with unknown mic state still supports explicit End")
+
+        // A pending panel exposes End, without a microphone or saved
+        // session. This was observed both after Start and on later wakes.
+        var pendingPanel = state()
+        pendingPanel.endControlAvailable = true
+        pendingPanel.savedVoiceActive = false
+        var panel = state()
+        var stalledCommands: [String] = []
+        let stalled = NativeVoice(transport: .init(snapshot: { panel }, send: { command, _ in
+            stalledCommands.append(command)
+            panel = pendingPanel
+        }, activate: { _ in fatalError("Stalled opening must not activate Codex") }),
+                                  confirmationTimeout: 0.05)
+        for _ in 0..<2 {
+            let context = VoiceStartContext()
+            do { _ = try await stalled.start(context: context); fatalError("An End-only panel is not a connection") }
+            catch let error as BridgeError { await stalled.recoverFromStartFailure(error, context: context) }
+            precondition(!stalled.connected && stalledCommands == [VoiceBridge.startCommand],
+                         "A stalled opening and a repeated wake neither confirm it nor send another key")
+        }
+        panel = state(.listening)
+        let stalledThenRecoveredMic = try await stalled.start()
+        precondition(stalledThenRecoveredMic == .listening && stalledCommands == [VoiceBridge.startCommand],
+                     "A manually recovered call is adopted without another Start")
+        // A later complete empty scan allows a real retry. An incomplete
+        // read from the previous call's process must never send its toggle.
+        panel = state()
+        panel.controlsComplete = false
+        do { _ = try await stalled.start(); fatalError("An incomplete repeat must remain unconfirmed") }
+        catch is BridgeError { }
+        precondition(stalledCommands == [VoiceBridge.startCommand])
+        panel.controlsComplete = true
+        do { _ = try await stalled.start(); fatalError("The test transport produces another unconnected panel") }
+        catch is BridgeError { }
+        precondition(stalledCommands == [VoiceBridge.startCommand, VoiceBridge.startCommand],
+                     "A fresh, complete absence makes a retry eligible")
+        var hiddenSavedCall = state()
+        hiddenSavedCall.savedVoiceActive = true
+        let hiddenCall = NativeVoice(transport: .init(snapshot: { hiddenSavedCall },
+            send: { _, _ in fatalError("A saved call from the current process may still be active") },
+            activate: { _ in }), confirmationTimeout: 0.05)
+        do { _ = try await hiddenCall.start(); fatalError("Saved metadata alone cannot confirm connected audio") }
+        catch is BridgeError { }
+        precondition(!hiddenCall.connected)
+
+        var panelReads = 0
+        let panelRace = NativeVoice(transport: .init(snapshot: {
+            panelReads += 1
+            return panelReads == 1 ? state() : panelReads == 2 ? pendingPanel : state(.listening)
+        }, send: { _, _ in fatalError("A panel that opened during the final check must not get another Start") },
+            activate: { _ in fatalError("An existing startup does not need activation") }))
+        let connectedAfterRace = try await panelRace.start()
+        precondition(connectedAfterRace == .listening && panelReads == 3,
+                     "Wait for a real connection if End appears during the final pre-send scan")
 
         var endingState = state(.muted)
         var endSent = false, confirmationReads = 0

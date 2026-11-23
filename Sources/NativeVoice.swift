@@ -31,7 +31,18 @@ import Foundation
         var frontmostPID: (() -> Int32?)? = nil
         var restoreFocus: (Int32) -> Void = { _ in }
         static var live: Self {
-            Self(snapshot: { await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value },
+            Self(snapshot: {
+                    await Task.detached(priority: .utility) {
+                        var state = VoiceBridge.snapshot()
+                        if state.accessibilityAllowed, state.microphone == nil,
+                           let pid = state.pid, let app = VoiceBridge.currentApplication(),
+                           app.processIdentifier == pid, let launchDate = app.launchDate {
+                            state.savedVoiceActive = VoiceTimeline.activeSessions(
+                                database: VoiceTimeline.databaseURL(), since: launchDate).map { !$0.isEmpty }
+                        }
+                        return state
+                    }.value
+                 },
                  send: { command, pid in
                     try await Task.detached(priority: .userInitiated) {
                         if command == VoiceBridge.endCommand {
@@ -85,6 +96,7 @@ import Foundation
     private(set) var lastError: String?
     private var pendingUntil: Date?
     private var pendingOpeningID: UUID?
+    private var lastVoicePID: Int32?
     private var ending: Task<Bool, Error>?
     private var detachedForQuit = false
 
@@ -95,8 +107,7 @@ import Foundation
         self.endConfirmationTimeout = endConfirmationTimeout
     }
 
-    // nil means an exact End Voice control confirmed the call, but the native
-    // presentation didn't expose its microphone state. Never infer an unmute.
+    // A confirmed call can still lack a readable microphone control.
     @discardableResult func start(context: VoiceStartContext? = nil, onRequestAccepted: () -> Void = {}) async throws -> MicrophoneState? {
         try checkStartAllowed()
         let opening = context ?? VoiceStartContext()
@@ -179,12 +190,7 @@ import Foundation
         guard state.accessibilityAllowed else {
             throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
         }
-        if let microphone = state.microphone { connected = true; clearPendingOpening(); return microphone }
-        if state.endControlAvailable {
-            connected = true; clearPendingOpening()
-            diagnostics?.record("voice.open.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000], info: ["microphone": "unknown", "confirmation": "end_control"])
-            return nil
-        }
+        if confirmOpening(state, startedAt: starting) { return state.microphone }
         // Ethan's "Codex is using the microphone" false block: process audio
         // input can remain active after Voice closes, or belong to dictation.
         // Fresh positive Voice controls reuse the call; audio activity alone
@@ -193,6 +199,7 @@ import Foundation
             diagnostics?.record("voice.input_activity.ignored", info: ["controls_complete": String(state.controlsComplete)])
         }
         let confirmationDeadline = Date().addingTimeInterval(confirmationTimeout)
+        if state.endControlAvailable || state.savedVoiceActive == true { lastVoicePID = pid }
         if !state.endControlAvailable {
             // Ethan's "err on the side of trying to start" applies when AX
             // remains unknown after the bounded retries. Send one native
@@ -207,23 +214,33 @@ import Foundation
             // Keep the fresh reuse check, without the old activation delay.
             let activated = await snapshot()
             try checkStartAllowed()
-            if let microphone = activated.microphone { connected = true; clearPendingOpening(); return microphone }
-            if activated.endControlAvailable { connected = true; clearPendingOpening(); return nil }
             guard activated.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
+            guard activated.accessibilityAllowed else {
+                throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
+            }
+            if confirmOpening(activated, startedAt: starting) { return activated.microphone }
             if waitForApplication, !activated.applicationReady || !activated.applicationHasWindow || activated.applicationLaunching {
                 throw BridgeError.message("Codex didn't open. Try again.")
             }
-            pendingUntil = Date().addingTimeInterval(confirmationTimeout)
-            pendingOpeningID = opening.id
-            do {
-                await opening.prepareNewCall?()
-                try checkStartAllowed()
-                try await transport.send(VoiceBridge.startCommand, pid)
-                opening.didRequestNewCall()
+            // The global Start shortcut can also cancel a pending or active
+            // call. Respect any fresh reservation, and require a complete
+            // negative scan before retrying a known call on the same process.
+            if activated.endControlAvailable || activated.savedVoiceActive == true {
+                lastVoicePID = pid
+            } else if activated.controlsComplete || lastVoicePID != pid {
+                pendingUntil = Date().addingTimeInterval(confirmationTimeout)
+                pendingOpeningID = opening.id
+                do {
+                    await opening.prepareNewCall?()
+                    try checkStartAllowed()
+                    try await transport.send(VoiceBridge.startCommand, pid)
+                    lastVoicePID = pid
+                    opening.didRequestNewCall()
+                }
+                catch { clearPendingOpening(ownedBy: opening.id); throw error }
+                diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],
+                                    info: ["command": VoiceBridge.startCommand, "delivery": "global_hotkey"])
             }
-            catch { clearPendingOpening(ownedBy: opening.id); throw error }
-            diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],
-                                info: ["command": VoiceBridge.startCommand, "delivery": "global_hotkey"])
         }
         try checkStartAllowed()
         while Date() < (pendingUntil ?? confirmationDeadline) {
@@ -235,19 +252,22 @@ import Foundation
             // Keep waiting for this start without resending its toggle.
             if fresh.pid == nil { continue }
             guard fresh.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
-            if let microphone = fresh.microphone {
-                connected = true; clearPendingOpening()
-                diagnostics?.record("voice.open.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000])
-                return microphone
-            }
-            if fresh.endControlAvailable {
-                connected = true; clearPendingOpening()
-                diagnostics?.record("voice.open.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000], info: ["microphone": "unknown", "confirmation": "end_control"])
-                return nil
-            }
+            if confirmOpening(fresh, startedAt: starting) { return fresh.microphone }
         }
-        throw BridgeError.message("Codex Voice didn't open. Check Voice in Codex.")
+        throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
     }
+
+    private func confirmOpening(_ state: VoiceSnapshot, startedAt: TimeInterval) -> Bool {
+        guard let evidence = state.voiceConnectionEvidence else { return false }
+        connected = true
+        lastVoicePID = state.pid
+        clearPendingOpening()
+        diagnostics?.record("voice.open.confirmed", numbers: ["ms_since_request": (Diagnostics.now - startedAt) * 1000],
+                            info: ["microphone": state.microphone?.rawValue ?? "unknown", "confirmation": evidence])
+        return true
+    }
+
+    func readStatus() async -> VoiceSnapshot { await snapshot() }
 
     func setMicrophone(_ state: MicrophoneState) async throws {
         try checkAttached()
@@ -449,7 +469,7 @@ import Foundation
     // just let it start"), so the button then offers Start. Sends nothing.
     func refresh() async -> MicrophoneState? {
         let state = await snapshot()
-        connected = state.microphone != nil || state.endControlAvailable
+        connected = state.voiceConnectionEvidence != nil
         diagnostics?.record("voice.refresh", info: ["connected": String(connected), "complete": String(state.controlsComplete)])
         return state.microphone
     }
@@ -460,6 +480,7 @@ import Foundation
     @discardableResult func acceptObservedEnd() -> Bool {
         guard !detachedForQuit, ending == nil else { return false }
         connected = false
+        lastVoicePID = nil
         return true
     }
 
@@ -496,7 +517,11 @@ import Foundation
         // Recovery cleanup must refresh stale ownership first and must
         // never use Codex's start-capable toggle to dispose of a closed call.
         if explicit, pendingUntil == nil, let requestEnd = transport.requestEnd {
-            guard let pid = try await requestEnd() else { connected = false; return false }
+            guard let pid = try await requestEnd() else {
+                connected = false
+                lastVoicePID = nil
+                return false
+            }
             connected = true
             diagnostics?.record("voice.end.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000], info: ["path": "direct_native_end"])
             try await confirmEnd(pid: pid, starting: starting, retryIfPresent: true)
@@ -512,7 +537,11 @@ import Foundation
         }
         clearPendingOpening()
         guard state.microphone != nil || state.endControlAvailable, let pid = state.pid else {
-            if !state.inputRunning && state.controlsComplete { connected = false; return false }
+            if !state.inputRunning && state.controlsComplete {
+                connected = false
+                lastVoicePID = nil
+                return false
+            }
             throw BridgeError.message("Couldn't confirm Codex Voice. End the call in Codex.")
         }
         try checkAttached()
@@ -548,6 +577,7 @@ import Foundation
             // A temporarily missing app/AX root is not evidence of shutdown.
             if noVoiceControls && (!fresh.inputRunning || absentWhileInputRunning >= 2) {
                 connected = false
+                lastVoicePID = nil
                 diagnostics?.record("voice.end.confirmed", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000], info: ["input_running": String(fresh.inputRunning)])
                 return
             }
@@ -573,7 +603,7 @@ import Foundation
     private func snapshot(output: Bool = false) async -> VoiceSnapshot {
         let starting = Diagnostics.now
         let state = await (output ? (transport.outputSnapshot ?? transport.snapshot) : transport.snapshot)()
-        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "output_muted": state.outputMuted.map(String.init) ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning), "session": transport.startSession().rawValue])
+        diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "output_muted": state.outputMuted.map(String.init) ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning), "saved_voice_active": state.savedVoiceActive.map(String.init) ?? "unknown", "session": transport.startSession().rawValue])
         return state
     }
 }

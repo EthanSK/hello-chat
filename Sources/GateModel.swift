@@ -896,14 +896,15 @@ import SwiftUI
     // call while local transcription is off, without turning that listener on.
     func performShortcut(_ action: HChatShortcutAction) async throws -> String {
         if action == .status {
-            let snapshot = await Task.detached(priority: .utility) { VoiceBridge.snapshot() }.value
+            let snapshot = await voice.readStatus()
             guard snapshot.accessibilityAllowed else {
                 throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
             }
             if let microphone = snapshot.microphone {
                 return microphone == .muted ? "Chat microphone is muted." : "Chat is listening."
             }
-            if snapshot.endControlAvailable { return "Chat is on. Microphone status is unknown." }
+            if snapshot.voiceConnectionEvidence != nil { return "Chat is on. Microphone status is unknown." }
+            if snapshot.endControlAvailable { return "Chat status is unknown." }
             if snapshot.applicationAbsent || (snapshot.controlsComplete && !snapshot.inputRunning) { return "Chat is off." }
             return "Chat status is unknown."
         }
@@ -989,10 +990,11 @@ import SwiftUI
             busy = true; endingVoice = true
             voiceTask = Task {
                 defer { endingVoice = false; if generation == token { busy = false; voiceTask = nil } }
-                await voice.stop(); await previous?.value
+                do { _ = try await voice.endIfPresent() }
+                catch { if generation == token { self.error = error.localizedDescription } }
+                await previous?.value
                 guard generation == token, enabled || force else { return }
                 showListening(); lastEvent = "Voice connection cancelled"
-                if let failure = voice.lastError { error = failure }
             }
         } else if busy {
             let previous = voiceTask

@@ -632,6 +632,7 @@ struct VoiceSnapshot: Codable {
     var outputMuted: Bool? = nil
     var accessibilityAllowed: Bool
     var endControlAvailable = false
+    var savedVoiceActive: Bool? = nil
     var controlsComplete = true
     var scanNodes = 0
     var scanTimeouts = 0
@@ -643,6 +644,17 @@ struct VoiceSnapshot: Codable {
     var applicationHasWebContent = true
     var applicationAbsent = false
     var callPresent: Bool { pid != nil && inputRunning }
+
+    // Codex exposes End on a pending Voice panel before audio is connected.
+    // A microphone control is stronger. With End alone, require corroboration
+    // from audio input or a saved live session in the same Codex process.
+    var voiceConnectionEvidence: String? {
+        guard pid != nil, accessibilityAllowed else { return nil }
+        if microphone != nil { return "microphone_control" }
+        guard endControlAvailable else { return nil }
+        if savedVoiceActive == true { return "end_control_and_saved_session" }
+        return inputRunning ? "end_control_and_input" : nil
+    }
 }
 
 // A cached expected state never authorizes a new toggle. Unknown means stop and ask for a fresh
