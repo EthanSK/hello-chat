@@ -64,7 +64,7 @@ import Foundation
                     app.activate(options: [])
                  }, requestEnd: {
                     try await Task.detached(priority: .userInitiated) {
-                        try VoiceBridge.requestActiveEnd(record: { event, numbers, info in
+                        try VoiceBridge.requestActiveEnd(verifyCall: VoiceCallMembership.validator(), record: { event, numbers, info in
                             Diagnostics.shared.record(event, numbers: numbers, info: info)
                         })
                     }.value

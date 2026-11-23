@@ -8,6 +8,32 @@ import CoreGraphics
         guard try condition() else { fatalError(message) }
     }
     static func main() throws {
+        // Reproduce the first-attempt End failure: activation replaces AXRole while the
+        // same unique native call remains active. No native event is emitted here. — GPT-6.1 Sol
+        var endActivations = 0, endSends = 0
+        try check(VoiceBridge.revalidateEnd(initial: .active, activate: { endActivations += 1 },
+            read: { .replaced }, sameCall: { true }, send: { _ in endSends += 1 }), "Same-call AX replacement permits one dedicated End")
+        check(endActivations == 1 && endSends == 1, "No retry loop or second End send")
+        for evidence in [VoiceBridge.EndEvidence.active, .replaced, .unavailable] {
+            let before = endSends
+            do {
+                _ = try VoiceBridge.revalidateEnd(initial: .active, activate: {}, read: { evidence },
+                    sameCall: { false }, send: { _ in endSends += 1 })
+                preconditionFailure("A replacement call must survive")
+            } catch {}
+            check(endSends == before, "Changed-call evidence cannot send End")
+        }
+        let beforeEnd = endSends
+        try check(!VoiceBridge.revalidateEnd(initial: .inactive, activate: { preconditionFailure("Inactive Voice must not activate") },
+            read: { .active }, sameCall: nil, send: { _ in endSends += 1 }), "No-call End stays inactive")
+        try check(!VoiceBridge.revalidateEnd(initial: .active, activate: {}, read: { .inactive },
+            sameCall: { true }, send: { _ in endSends += 1 }), "Fresh complete absence never falls back to saved membership")
+        do {
+            _ = try VoiceBridge.revalidateEnd(initial: .active, activate: {}, read: { .replaced },
+                sameCall: nil, send: { _ in endSends += 1 })
+            preconditionFailure("A replaced AX node alone cannot send End")
+        } catch {}
+        check(endSends == beforeEnd, "Unavailable membership does not infer Voice from process input")
         for (phrase, ending) in [("Hello Chat", false), ("Bye Chat", true), ("Mute Chat", false),
                                  ("Unmute Chat", false), ("Silent Chat", false), ("Silence Chat", false),
                                  ("Unsilence Chat", false), ("Hey Lantern", false), ("Stop Lantern", true)] {

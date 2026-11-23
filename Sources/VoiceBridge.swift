@@ -174,33 +174,54 @@ struct VoiceBridge {
     // report enabled/visible/End after a call closes, so never cache them.
     // AXPress can acknowledge without invoking Electron's button handler.
     // Send the dedicated End shortcut only after revalidating an active control.
-    static func requestActiveEnd(record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws -> pid_t? {
+    enum EndEvidence { case active, inactive, replaced, unavailable }
+
+    // The first native read must identify Voice. After activation, a replaced AX node may
+    // fall back only to an unchanged unique native call identity, never process audio. — GPT-6.1 Sol
+    static func revalidateEnd(initial: EndEvidence, activate: () throws -> Void, read: () -> EndEvidence,
+                              sameCall: (() -> Bool)?, send: (EndEvidence) throws -> Void) throws -> Bool {
+        if initial == .inactive { return false }
+        guard initial == .active else { throw BridgeError.message("Couldn't find Voice controls in Codex.") }
+        try activate()
+        let current = read()
+        if current == .inactive { return false }
+        if let sameCall, !sameCall() { throw BridgeError.message("Voice changed while ending the call. Try again.") }
+        guard current == .active || (current == .replaced && sameCall != nil) else {
+            throw BridgeError.message("Couldn't find Voice controls in Codex.")
+        }
+        try send(current)
+        return true
+    }
+
+    static func requestActiveEnd(verifyCall: (() -> Bool)? = nil,
+                                 record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws -> pid_t? {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for Hello Chat, then try again.") }
         let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
             .filter { !$0.isTerminated && codexProcess($0.processIdentifier) }
         guard !apps.isEmpty else { return nil }
         guard apps.count == 1 else { throw BridgeError.message("Couldn't identify the active Codex window.") }
         let app = apps[0], pid = app.processIdentifier
-        func currentVoice() throws -> Bool {
+        func currentVoice() -> EndEvidence {
             let controls = voiceControls(pid, requireEnd: true)
             record?("voice.end.controls_checked", ["nodes": Double(controls.nodes), "timeouts": Double(controls.timeouts)],
                     ["complete": String(controls.complete), "failure": controls.failure])
-            if let found = controls.end, usableEnd(found, pid: pid) { return true }
+            if let found = controls.end, usableEnd(found, pid: pid) { return .active }
             // Some live Voice presentations expose only their microphone.
             // That fresh native control identifies the current call too; End
             // never depends on which call HelloChat originally started.
-            if let microphone = controls.microphoneButton, usableMicrophone(microphone, pid: pid) { return true }
-            guard controls.complete else { throw BridgeError.message("Couldn't find Voice controls in Codex.") }
-            return false
+            if let microphone = controls.microphoneButton, usableMicrophone(microphone, pid: pid) { return .active }
+            if !controls.complete { return controls.failure == "attribute:AXRole:-25204" ? .replaced : .unavailable }
+            return .inactive
         }
-        guard try currentVoice() else { return nil }
-        if Thread.isMainThread { app.activate(options: []) }
-        else { _ = DispatchQueue.main.sync { app.activate(options: []) } }
-        Thread.sleep(forTimeInterval: 0.2)
-        // Activation can replace/close the call. Read live membership again;
-        // checking attributes of the earlier object does not establish it.
-        guard try currentVoice() else { return nil }
-        try postEnd(pid: pid, record: record, control: "fresh_tree")
+        let sent = try revalidateEnd(initial: currentVoice(), activate: {
+            guard currentApplication()?.processIdentifier == pid else { throw BridgeError.message("Codex closed while ending Voice.") }
+            if Thread.isMainThread { app.activate(options: []) }
+            else { _ = DispatchQueue.main.sync { app.activate(options: []) } }
+            Thread.sleep(forTimeInterval: 0.2) // Preserve the existing native End activation timing.
+        }, read: currentVoice, sameCall: verifyCall, send: { evidence in
+            try postEnd(pid: pid, record: record, control: evidence == .replaced ? "same_call_after_AX_replacement" : "fresh_tree")
+        })
+        guard sent else { return nil }
         return pid
     }
     private static func usableEnd(_ element: AXUIElement, pid: pid_t) -> Bool {

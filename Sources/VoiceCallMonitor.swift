@@ -3,6 +3,22 @@
 import AppKit
 import ApplicationServices
 import Foundation
+
+// A fresh unique call identity can survive Electron replacing its AX nodes on activation.
+// It is supplementary evidence for an already identified native End, never proof from input IO. — GPT-6.1 Sol
+enum VoiceCallMembership {
+    static func validator() -> (() -> Bool)? {
+        guard let app = VoiceBridge.currentApplication(), let launched = app.launchDate,
+              let expected = VoiceTimeline.sessions(database: VoiceTimeline.databaseURL(), since: launched)?.startedAtMilliseconds,
+              expected.count == 1 else { return nil }
+        let pid = app.processIdentifier
+        return {
+            guard let current = VoiceBridge.currentApplication(), current.processIdentifier == pid,
+                  current.launchDate == launched else { return false }
+            return VoiceTimeline.sessions(database: VoiceTimeline.databaseURL(), since: launched)?.startedAtMilliseconds == expected
+        }
+    }
+}
 import SQLite3
 
 struct VoiceTimeline {

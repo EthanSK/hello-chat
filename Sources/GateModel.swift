@@ -296,7 +296,8 @@ import SwiftUI
     // Ethan calls this conversation "Chat" in the UI. It is still the same
     // native Codex Voice session; both menu and window use one action/state.
     var chatActionTitle: String {
-        status == "Connecting" ? "Cancel" : (voice.connected ? "End chat" : "Start chat")
+        // Ethan wants the button to feel familiar: use the configured wake/end words. — GPT-6.1 Sol
+        status == "Connecting" ? "Cancel" : (voice.connected ? spokenEndPhrase : spokenWakePhrase)
     }
     func toggleChat() {
         if voice.connected || status == "Connecting" { manualMute() } else { manualTalk() }
