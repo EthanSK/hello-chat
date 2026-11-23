@@ -24,6 +24,7 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Switch app Chrome** / **Open app Chrome** | Both bring the app forward, opening it if it isn't running. Accepts common names and clear mishearings such as “BS Code” for VS Code. Say the full app name when two apps sound similar. |
 | **Open Safari** | The short form works the same way, with an exact app name or a known alias. |
 | **Zoom in** / **Zoom out** | Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does. |
+| **Zoom in three times**, **Zoom in 3** | Runs a command that many times, up to 100. Repeat count is on for every command by default. Say the number after the whole command, including any app or speaker name. Without a number, it runs once. For rewind, always include “times”, since a number alone can be a distance. For music, each run is another Play/Pause press, so an even number can leave playback as it was. Turn off **Repeat count** in a command’s gear on Home. |
 
 Each Voice, video, music, app and zoom phrase has its own short sound. Wake and End play at detection. Ending a call directly in Codex also plays the End sound, without repeating one already played for that call. Voice audio commands play a short detection tone when the controls are available, followed by their phrase sound when the requested state is confirmed. Video sounds acknowledge a confirmed pause/play result; music, app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
 
