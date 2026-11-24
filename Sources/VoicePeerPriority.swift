@@ -1,12 +1,10 @@
-// Check paired Macs at the start of a native Codex call and end only the
-// identified losing call. H Chat's own observer drives this independently
-// of speech recognition, Spotify, or a Voice agent getting a tool turn.
+// Resolve overlapping native Codex Voice calls independently of speech recognition and Spotify. — GPT-6.2 Astra
 import AppKit
 import ApplicationServices
 import Darwin
 import Foundation
 
-struct VoicePeerConfiguration {
+struct VoicePeerConfiguration: Equatable {
     enum Role: String, Codable {
         case primary, secondary
         var peer: Self { self == .primary ? .secondary : .primary }
@@ -44,6 +42,11 @@ struct VoicePeerConfiguration {
 
     // Foundation rejects opening this bundle's own ID as a separate suite.
     static var installed: Self? { Self(defaults: .standard) }
+
+    func priority(atMilliseconds time: Int64) -> Role? {
+        if let schedule { return schedule.winner(atMilliseconds: time) }
+        return .primary
+    }
 }
 
 struct VoicePeerSchedule: Codable, Equatable {
@@ -92,24 +95,87 @@ struct VoicePeerCall: Codable, Equatable {
 }
 
 struct VoicePeerReceipt: Codable, Equatable {
-    enum Status: String, Codable { case active, inactive, unknown, changed, endRequested, ended, disabled }
+    enum Status: String, Codable { case active, inactive, unknown, changed, resolved, endRequested, ended, disabled }
     let status: Status
     var call: VoicePeerCall? = nil
     var role: VoicePeerConfiguration.Role? = nil
     var startedAtMilliseconds: Int64? = nil
     var schedule: VoicePeerSchedule? = nil
+    var decision: VoicePeerDecision? = nil
+    var endPending: Bool? = nil
 
     // Both sides must apply the same priority policy before either can end a call.
-    static let protocolVersion = 3
+    static let protocolVersion = 4
     static let wirePrefix = "HCHAT_VOICE_PEER_V\(protocolVersion) "
     static let endVersion = "v\(protocolVersion)"
 }
 
+struct VoicePeerDecision: Codable, Equatable {
+    let primary: VoicePeerCall
+    let secondary: VoicePeerCall
+    let schedule: VoicePeerSchedule?
+    let resolvedAtMilliseconds: Int64
+
+    func winner(for configuration: VoicePeerConfiguration) -> VoicePeerConfiguration.Role? {
+        guard schedule == configuration.schedule, resolvedAtMilliseconds > 0 else { return nil }
+        return configuration.priority(atMilliseconds: resolvedAtMilliseconds)
+    }
+}
+
+// Either Mac can discover the overlap. The primary records one decision time for both,
+// including if a reply is lost or H Chat restarts at a schedule boundary. — GPT-6.2 Astra
+final class VoicePeerDecisions {
+    static let installed = VoicePeerDecisions(file: AppPaths.support.appendingPathComponent(
+        "voice-peer-decisions-\(VoicePeerReceipt.endVersion).json"))
+    private let file: URL
+    private let lock = NSLock()
+
+    init(file: URL) { self.file = file }
+
+    func resolve(primary: VoicePeerCall, secondary: VoicePeerCall, expires: TimeInterval,
+                 primaryStatus: () -> VoicePeerReceipt, now: () -> Date = Date.init) -> VoicePeerReceipt {
+        lock.lock()
+        defer { lock.unlock() }
+        let status = primaryStatus()
+        guard status.status == .active, status.role == .primary, status.call == primary else {
+            return .init(status: status.status == .unknown ? .unknown : .changed)
+        }
+        do {
+            var decisions: [VoicePeerDecision]
+            do { decisions = try JSONDecoder().decode([VoicePeerDecision].self, from: Data(contentsOf: file)) }
+            catch CocoaError.fileReadNoSuchFile { decisions = [] }
+            let instant = now().timeIntervalSince1970
+            guard instant < expires else { return .init(status: .changed) }
+            // Discard history only after verifying a different primary session. A late request
+            // for an old secondary session cannot erase the decision for its replacement.
+            decisions.removeAll { $0.primary != primary }
+            if let existing = decisions.first(where: { $0.secondary == secondary }) {
+                guard existing.schedule == status.schedule else { return .init(status: .changed) }
+                return .init(status: .resolved, decision: existing, endPending: status.endPending)
+            }
+            let decision = VoicePeerDecision(primary: primary, secondary: secondary, schedule: status.schedule,
+                                            resolvedAtMilliseconds: Int64((instant * 1000).rounded(.down)))
+            decisions.append(decision)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try JSONEncoder().encode(decisions).write(to: file, options: .atomic)
+            return .init(status: .resolved, decision: decision, endPending: status.endPending)
+        } catch { return .init(status: .unknown) }
+    }
+}
+
 enum VoicePeerControl {
+    private static let endReceiptName = "voice-peer-end-\(VoicePeerReceipt.endVersion)"
+
     static func respond(_ request: VoicePeerMailbox.Request) -> VoicePeerReceipt {
+        guard request.valid else { return .init(status: .unknown) }
         switch (request.action, request.call) {
         case (.status, nil): return status()
-        case (.end, let call?): return end(call, expires: request.expires)
+        case (.resolve, let primary?):
+            guard let secondary = request.otherCall else { return .init(status: .unknown) }
+            return VoicePeerDecisions.installed.resolve(primary: primary, secondary: secondary,
+                                                        expires: request.expires, primaryStatus: status)
+        case (.end, let call?): return end(call, request: request)
         case (.confirmEnd, let call?): return confirmation(of: call)
         default: return .init(status: .unknown)
         }
@@ -117,8 +183,12 @@ enum VoicePeerControl {
 
     static func status() -> VoicePeerReceipt {
         guard let configuration = VoicePeerConfiguration.installed else { return .init(status: .disabled) }
-        let role = configuration.role, schedule = configuration.schedule
-        return localStatus(role: role, schedule: schedule)
+        var receipt = localStatus(role: configuration.role, schedule: configuration.schedule)
+        if let call = receipt.call {
+            guard let pending = pendingEnd(for: call, in: AppPaths.support, at: Date().timeIntervalSince1970) else { return .init(status: .unknown) }
+            if pending { receipt.endPending = true }
+        }
+        return receipt
     }
 
     // Single-Mac actions need actual local Voice evidence without enabling peer control. — GPT-6.1 Sol
@@ -143,12 +213,48 @@ enum VoicePeerControl {
         return .init(status: absent ? .inactive : .unknown, role: role, schedule: schedule)
     }
 
-    static func end(_ call: VoicePeerCall, expires: TimeInterval) -> VoicePeerReceipt {
-        guard VoicePeerConfiguration.installed != nil else { return .init(status: .disabled) }
-        // Two startups can both identify the same losing call. Share one
-        // dispatch receipt between the SSH command and the app process.
-        let directory = AppPaths.support
-        let file = directory.appendingPathComponent("voice-peer-end")
+    private static func end(_ call: VoicePeerCall, request: VoicePeerMailbox.Request) -> VoicePeerReceipt {
+        guard let configuration = VoicePeerConfiguration.installed else { return .init(status: .disabled) }
+        let authorized = authorizesEnd(request, configuration: configuration, local: respond,
+                                       peer: { VoicePeerBridge.run(machine: configuration.machine, request: $0) })
+        guard authorized else { return .init(status: .changed) }
+        guard let app = VoiceBridge.currentApplication(), let launch = app.launchDate,
+              app.processIdentifier == call.pid else { return .init(status: .changed) }
+        return dispatchEnd(request, directory: AppPaths.support,
+                           isCurrent: { VoicePeerConfiguration.installed == configuration
+                               && stillCurrent(call, since: launch, expires: request.expires) },
+                           press: { try VoiceBridge.pressEnd(pid: call.pid, requireUniqueEnd: true, beforePress: $0) })
+    }
+
+    // The receiving Mac checks both the surviving session and the primary's decision.
+    // A delayed command for a replaced winner cannot close the remaining call. — GPT-6.2 Astra
+    static func authorizesEnd(_ request: VoicePeerMailbox.Request, configuration: VoicePeerConfiguration,
+                              local: (VoicePeerMailbox.Request) -> VoicePeerReceipt,
+                              peer: (VoicePeerMailbox.Request) -> VoicePeerReceipt) -> Bool {
+        guard request.action == .end, let target = request.call, let other = request.otherCall else { return false }
+        let isPrimary = configuration.role == .primary
+        let primary = isPrimary ? target : other
+        let secondary = isPrimary ? other : target
+        if isPrimary {
+            let survivor = peer(.init(action: .status, call: nil, expires: request.expires))
+            guard survivor.status == .active, survivor.role == .secondary, survivor.call == secondary,
+                  survivor.schedule == configuration.schedule, survivor.endPending != true else { return false }
+        }
+        // Resolving on the primary includes a fresh check of its exact active session.
+        let resolve = VoicePeerMailbox.Request(action: .resolve, call: primary, expires: request.expires, otherCall: secondary)
+        let receipt = isPrimary ? local(resolve) : peer(resolve)
+        guard receipt.status == .resolved, isPrimary || receipt.endPending != true, let decision = receipt.decision,
+              decision.primary == primary, decision.secondary == secondary else { return false }
+        return decision.winner(for: configuration) == configuration.role.peer
+    }
+
+    // Both observers may send the same End. Coalesce delivery for its existing request
+    // lifetime, then allow a fresh, checked End if the exact losing call is still active. — GPT-6.2 Astra
+    static func dispatchEnd(_ request: VoicePeerMailbox.Request, directory: URL,
+                            now: @escaping () -> TimeInterval = { Date().timeIntervalSince1970 },
+                            isCurrent: @escaping () -> Bool, press: (() throws -> Void) throws -> Void) -> VoicePeerReceipt {
+        guard request.action == .end, let call = request.call else { return .init(status: .unknown) }
+        let file = directory.appendingPathComponent(endReceiptName)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
@@ -156,22 +262,29 @@ enum VoicePeerControl {
             guard lock >= 0 else { return .init(status: .unknown) }
             defer { close(lock) }
             guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { return .init(status: .unknown) }
-            guard let app = VoiceBridge.currentApplication(), let launch = app.launchDate,
-                  app.processIdentifier == call.pid, stillCurrent(call, since: launch, expires: expires) else {
+            guard request.valid(at: now()), isCurrent() else {
                 return .init(status: .changed)
             }
-            // The same exact End button used for local recovery. Check the
-            // identity after the AX scan so a replacement call survives.
-            if (try? String(contentsOf: file, encoding: .utf8)) == call.token {
-                return .init(status: .endRequested, call: call)
+            guard let pending = pendingEnd(for: call, in: directory, at: now()) else { return .init(status: .unknown) }
+            if pending { return .init(status: .endRequested, call: call) }
+            try press {
+                guard request.valid(at: now()), isCurrent() else { throw EndError.changed }
+                // Advertise the attempt before AX dispatch. A replacement on the other
+                // Mac must not treat a call already being ended as the survivor.
+                try JSONEncoder().encode(request).write(to: file, options: .atomic)
             }
-            try VoiceBridge.pressEnd(pid: call.pid, requireUniqueEnd: true, beforePress: {
-                guard stillCurrent(call, since: launch, expires: expires) else { throw EndError.changed }
-                try call.token.write(to: file, atomically: true, encoding: .utf8)
-            })
             return .init(status: .endRequested, call: call)
         } catch EndError.changed { return .init(status: .changed) }
         catch { return .init(status: .unknown) }
+    }
+
+    static func pendingEnd(for call: VoicePeerCall, in directory: URL, at now: TimeInterval) -> Bool? {
+        do {
+            let data = try Data(contentsOf: directory.appendingPathComponent(endReceiptName))
+            let previous = try JSONDecoder().decode(VoicePeerMailbox.Request.self, from: data)
+            return previous.call == call && previous.expires > now
+        } catch CocoaError.fileReadNoSuchFile { return false }
+        catch { return nil }
     }
 
     static func confirmation(of call: VoicePeerCall) -> VoicePeerReceipt {
@@ -184,7 +297,7 @@ enum VoicePeerControl {
 
     private enum EndError: Error { case changed }
 
-    private static func stillCurrent(_ call: VoicePeerCall, since launch: Date, expires: TimeInterval) -> Bool {
+    static func stillCurrent(_ call: VoicePeerCall, since launch: Date, expires: TimeInterval) -> Bool {
         guard Date().timeIntervalSince1970 <= expires,
               let app = VoiceBridge.currentApplication(), app.processIdentifier == call.pid, app.launchDate == launch,
               let sessions = VoiceTimeline.activeSessions(database: VoiceTimeline.databaseURL(), since: launch),
@@ -195,29 +308,13 @@ enum VoicePeerControl {
 
 @MainActor final class VoicePeerPriority {
     struct Transport {
-        var localStatus: () async -> VoicePeerReceipt
-        var peerStatus: () async -> VoicePeerReceipt
-        var endLocal: (VoicePeerCall, TimeInterval) async -> VoicePeerReceipt
-        var endPeer: (VoicePeerCall, TimeInterval) async -> VoicePeerReceipt
-        var confirmLocal: (VoicePeerCall) async -> VoicePeerReceipt
-        var confirmPeer: (VoicePeerCall) async -> VoicePeerReceipt
+        var local: (VoicePeerMailbox.Request) async -> VoicePeerReceipt
+        var peer: (VoicePeerMailbox.Request) async -> VoicePeerReceipt
 
         static func live(_ machine: String) -> Self {
-            .init(localStatus: { await Task.detached(priority: .utility) { VoicePeerControl.status() }.value },
-                  peerStatus: { await Task.detached(priority: .utility) {
-                      VoicePeerBridge.run(machine: machine, arguments: "--voice-peer-status")
-                  }.value },
-                  endLocal: { call, expires in await Task.detached(priority: .utility) {
-                      VoicePeerControl.end(call, expires: expires)
-                  }.value },
-                  endPeer: { call, expires in await Task.detached(priority: .utility) {
-                      VoicePeerBridge.run(machine: machine, arguments: "--voice-peer-end \(call.token) \(Int(expires)) \(VoicePeerReceipt.endVersion)")
-                  }.value },
-                  confirmLocal: { call in await Task.detached(priority: .utility) {
-                      VoicePeerControl.confirmation(of: call)
-                  }.value },
-                  confirmPeer: { call in await Task.detached(priority: .utility) {
-                      VoicePeerBridge.run(machine: machine, arguments: "--voice-peer-confirm-end \(call.token)")
+            .init(local: { request in await Task.detached(priority: .utility) { VoicePeerControl.respond(request) }.value },
+                  peer: { request in await Task.detached(priority: .utility) {
+                      VoicePeerBridge.run(machine: machine, request: request)
                   }.value })
         }
     }
@@ -225,84 +322,121 @@ enum VoicePeerControl {
     private let configuration: VoicePeerConfiguration?
     private let transport: Transport?
     private let diagnostics: Diagnostics?
-    private static let duplicateStartWindowMilliseconds: Int64 = 30_000
-    private let observingSinceMilliseconds: Int64
-    private var task: Task<Void, Never>?
+    private let now: () -> Date
+    private let waitForRetry: (TimeInterval) async throws -> Void
+    private enum CheckResult { case finished, singleCall, retry }
+    private static let maximumRetryDelay: TimeInterval = 60
     private var observedCall: String?
-    private var attemptedCall: String?
+    private var task: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
+    private var retryDelay = VoicePeerMailbox.Request.queryLifetime
     var enabled: Bool { configuration != nil }
 
     init(configuration: VoicePeerConfiguration? = VoicePeerConfiguration.installed, transport: Transport? = nil,
-         observingSince: Date = Date(), diagnostics: Diagnostics? = .shared) {
+         diagnostics: Diagnostics? = .shared, now: @escaping () -> Date = Date.init,
+         waitForRetry: @escaping (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
         self.configuration = configuration
         self.transport = transport ?? configuration.map { .live($0.machine) }
-        observingSinceMilliseconds = Int64((observingSince.timeIntervalSince1970 * 1000).rounded(.down))
         self.diagnostics = diagnostics
+        self.now = now
+        self.waitForRetry = waitForRetry
     }
 
     @discardableResult func observe(_ observation: VoiceCallObservation) -> Task<Void, Never>? {
-        guard let configuration, let transport else { return nil }
+        guard enabled else { return nil }
         if observation.presence == .inactive { stop(); return nil }
         guard observation.presence == .active, let identifier = observation.verifiedCallIdentifier else {
-            if observedCall != nil, let id = observation.callIdentifier, id != observedCall { stop() }
+            if let observedCall, let id = observation.callIdentifier, id != observedCall { stop() }
             return nil
         }
-        guard identifier != attemptedCall else { return nil }
-        task?.cancel()
+        guard identifier != observedCall else { return nil }
+        stop()
         observedCall = identifier
-        attemptedCall = identifier
+        return check(identifier)
+    }
+
+    @discardableResult private func check(_ identifier: String) -> Task<Void, Never>? {
+        guard let configuration, let transport else { return nil }
         task = Task { [weak self] in
-            let peer = await transport.peerStatus()
-            guard let self, !Task.isCancelled, self.observedCall == identifier else { return }
-            guard peer.status == .active, peer.role == configuration.role.peer, let peerCall = peer.call else {
-                self.diagnostics?.record("voice.peer.checked", info: ["status": peer.status.rawValue])
-                return
+            guard let self else { return }
+            let result = await self.resolveOverlap(identifier, configuration: configuration, transport: transport)
+            guard !Task.isCancelled, self.observedCall == identifier else { return }
+            self.task = nil
+            switch result {
+            case .finished: break
+            case .singleCall:
+                // A new peer normally checks immediately. Also catch a missed start
+                // while this same local call stays open, even without another AX event.
+                self.retryDelay = VoicePeerMailbox.Request.queryLifetime
+                self.scheduleCheck(identifier, after: Self.maximumRetryDelay)
+            case .retry:
+                let delay = self.retryDelay
+                self.retryDelay = min(delay * 2, Self.maximumRetryDelay)
+                self.scheduleCheck(identifier, after: delay)
             }
-            let local = await transport.localStatus()
-            // Relaunching H Chat may rediscover an existing call. Only a
-            // call started while this observer is running may initiate End.
-            guard !Task.isCancelled, self.observedCall == identifier, local.status == .active,
-                  local.role == configuration.role, let localCall = local.call, localCall.matches(identifier),
-                  local.schedule == configuration.schedule, peer.schedule == configuration.schedule,
-                  let localStart = local.startedAtMilliseconds, let peerStart = peer.startedAtMilliseconds,
-                  localStart > 0, peerStart > 0, localStart >= self.observingSinceMilliseconds else { return }
-            // Compare the persisted starts of these exact sessions. SSH
-            // latency and when an AX update arrives cannot change the winner.
-            let startDifference = localStart - peerStart
-            let endPeer: Bool
-            if abs(startDifference) <= Self.duplicateStartWindowMilliseconds {
-                // Anchor a duplicate to its first observed start, so both Macs
-                // use the same local hour even if the pair straddles a boundary.
-                let winner = configuration.schedule?.winner(atMilliseconds: min(localStart, peerStart)) ?? .primary
-                endPeer = configuration.role == winner
-            } else {
-                // Only the newly started side initiates a takeover. An older
-                // call noticed late must not send a second End.
-                guard startDifference > 0 else { return }
-                endPeer = true
-            }
-            // Bound the lifetime of the exact End request. Late SSH delivery
-            // cannot act on an old decision after the caller's check is stale.
-            let expires = Date().timeIntervalSince1970 + 8
-            let result = endPeer
-                ? await transport.endPeer(peerCall, expires) : await transport.endLocal(localCall, expires)
-            // The local observer can see a successful local hang-up first and
-            // cancel this startup task. The End already sent still needs its
-            // read-only confirmation even when the observation has changed.
-            guard result.status == .endRequested else {
-                self.diagnostics?.record("voice.peer.end", info: ["status": result.status.rawValue])
-                return
-            }
-            let after = endPeer ? await transport.confirmPeer(peerCall) : await transport.confirmLocal(localCall)
-            let confirmed = after.status == .ended && after.call == result.call
-            self.diagnostics?.record("voice.peer.end", info: ["status": confirmed ? "confirmed" : "unconfirmed"])
         }
         return task
     }
 
+    private func resolveOverlap(_ identifier: String, configuration: VoicePeerConfiguration, transport: Transport) async -> CheckResult {
+        func request(_ action: VoicePeerMailbox.Action, call: VoicePeerCall? = nil, other: VoicePeerCall? = nil,
+                     lifetime: TimeInterval = VoicePeerMailbox.Request.queryLifetime) -> VoicePeerMailbox.Request {
+            .init(action: action, call: call, expires: now().timeIntervalSince1970 + lifetime, otherCall: other)
+        }
+        let peer = await transport.peer(request(.status))
+        guard !Task.isCancelled, observedCall == identifier else { return .finished }
+        if peer.status != .active {
+            diagnostics?.record("voice.peer.checked", info: ["status": peer.status.rawValue])
+            return peer.status == .inactive ? .singleCall : .retry
+        }
+        guard peer.role == configuration.role.peer, peer.schedule == configuration.schedule, let peerCall = peer.call else { return .retry }
+        let local = await transport.local(request(.status))
+        guard !Task.isCancelled, observedCall == identifier else { return .finished }
+        guard local.status == .active, local.role == configuration.role, local.schedule == configuration.schedule,
+              let localCall = local.call, localCall.matches(identifier) else { return .retry }
+
+        let isPrimary = configuration.role == .primary
+        let primary = isPrimary ? localCall : peerCall
+        let secondary = isPrimary ? peerCall : localCall
+        let authority = isPrimary ? transport.local : transport.peer
+        let receipt = await authority(request(.resolve, call: primary, other: secondary, lifetime: 8))
+        guard !Task.isCancelled, observedCall == identifier else { return .finished }
+        guard receipt.status == .resolved, let decision = receipt.decision,
+              decision.primary == primary, decision.secondary == secondary,
+              let winner = decision.winner(for: configuration) else { return .retry }
+
+        let endPeer = winner == configuration.role
+        let target = endPeer ? peerCall : localCall
+        let surviving = endPeer ? localCall : peerCall
+        let send = endPeer ? transport.peer : transport.local
+        let result = await send(request(.end, call: target, other: surviving, lifetime: 8))
+        guard result.status == .endRequested, result.call == target else {
+            diagnostics?.record("voice.peer.end", info: ["status": result.status.rawValue])
+            return .retry
+        }
+        // An observer can see its own hang-up during dispatch. Confirm that exact
+        // session even if the observer has already stopped or seen its replacement.
+        let after = await send(request(.confirmEnd, call: target))
+        let confirmed = after.status == .ended && after.call == target
+        diagnostics?.record("voice.peer.end", info: ["status": confirmed ? "confirmed" : "unconfirmed"])
+        guard confirmed else { return .retry }
+        return endPeer ? .singleCall : .finished
+    }
+
+    private func scheduleCheck(_ identifier: String, after delay: TimeInterval) {
+        retryTask = Task { [weak self, waitForRetry] in
+            do { try await waitForRetry(delay) } catch { return }
+            guard let self, !Task.isCancelled, self.observedCall == identifier else { return }
+            self.retryTask = nil
+            self.check(identifier)
+        }
+    }
+
     func stop() {
         task?.cancel(); task = nil
-        observedCall = nil; attemptedCall = nil
+        retryTask?.cancel(); retryTask = nil
+        observedCall = nil
+        retryDelay = VoicePeerMailbox.Request.queryLifetime
     }
 
     func shutdown() async {
@@ -313,15 +447,16 @@ enum VoicePeerControl {
 }
 
 enum VoicePeerBridge {
-    static func run(machine: String, arguments: String) -> VoicePeerReceipt {
+    static func run(machine: String, request: VoicePeerMailbox.Request) -> VoicePeerReceipt {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let binary = home.appendingPathComponent("bin/agent-bridge")
-        guard FileManager.default.isExecutableFile(atPath: binary.path) else { return .init(status: .unknown) }
+        guard request.valid, let arguments = request.arguments,
+              FileManager.default.isExecutableFile(atPath: binary.path) else { return .init(status: .unknown) }
         // The paired-host CLI supplies the installed SSH route. Its remote
         // command is fixed except for a validated session token and expiry.
         let process = Process(), output = Pipe(), done = DispatchSemaphore(value: 0)
         process.executableURL = binary
-        process.arguments = ["run", machine, "/Applications/HelloChat.app/Contents/MacOS/HelloChat \(arguments)"]
+        process.arguments = ["run", machine, "/Applications/HelloChat.app/Contents/MacOS/HelloChat \(arguments.joined(separator: " "))"]
         var environment = ProcessInfo.processInfo.environment
         // Launch agents may start with a minimal environment. The paired
         // CLI needs the login user's home and standard macOS commands.
@@ -338,7 +473,10 @@ enum VoicePeerBridge {
             return .init(status: .unknown)
         }
         guard process.terminationStatus == 0 else { return .init(status: .unknown) }
-        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return decode(String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+    }
+
+    static func decode(_ text: String) -> VoicePeerReceipt {
         let prefix = VoicePeerReceipt.wirePrefix
         let rows = text.split(whereSeparator: \.isNewline).filter { $0.hasPrefix(prefix) }
         guard rows.count == 1, let row = rows.first else { return .init(status: .unknown) }

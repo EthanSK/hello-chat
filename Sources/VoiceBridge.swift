@@ -451,7 +451,7 @@ struct VoiceBridge {
         return AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success ? result : nil
     }
 
-    static func post(command: String, pid: pid_t, deliveryKey: String? = nil,
+    static func post(command: String, pid: pid_t, deliveryKey: String? = nil, beforePost: (() throws -> Void)? = nil,
                      record: ((String, [String: Double], [String: String]) -> Void)? = nil) throws {
         guard AXIsProcessTrusted() else { throw BridgeError.message("Allow Accessibility for Hello Chat, then try again.") }
         guard codexProcess(pid) else { throw BridgeError.message("ChatGPT changed or closed. Check Voice again.") }
@@ -481,6 +481,7 @@ struct VoiceBridge {
               let up = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
             throw BridgeError.message("Could not send Voice shortcut.")
         }
+        try beforePost?()
         let originalFlags = CGEventSource.flagsState(.hidSystemState)
         down.flags = flags; up.flags = flags
         // Match Agent Flow's established process-targeted transport, including fresh

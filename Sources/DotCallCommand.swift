@@ -95,7 +95,7 @@ enum DotCallCommand {
         return Result(status: action == .start && after.state == .starting ? "submitted" : "unconfirmed", state: after.state)
     }
 
-    @MainActor static func perform(_ action: Action) async -> Result {
+    @MainActor static func perform(_ action: Action, valid: @escaping () -> Bool = { true }) async -> Result {
         do {
             try FileManager.default.createDirectory(at: AppPaths.support, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
@@ -109,11 +109,11 @@ enum DotCallCommand {
                 await perform(action, using: Environment(
                     read: { await Task.detached { native.read() }.value },
                     open: {
-                        guard !Task.isCancelled,
+                        guard valid(), !Task.isCancelled,
                               await VoiceBridge.openChat(native.pid, URL(string: "codex://dots")!) else { return false }
                         return await Task.detached { native.waitForControls() }.value
                     },
-                    press: { action in await Task.detached { native.press(action) }.value },
+                    press: { action in await Task.detached { native.press(action, valid: valid) }.value },
                     confirm: { action in await Task.detached { native.confirm(action) }.value }))
             }, onCancel: { native.cancel() })
         } catch { return Result(status: "unavailable", state: .unknown) }
@@ -200,7 +200,7 @@ enum DotCallCommand {
             } catch { return Snapshot(state: .unknown, pid: pid) }
         }
 
-        func press(_ action: Action) -> Press {
+        func press(_ action: Action, valid: () -> Bool) -> Press {
             let original = action == .start ? start : hangUp
             let originalContainer = action == .start ? profile : region
             let before = observed
@@ -211,6 +211,7 @@ enum DotCallCommand {
                   let target, let container, CFEqual(original, target), CFEqual(originalContainer, container),
                   action == .start ? fresh.state == .inactive && fresh.mayStart : [.active, .starting].contains(fresh.state),
                   VoiceBridge.attribute(kAXEnabledAttribute, target) as? Bool == true else { return .notSent }
+            guard valid() else { return .notSent }
             return AXUIElementPerformAction(target, kAXPressAction as CFString) == .success ? .sent : .uncertain
         }
 

@@ -8,123 +8,64 @@ import Foundation
             VoiceSnapshot(pid: 123, inputRunning: input || mic != nil, recorderRunning: false,
                           microphone: mic, accessibilityAllowed: allowed)
         }
+        let request = UUID(), generation = UUID()
+        let ownedOpening = VoiceStartContext(remoteOwner: (request, generation))
+        precondition(ownedOpening.matches(request: request, generation: generation))
+        precondition(!ownedOpening.matches(request: request, generation: UUID()))
+        precondition(!ownedOpening.matches(request: UUID(), generation: generation))
+        precondition(!VoiceStartContext().matches(request: request, generation: generation))
         for action in VoiceAudioAction.allCases {
-            var current = state(action.controlsSpeakers ? .listening : (action.targetMuted ? .listening : .muted))
-            current.outputMuted = action.controlsSpeakers ? !action.targetMuted : false
-            let untouchedMicrophone = current.microphone, untouchedOutput = current.outputMuted
-            var sends = 0
-            let audio = NativeVoice(transport: .init(snapshot: { current }, send: { command, pid in
-                precondition(pid == 123)
-                precondition(command == (action.controlsSpeakers ? VoiceBridge.outputMuteCommand : VoiceBridge.muteCommand))
-                sends += 1
-                if action.controlsSpeakers { current.outputMuted = action.targetMuted }
-                else { current.microphone = action.targetMuted ? .muted : .listening }
-            }, activate: { _ in fatalError("Audio shortcuts must not activate Codex") }))
-            try await audio.setAudio(action)
-            precondition(action.isMuted(in: current) == action.targetMuted && sends == 1 && audio.connected)
-            precondition(action.controlsSpeakers ? current.microphone == untouchedMicrophone : current.outputMuted == untouchedOutput,
-                         "Only the requested microphone/speaker channel can change")
-            try await audio.setAudio(action)
-            precondition(sends == 1, "Repeating a directional command must not toggle back")
+            var sends = 0, recognitions = 0, targets = 0
+            let audio = NativeVoice(transport: .init(
+                snapshot: { fatalError("Explicit audio commands must not read hidden or visible controls") },
+                send: { command, pid in
+                    precondition(pid == 123)
+                    precondition(command == (action.controlsSpeakers ? VoiceBridge.outputMuteCommand : VoiceBridge.muteCommand))
+                    sends += 1
+                }, activate: { _ in fatalError("Explicit audio must not activate Codex") },
+                wait: { _ in fatalError("Explicit audio must not wait for confirmation") },
+                audioTargetPID: { targets += 1; return 123 }))
+            let first = try await audio.setAudio(action, onRecognized: { recognitions += 1 })
+            let second = try await audio.setAudio(action, onRecognized: { recognitions += 1 })
+            precondition(first && second && sends == 2 && targets == 2 && recognitions == 2,
+                         "Each accepted phrase sends one toggle, including a repeated mute phrase")
+            precondition(!audio.connected, "Dispatch alone must not claim an active call or a mute state")
             audio.detachForQuit()
             do { try await audio.setAudio(action); fatalError("Detached helper accepted audio action") }
             catch is CancellationError { }
+            precondition(sends == 2 && targets == 2)
         }
         for action in VoiceAudioAction.allCases {
-            var unknownState = state(input: true)
-            unknownState.endControlAvailable = true
-            var unknownSends = 0, unknownTime: TimeInterval = 0
-            let unknown = NativeVoice(transport: .init(snapshot: { unknownState },
-                send: { command, pid in
-                    precondition(action.controlsSpeakers && command == VoiceBridge.outputMuteCommand && pid == 123)
-                    unknownSends += 1
-                }, activate: { _ in }, now: { unknownTime }, wait: { unknownTime += $0 }))
-            do { try await unknown.setAudio(action); fatalError("Unknown state was reported as success") }
-            catch BridgeError.outputUnconfirmed { precondition(action.controlsSpeakers) }
-            catch is BridgeError { }
-            precondition(unknownSends == (action.controlsSpeakers ? 1 : 0), "Only speaker commands may attempt one toggle with unknown state")
-            var changing = state(action.targetMuted ? .listening : .muted); changing.outputMuted = !action.targetMuted
-            var reads = 0
-            let ready = NativeVoice(transport: .init(snapshot: {
-                reads += 1
-                if reads == 2 {
-                    if action.controlsSpeakers { changing.outputMuted = action.targetMuted }
-                    else { changing.microphone = action.targetMuted ? .muted : .listening }
-                }
-                return changing
-            }, send: { _, _ in fatalError("A manual action already achieved the desired state") }, activate: { _ in fatalError("No activation") }))
-            try await ready.setAudio(action)
-            precondition(reads == 2)
+            var recognized = false
+            let absent = NativeVoice(transport: .init(snapshot: { fatalError("No UI read") },
+                send: { _, _ in fatalError("Missing Codex must not receive a key") },
+                activate: { _ in fatalError("No activation") }, launch: { fatalError("No launch") },
+                audioTargetPID: { nil }))
+            let sent = try await absent.setAudio(action, onRecognized: { recognized = true })
+            precondition(!sent && !recognized)
         }
-        for action in VoiceAudioAction.allCases {
-            var acknowledged = false
-            let inactive = NativeVoice(transport: .init(snapshot: { state(input: true) },
-                send: { _, _ in fatalError("Dictation without Voice must not receive an audio key") },
-                activate: { _ in fatalError("Inactive Voice must not activate Codex") },
-                launch: { fatalError("An audio command must not launch Codex") }))
-            let active = try await inactive.setAudio(action, onRecognized: { acknowledged = true })
-            precondition(!active && !acknowledged && !inactive.connected)
+        var guardedSends = 0, sessionChanged = false
+        let guarded = NativeVoice(transport: .init(snapshot: { fatalError("Explicit audio must not inspect the microphone or speaker controls") },
+            send: { _, _ in fatalError("A scoped toggle must use the guarded native dispatch") }, activate: { _ in fatalError("No activation") },
+            guardedShortcut: { _, _, beforeKey in
+                try beforeKey()
+                guardedSends += 1
+            }, audioTargetPID: { 123 }))
+        func currentSession() throws {
+            if sessionChanged { throw CancellationError() }
         }
-        for action in VoiceAudioAction.allCases {
-            var time: TimeInterval = 0, sent = 0, postSendReads = 0
-            var delayed = state(action.targetMuted ? .listening : .muted); delayed.outputMuted = !action.targetMuted
-            let audio = NativeVoice(transport: .init(snapshot: {
-                if sent > 0 {
-                    postSendReads += 1
-                    if time >= 0.3 {
-                        if action.controlsSpeakers { delayed.outputMuted = action.targetMuted }
-                        else { delayed.microphone = action.targetMuted ? .muted : .listening }
-                    }
-                }
-                return delayed
-            }, send: { _, _ in sent += 1 }, activate: { _ in fatalError("Delayed confirmation must not activate Codex") },
-                now: { time }, wait: { time += $0 }))
-            try await audio.setAudio(action)
-            precondition(sent == 1 && postSendReads >= 4 && time < 0.5, "Wait only for the real state transition without resending")
-        }
-        for hasWindow in [false, true] {
-            var silentCues = 0
-            let noWindow = NativeVoice(transport: .init(snapshot: {
-                var empty = state()
-                empty.applicationReady = false; empty.applicationHasWindow = hasWindow
-                empty.controlsComplete = hasWindow
-                return empty
-            }, send: { _, _ in fatalError("No-call shell must not get a key") }, activate: { _ in fatalError("No activation") }))
-            let active = try await noWindow.setAudio(.muteMicrophone, onRecognized: { silentCues += 1 })
-            precondition(!active && silentCues == 0, "Closed windows and completely scanned empty shells remain silent no-ops")
-        }
-        let inputOnlyShell = NativeVoice(transport: .init(snapshot: {
-            var shell = state(input: true)
-            shell.applicationReady = false; shell.applicationHasWindow = true
-            return shell
-        }, send: { _, _ in fatalError("An input-only shell does not prove which channel to toggle") }, activate: { _ in }))
-        do { try await inputOnlyShell.setAudio(.muteMicrophone); fatalError("A complete shell with active input remains unknown") }
+        let sentToCurrentCall = try await guarded.setAudio(.silenceSpeakers, beforeShortcut: currentSession)
+        precondition(sentToCurrentCall && guardedSends == 1)
+        sessionChanged = true
+        do { _ = try await guarded.setAudio(.unmuteMicrophone, beforeShortcut: currentSession); fatalError("Replaced call received a toggle") }
+        catch is CancellationError { }
+        precondition(guardedSends == 1)
+        let unavailableDesktop = NativeVoice(transport: .init(snapshot: { fatalError("No UI read") },
+            send: { _, _ in fatalError("Locked desktop must not receive an audio key") },
+            activate: { _ in fatalError("No activation") }, startSession: { .locked },
+            audioTargetPID: { fatalError("Check existing desktop guard first") }))
+        do { try await unavailableDesktop.setAudio(.muteMicrophone); fatalError("Locked desktop accepted audio") }
         catch is BridgeError { }
-        for permission in [false, true] {
-            var reads = 0, cues = 0
-            let unavailable = NativeVoice(transport: .init(snapshot: {
-                reads += 1
-                var snapshot = state(allowed: permission)
-                snapshot.controlsComplete = false
-                snapshot.applicationReady = false; snapshot.applicationHasWindow = true
-                return snapshot
-            }, send: { _, _ in fatalError("Unknown controls never authorize a key") }, activate: { _ in }))
-            do { try await unavailable.setAudio(.muteMicrophone, onRecognized: { cues += 1 }); fatalError("Unknown must be reported") }
-            catch is BridgeError { }
-            precondition(cues == 0 && reads == (permission ? 3 : 1))
-        }
-        var audioTransientReads = 0, transientSends = 0, transientTime: TimeInterval = 0
-        let audioTransient = NativeVoice(transport: .init(snapshot: {
-            audioTransientReads += 1
-            if audioTransientReads == 1 || audioTransientReads == 4 {
-                var unknown = state(); unknown.pid = nil; unknown.controlsComplete = false
-                return unknown
-            }
-            return state(transientSends == 0 ? .listening : .muted)
-        }, send: { _, _ in transientSends += 1 }, activate: { _ in fatalError("Transient reads do not need focus") },
-        now: { transientTime }, wait: { transientTime += $0 }))
-        try await audioTransient.setAudio(.muteMicrophone)
-        precondition(transientSends == 1 && audioTransientReads == 5, "Retry incomplete admission and tolerate transient post-key PID lookup")
         var wakeTime: TimeInterval = 0, wakeSent = false
         let wakeUnmute = NativeVoice(transport: .init(snapshot: {
             state(wakeSent && wakeTime >= 0.6 ? .listening : .muted)
@@ -137,7 +78,7 @@ import Foundation
         var cancelWaiting: CheckedContinuation<Void, Never>?
         let cancellation = NativeVoice(transport: .init(snapshot: { state(cancellationSent ? .muted : .listening) },
             send: { _, _ in cancellationSent = true; await withCheckedContinuation { cancelWaiting = $0 } }, activate: { _ in },
-            requestEnd: { endRequests += 1; return nil }))
+            requestEnd: { endRequests += 1; return nil }, audioTargetPID: { 123 }))
         let audioTask = Task { @MainActor in
             do { try await cancellation.setAudio(.muteMicrophone); fatalError("Cancelled action must not confirm success") }
             catch is CancellationError { }
@@ -146,18 +87,24 @@ import Foundation
         audioTask.cancel(); cancelWaiting?.resume(); try await audioTask.value
         _ = try await cancellation.endIfPresent()
         precondition(endRequests == 1, "Explicit End remains available after cancelling in-flight audio")
-        var unconfirmedTime: TimeInterval = 0
-        let unconfirmed = NativeVoice(transport: .init(snapshot: { state(.listening) },
-            send: { _, _ in }, activate: { _ in }, now: { unconfirmedTime }, wait: { unconfirmedTime += $0 }))
-        do { try await unconfirmed.setAudio(.muteMicrophone); fatalError("Unchanged state cannot confirm mute") }
-        catch is BridgeError { }
-        precondition(unconfirmedTime == 2, "Confirmation is bounded when native state never changes")
         var failedSends = 0
-        let failed = NativeVoice(transport: .init(snapshot: { state(.listening) },
-            send: { _, _ in failedSends += 1; throw BridgeError.message("Not applied") }, activate: { _ in }))
+        let logDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("audio-toggle-test-logs")
+        let diagnosticLog = Diagnostics(directory: logDirectory)
+        let failed = NativeVoice(transport: .init(snapshot: { fatalError("No UI read") },
+            send: { _, _ in failedSends += 1; throw BridgeError.message("Not applied") },
+            activate: { _ in fatalError("No activation") }, audioTargetPID: { 123 }), diagnostics: diagnosticLog)
         do { try await failed.setAudio(.muteMicrophone); fatalError("A rejected native shortcut must fail") }
         catch is BridgeError { }
         precondition(failedSends == 1, "No retry or AX fallback may invert a channel")
+        let logged = NativeVoice(transport: .init(snapshot: { fatalError("No UI read") },
+            send: { _, _ in }, activate: { _ in fatalError("No activation") }, audioTargetPID: { 123 }), diagnostics: diagnosticLog)
+        try await logged.setAudio(.silenceSpeakers)
+        diagnosticLog.flush()
+        let events = try String(contentsOf: logDirectory.appendingPathComponent("events.jsonl"), encoding: .utf8)
+        precondition(events.contains("voice.audio.shortcut_failed") && events.contains("voice.output.shortcut_sent"))
+        precondition(events.contains("unverified") && !events.contains("voice.audio.confirmed"),
+                     "Logs distinguish a failed post and a sent key from confirmed audio")
+        try FileManager.default.removeItem(at: logDirectory)
 
         precondition(VoiceBridge.outputMuteState(label: "Mute speakers") == false)
         precondition(VoiceBridge.outputMuteState(label: "Unmute speakers") == true)
@@ -181,106 +128,6 @@ import Foundation
         precondition(VoiceBridge.outputMuteState(label: "Mute voice chat for this app") == nil)
         precondition(MicrophoneState.accessibilityLabel("Mute voice chat") == nil)
         precondition(MicrophoneState.accessibilityLabel("Unmute voice chat") == nil)
-        var floatingState = state(observedMicrophones[0])
-        floatingState.outputMuted = observedOutputs[0]
-        var floatingSends = 0
-        let floatingAudio = NativeVoice(transport: .init(snapshot: { fatalError("Speaker actions need their output scan") },
-            send: { command, pid in
-                precondition(command == VoiceBridge.outputMuteCommand && pid == 123)
-                floatingSends += 1
-                floatingState.outputMuted = VoiceBridge.outputMuteState(label: floatingState.outputMuted == true ? "Mute voice chat" : "Unmute voice chat")
-            }, activate: { _ in fatalError("Readable controls need no focus recovery") }, outputSnapshot: { floatingState }))
-        for action in [VoiceAudioAction.unsilenceSpeakers, .silenceSpeakers] {
-            let before = floatingSends
-            try await floatingAudio.setAudio(action)
-            try await floatingAudio.setAudio(action)
-            precondition(floatingSends == before + 1 && floatingState.outputMuted == action.targetMuted)
-            precondition(floatingState.microphone == .listening, "Speaker restore/silence must preserve the microphone")
-        }
-        var outputRead = 0
-        var output = state(.listening); output.outputMuted = false
-        let separatedReads = NativeVoice(transport: .init(snapshot: { fatalError("Speaker commands need an output-state scan") },
-            send: { command, _ in precondition(command == VoiceBridge.outputMuteCommand); output.outputMuted = true }, activate: { _ in },
-            outputSnapshot: { outputRead += 1; return output }))
-        try await separatedReads.setAudio(.silenceSpeakers)
-        precondition(outputRead == 3 && output.outputMuted == true && output.microphone == .listening)
-
-        var focus: Int32 = 456, focusEvents: [String] = [], speakerTime: TimeInterval = 0
-        var speakerMuted = false, hideAfterSend = false, speakerSends = 0
-        let focusRecovery = NativeVoice(transport: .init(snapshot: { fatalError("Speaker commands must read output") },
-            send: { command, pid in
-                precondition(command == VoiceBridge.outputMuteCommand && pid == 123 && focus == 123)
-                speakerSends += 1
-                focusEvents.append("send")
-                speakerMuted.toggle()
-            },
-            activate: { pid in focusEvents.append("activate"); focus = pid },
-            now: { speakerTime }, wait: { speakerTime += $0 },
-            outputSnapshot: {
-                var result = state(.listening)
-                result.endControlAvailable = true
-                if focus == 123 && !(hideAfterSend && speakerSends > 1) { result.outputMuted = speakerMuted }
-                return result
-            }, frontmostPID: { focus }, restoreFocus: { pid in focusEvents.append("restore"); focus = pid }))
-        try await focusRecovery.setAudio(.silenceSpeakers)
-        precondition(speakerMuted && focus == 456 && focusEvents == ["activate", "send", "restore"])
-        focusEvents.removeAll()
-        try await focusRecovery.setAudio(.silenceSpeakers)
-        precondition(speakerSends == 1 && focusEvents == ["activate", "restore"], "Repeating silence must not restore sound")
-        hideAfterSend = true
-        do {
-            try await focusRecovery.setAudio(.unsilenceSpeakers)
-            fatalError("A sent shortcut with no post-send state cannot confirm success")
-        } catch BridgeError.outputUnconfirmed { }
-        precondition(!speakerMuted && speakerSends == 2 && focus == 456, "Submit once and restore focus even when the resulting state is unavailable")
-
-        var warmFocus: Int32 = 456, warmMuted = false
-        let warmBackground = NativeVoice(transport: .init(snapshot: {
-            var result = state(.listening); result.outputMuted = warmMuted; return result
-        }, send: { _, _ in warmMuted = true }, activate: { _ in fatalError("A readable speaker control needs no focus change") },
-        frontmostPID: { warmFocus }))
-        try await warmBackground.setAudio(.silenceSpeakers)
-        precondition(warmMuted && warmFocus == 456)
-
-        var movedFocus: Int32 = 456, movedSends = 0, movedTime: TimeInterval = 0
-        let userChangedFocus = NativeVoice(transport: .init(snapshot: {
-            var result = state(.listening)
-            if movedFocus == 123 { result.outputMuted = false }
-            return result
-        }, send: { command, pid in
-            precondition(command == VoiceBridge.outputMuteCommand && pid == 123)
-            movedSends += 1
-        }, activate: { _ in movedFocus = 789 }, now: { movedTime }, wait: { movedTime += $0 }, frontmostPID: { movedFocus },
-        restoreFocus: { _ in fatalError("User focus wins") }))
-        do {
-            try await userChangedFocus.setAudio(.silenceSpeakers)
-            fatalError("A best-effort send with no speaker readback cannot confirm silence")
-        } catch BridgeError.outputUnconfirmed { }
-        precondition(movedFocus == 789 && movedSends == 1)
-
-        var endedFocus: Int32 = 456
-        let endedDuringRecovery = NativeVoice(transport: .init(snapshot: {
-            endedFocus == 456 ? state(.listening) : state(input: true)
-        }, send: { _, _ in fatalError("A process-wide input stream cannot prove the call is still active") },
-        activate: { endedFocus = $0 }, frontmostPID: { endedFocus }, restoreFocus: { endedFocus = $0 }))
-        do {
-            try await endedDuringRecovery.setAudio(.silenceSpeakers)
-            fatalError("The live call disappeared during focus recovery")
-        } catch is BridgeError { }
-        precondition(endedFocus == 456)
-
-        var bestEffortSent = false
-        let bestEffortConfirmed = NativeVoice(transport: .init(snapshot: {
-            var result = state(.listening)
-            if bestEffortSent { result.outputMuted = true }
-            return result
-        }, send: { command, pid in
-            precondition(!bestEffortSent && command == VoiceBridge.outputMuteCommand && pid == 123)
-            bestEffortSent = true
-        }, activate: { _ in fatalError("Codex already frontmost") }, frontmostPID: { 123 }))
-        let confirmed = try await bestEffortConfirmed.setAudio(.silenceSpeakers)
-        precondition(confirmed && bestEffortSent)
-
         var mailboxState = state(), mailboxEvents: [String] = []
         var launchBoundaries: [Date?] = []
         let mailboxContext = VoiceStartContext()

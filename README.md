@@ -16,8 +16,8 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | Say | What happens |
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
-| **Mute Chat**, **Mute mic** / **Unmute Chat** | Mutes or unmutes the active Voice microphone. Repeating a command keeps that state. |
-| **Silence Chat**, **Silent Chat**, **Mute speakers**, **Silent speaker(s)** / **Unsilence Chat**, **Unsilent speaker(s)**, **Unmute speaker(s)**, standalone **Unsilence** or **Unmute** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
+| **Mute Chat**, **Mute mic** / **Unmute Chat** | Sends the Voice microphone toggle once. Mute and Unmute both toggle, so repeating either reverses the previous change. |
+| **Silence Chat**, **Silent Chat**, **Mute speakers**, **Silent speaker(s)** / **Unsilence Chat**, **Unsilent speaker(s)**, **Unmute speaker(s)**, standalone **Unsilence** or **Unmute** | Sends the Voice speaker toggle once. Silence and Unsilence both toggle. The microphone remains independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 | **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key. |
 | **Call Dot** / **Hang up** | Starts or ends a call with Your dot in ChatGPT. These commands are separate from Codex Voice and meetings. Both have native Shortcuts actions and their own phrase, spelling, repeat and sound settings. |
@@ -30,7 +30,7 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Zoom in** / **Zoom out** | Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does. |
 | **Zoom in three times**, **Zoom in 3** | Runs a command that many times, up to 100. Repeat count is on for every command by default. Say the number after the whole command, including any app or speaker name. Without a number, it runs once. For rewind, always include “times”, since a number alone can be a distance. For Spotify volume, separate the value with “percent”: “Spotify volume forty percent three times”. For music, each run is another Play/Pause press, so an even number can leave playback as it was. Turn off **Repeat count** in a command’s gear on Home. |
 
-Each Voice, video, music, app and zoom phrase has its own short sound. Wake and End play at detection. Ending a call directly in Codex also plays the End sound, without repeating one already played for that call. Voice audio commands play a short detection tone when the controls are available, followed by their phrase sound when the requested state is confirmed. Video sounds acknowledge a confirmed pause/play result; music, app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
+Each Voice, video, music, app and zoom phrase has its own short sound. Wake and End play at detection. Ending a call directly in Codex also plays the End sound, without repeating one already played for that call. Voice audio commands play a short detection tone when Codex is available, followed by their phrase sound when the shortcut is sent. The sound does not confirm the audio state. Video sounds acknowledge a confirmed pause/play result; music, app and zoom sounds acknowledge dispatch. Check the status in the app for the outcome.
 
 For safe conversation about the app, call the helper **H Chat** and its End command **B Chat**. These are discussion names, not extra voice commands. The default dictionary no longer accepts the old UI-name alias or B/Be/Bee spellings as End. End commands use the same mention and negation filter as the other controls, so discussing a command is not treated as issuing it. Matching and transcript highlighting share the dictionary.
 
@@ -52,6 +52,10 @@ Speech recognition runs on your Mac, by default with the bundled Nemotron model 
 4. Choose your microphone on Home. **System default** follows macOS's default input. Codex Voice keeps its own input setting.
 5. Turn on **Listening enabled**. Hello Chat prepares the local model, then shows the live microphone level. Listening status is also in the menu bar.
 6. Say **Hello Chat**. When you're done, say **Bye Chat**.
+
+## Agent Bridge
+
+A paired agent can discover H Chat's native actions and edit its settings on the receiving Mac. Read the [agent control protocol](docs/agent-control.md) for discovery, arguments, call identities and receipts.
 
 ## Siri and Apple Vocal Shortcuts
 
@@ -106,7 +110,7 @@ These checks use fixed recordings and text. They don't show how well Hello Chat 
 The Help menu links to setup instructions and issue reporting. The main window has two sections:
 
 - **Live transcription** comes first, with the configured wake or end phrase as its call button, Refresh and the local transcript. Last command below it shows the outcome; the history button opens recent command results. Its height stays bounded while the current recognition batch remains available to scroll back through. New batches replace old text using the existing recognition reset and quiet-period rules; the Heard panel does not accumulate the entire listening session. The panel follows new words while you are at the bottom and lets you scroll back without being pulled down. Exact matches are green and alternate spellings are orange. Highlighting identifies matching text, not proof an action ran.
-- **Commands** comes below it, with the listening toggle, preparation or waiting messages when needed, editable Voice, music, browser and desktop phrases, **Speech model** and the microphone level. Home is the only editing location for these phrases and the microphone. Settings keeps advanced options and a link back to Home. Mute and Unmute control the microphone, and Silent, Silence and Unsilence control Voice audio. Repeating an audio command keeps its requested state.
+- **Commands** comes below it, with the listening toggle, preparation or waiting messages when needed, editable Voice, music, browser and desktop phrases, **Speech model** and the microphone level. Home is the only editing location for these phrases and the microphone. Settings keeps advanced options and a link back to Home. Mute and Unmute control the microphone, and Silent, Silence and Unsilence control Voice audio. Repeating an audio command sends another toggle.
 
 The **Switch app** panel combines the saved Switch and Open rows. Its defaults include **Switch app**, **Open app**, **Switch up**, **Switch to**, **Switch**, **Show app**, **Show me**, **Show** and **Open**, followed by an app name. Existing custom rows and dictionaries stay saved. **Add phrase** in a command’s panel adds another trigger for that command. Typing phrases separated by **/**, such as “Open app / Launch app”, adds them as separate rows when you press Return or leave the field. Extra phrases match exactly and highlight like the main phrase. Default Wake rows include **Hey Chat**, and default End rows include **Goodbye Chat**. The new rows are added once to unchanged default sections; custom main phrases are preserved, and deleted extra rows are not added again. A phrase another command already uses is ignored for the new one, and its row says which command has it. Main phrases take priority, then extra rows in list order.
 
@@ -122,7 +126,7 @@ Switch and Open wait for a brief speech pause so the model can finish the app na
 
 Complete phrases run as soon as they are recognised, without a deliberate post-phrase pause. App-name commands wait for a brief speech pause so recognition can finish the name. Recognition and native shortcut delivery still take time. Mention and negation filters still apply. Recognition errors or delayed results can still affect detection; this is not a guarantee of intent. Built-in alternatives are a short list of plausible real-word mishearings, including the observed “unsilenced chat”. They do not generate arbitrary letter edits or accept every word beginning with “ch”. Audio directions stay separate, with Chat or Chad as the address. Custom phrases match their exact saved wording, with normal capitalization, spacing and punctuation handling. Alternate spellings apply to default phrases; custom phrases match exactly. Each command’s gear on Home opens its settings. Each default trigger has one alternate-spellings editor showing the same effective list used for recognition. The info button beside every Home title explains the action. Play and Pause keep separate settings and directional browser actions; music still uses the system media toggle. Edit or import a UTF-8 text file with one full spelling per line, then Save to replace that default’s built-in alternatives. The default phrase itself always works; an empty dictionary uses only that phrase. A spelling cannot reuse another command’s default phrase, except for phrases sharing one action, such as Silent/Silence or Switch/Open. Restore built-in returns to the shipped dictionary. Editing a phrase disables its dictionary controls and keeps any saved dictionary dormant until you restore that default phrase.
 
-Audio commands act on an existing Voice chat. Microphone commands stay in the background. If Codex's speaker control is missing from the background read, Hello Chat briefly brings Codex forward and checks again. If the call is still active, it sends the speaker shortcut once when a change is needed or the speaker state is still unknown. The shortcut toggles speakers. The app reports when it sends the shortcut but cannot confirm the requested state.
+Microphone and speaker commands send their configured Codex toggle once, without reading buttons, changing focus or waiting for confirmation. This works when another chat is selected. The app reports the shortcut as sent; the audio state remains unverified. Mute and Unmute send the same microphone toggle. Silence and Unsilence send the same speaker toggle. These commands do not start a call.
 
 When Hello Chat starts a new call, it saves the locally recognised words heard after the wake while Voice was connecting in `~/Library/Application Support/HelloChat/VoiceStartup/pending.json`. On normal app startup, Hello Chat installs or updates its own `hello-chat-voice-startup` skill in the configured Codex skills directory (`~/.codex/skills` by default). The installed skill comes directly from the bundled [Voice startup instructions](Resources/VoiceStartup.md), which remain the single source of truth. It leaves unrelated skills and conflicting user-managed content untouched.
 
@@ -154,7 +158,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 Enable **Settings → Spotify → Lower volume during chat** to cap Spotify's own slider at 50% while a native call is on. A quieter setting stays quieter. **Allow Spotify control** requests macOS Automation permission; Spotify must already be open. This never starts playback or changes the Mac's output volume.
 
-Use the configured microphone mute phrase to restore your previous Spotify volume. The microphone unmute phrase reapplies the cap. Spotify keeps any manual slider adjustment H Chat detects during the call.
+With Lower volume during chat enabled and a known active call, the microphone mute phrase still restores your previous Spotify volume, and the unmute phrase reapplies the cap. This follows the requested phrase direction, not a readback of Codex's microphone. Repeated phrases toggle Codex again while keeping the requested Spotify volume behavior. Manual slider protection and call-end restoration remain unchanged.
 
 Say **Spotify volume** followed by a number from 0 to 100 to set Spotify directly, even when automatic lowering is off. Spotify must already be running. The phrase has its own settings gear on Home. Spoken values can be corrected as transcription completes a number; no extra wait for silence is added. This deliberate choice survives the current call ending and leaves your saved Maximum volume unchanged.
 
@@ -164,18 +168,20 @@ Detection uses native Accessibility notifications and fresh call controls, inclu
 
 ## Paired Macs and Codex Voice
 
-H Chat can give one Mac priority when both Macs have an active Codex Voice call. It checks after a native call starts, including calls opened using Codex's own Voice control. Configure both Macs with opposite roles and the exact names they use to reach each other in Agent Bridge. Leave both unconfigured for independent calls.
+H Chat can keep one Codex Voice call when two paired Macs have active calls. Either Mac can detect the overlap, including calls opened directly in Codex or already active when H Chat starts. Configure opposite roles and the exact names the Macs use to reach each other in Agent Bridge. Leave both unconfigured for independent calls.
 
 ```sh
-# On the Mac that keeps its call when starts are within 30 seconds
+# On the Mac that normally keeps its call
 defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<secondary bridge name>' role primary
-# On the Mac that yields when starts are within 30 seconds
+# On the Mac that has priority during the optional scheduled hours
 defaults write com.ethansk.HeyChat voicePeerPriority -dict machine '<primary bridge name>' role secondary
 ```
 
-Both machines need H Chat running from `/Applications/HelloChat.app` with Accessibility access and [Agent Bridge](https://github.com/EthanSK/agent-bridge) at `~/bin/agent-bridge`. This is an advanced, optional setup; it is not installed with H Chat. Restart H Chat after configuring the pair. A single call on either Mac works normally. For two verified calls starting within 30 seconds, the primary Mac normally keeps its call. More than 30 seconds apart, the newer call takes over. H Chat uses the native End control for the exact call that yields, closing Voice while keeping the chat and its work. Update both apps together. During mixed-version operation, or if either call cannot be verified, H Chat skips the automatic handoff.
+Both machines need H Chat running from `/Applications/HelloChat.app` with Accessibility access and [Agent Bridge](https://github.com/EthanSK/agent-bridge) at `~/bin/agent-bridge`. Install Agent Bridge separately and restart H Chat after configuring the pair. A single call works on either Mac. When both calls are verified, H Chat uses the native End control for the losing session. Its chat and work stay open.
 
-For daily duplicate-start priority, add the same three fields to the `voicePeerPriority` dictionary on both Macs: integer `secondaryStartHour` and `secondaryEndHour` (0–23), and an IANA `timeZone` identifier. The secondary has priority during that local interval, inclusive at the start and exclusive at the end. Both Macs use the earlier of the two starts for this decision, including across daylight-saving changes. The schedule is only evaluated on startup, and mismatched schedules disable automatic handoff until the pair agrees.
+For daily priority, add the same integer `secondaryStartHour` and `secondaryEndHour` (0–23) and named `timeZone` to each Mac's `voicePeerPriority` dictionary. With `2`, `11` and `Europe/London`, the secondary keeps its call from 02:00 until 11:00 UK time. The primary keeps its call from 11:00 until 02:00, or all day when the pair has no schedule.
+
+The primary records the local time when H Chat first resolves each verified overlap. Either call can have started first or been running for hours. Both Macs use the same decision through delayed replies, retries and clock changes. If a peer check fails, H Chat checks again while the call remains active. Update both apps together. Automatic handoff requires matching protocol versions and schedules.
 
 For read-only diagnosis, run `/Applications/HelloChat.app/Contents/MacOS/HelloChat --voice-peer-status` locally or over the paired bridge. The command returns a status and, when verified, the current thread and session identifiers. To remove the pairing, delete the `voicePeerPriority` preference on both Macs and restart H Chat.
 

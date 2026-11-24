@@ -1,5 +1,12 @@
 # Hello Chat engineering notes
 
+## 24 November 2026 — Explicit Voice audio commands send one toggle
+
+- Ethan replaced the read-first policy with one native key per accepted microphone or speaker command, including repeated mute phrases. `NativeVoice.setAudio` resolves the verified Codex process and uses the existing sender without snapshots, activation, readback waits or retry toggles. Start/End and the call observer are separate.
+- A posted key is recorded as submitted with an unverified effect. It must not set cached microphone state or claim a live call. Preserve Ethan's separately requested phrase-to-Spotify behavior through `microphonePhraseSent`, using the existing active-call epoch and volume ownership without requesting a new Voice read. Its input is the requested phrase direction, not confirmed native mute state; the confirmed wake path remains separate.
+- The injected tests make every control read, focus request and added wait fail, while checking all four actions, repeated phrases, unavailable Codex, locked desktop, cancellation and rejected posts. Diagnostic tests distinguish attempted, failed and sent keys from a confirmed audio effect. No live Voice key is sent by these tests.
+
+
 ## Commands during continuous playback
 
 - User-requested,17November2026: do not wait for silence or the end of a recognition batch after a complete fixed command. YouTube supplies more words continuously, so such a wait can prevent commands while watching. If Ethan proposes a post-keyword delay again, explain that it was removed for this reason before agreeing on a new policy.
@@ -45,6 +52,11 @@ Ethan reaffirmed that local useful installation comes before full testing and pu
 
 - Spotify call-volume control uses fresh positive native Voice controls, not H Chat's own connected flag, thread creation, microphone input alone or process lifetime. The desktop's private `thread_timeline_ledger` can supplement saved-call reconnect handling, but temporary calls can be memory-only. Read only `session-started`/`session-ended` metadata after the current desktop process launch, retain known-active evidence if the private schema/read becomes unavailable, and never mutate that database. AX window/control events and database/WAL file events trigger coalesced reads; unrelated SQLite writes must not trigger full-tree scans. Fixture checks establish state transitions, not live manual-end or temporary-call acceptance.
 - Save Spotify's original own-app volume before sending the cap. Keep the receipt through failed writes/restores and helper replacement; restore only if Spotify still has the applied value so a manual adjustment wins. Address the existing Spotify process with non-interactive Apple Events, never launch it or touch playback/system output. A normal helper Quit restores immediately and preserves native Voice; updater preparation transfers the receipt instead. A crashed/non-running helper cannot observe a future End, so recovery happens on its next launch.
+
+
+## 2026-11-14 — Local updates precede public qualification
+
+Ethan reaffirmed that local useful installation comes before full testing and public release. `scripts/build.sh` already builds and signs a standalone local bundle without requiring the public release workflow. Preserve the installed Developer ID identity, microphone entitlement, updater trust and normal detach/flush behavior; public notarisation and download checks do not automatically gate a local trial. The project skill now distinguishes those stages. No app was built, installed or restarted by this documentation audit.
 
 - Core ML can time out during recognition or during the subsequent model reload. Keep the NSError domain through the listener, retry both paths with one bounded recovery budget, and replenish it only after processed audio. Preserve native Voice and the listening preference during local recovery. After exhaustion, power/display changes or system wake can retry; automatic undock/redock still owns its two-minute delay. Await the old worker's cleanup before loading another; task cancellation cannot forcibly interrupt a Core ML call already in progress.
 - Phrase timing belongs to the audio timeline, not the arrival time of an entire transcript. Nemotron exposes live token timings; Parakeet exposes raw token pieces and millisecond timestamps; Apple time-indexed progressive results expose audio ranges. Normalize these into matching word spans. If alignment is unavailable, retain first-observed times across prefix/suffix revisions. Apply proximity to both wake and end matching, including standalone stops during Agent Flow dictation, without delaying valid detections. Text-only dictionary highlighting remains a textual match, not proof that timing allowed a command.
@@ -229,9 +241,10 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 ## Cross-Mac Voice startup
 
 - Two Macs can each own an independent Codex Voice call and audio route. Switching a system output affects its own Mac. Check both hosts before attributing continued speech or duplicate work to an audio-control regression.
-- Keep a configured peer's startup check in H Chat's shared native call observer. It runs for Voice started from Codex itself and does not depend on a backend turn or the optional Spotify setting. Compare the exact sessions' saved start times to keep bridge latency out of the 30-second duplicate-start rule. Within that window the configured primary wins. Outside it, only the newer side initiates takeover. Starting the helper with a pre-existing local call does not initiate a handoff. The exact End uses the losing Mac's native control and saved session boundary. A successful dispatch still needs the same session's End record to confirm it.
+- The shared native call observer detects paired Voice calls opened in Codex or already active when H Chat starts. Either observer can find the overlap. The primary records one resolution instant for the exact pair so simultaneous starts, bridge retries and H Chat restarts use the same scheduled winner. Keep decisions for the current primary session, including replaced secondary sessions that may still have requests in flight.
 - When the two sides could choose different calls under old and new arbitration rules, version both the peer receipt and the End request. A mixed pair must leave both calls alone while updates are being installed.
-- Duplicate starts can straddle a scheduled priority boundary. Evaluate the earlier saved start in the configured named time zone on both Macs. Keep the schedule in each peer receipt so incomplete rollouts or divergent preferences cannot cause both calls to be ended. A clock boundary itself never triggers arbitration.
+- Keep the command builder, CLI parser, mailbox directory and reply prefix on one protocol version. A valid status reply alone cannot establish that the receiver accepts End. Exercise the outgoing arguments through the real receiver in fixtures. Before pressing, verify the surviving call and the primary's recorded decision, then recheck the losing session and process after the native control scan. Only the exact session's End record confirms dispatch.
+- An End may still be in flight when the other Mac starts a replacement call. Advertise the pending End before pressing so its target cannot authorize another hang-up as the supposed survivor. The request's expiry bounds that reservation if the press is inconclusive.
 - An SSH command on macOS can read native Accessibility by explicit PID while AppKit application discovery returns no GUI app identity. Have the paired command ask the existing desktop H Chat process to check and act. A missing response is unknown, including while H Chat is stopped or updating.
 
 ## Native App Intents and desktop speech boundaries
@@ -326,3 +339,13 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 ## 2026-11-24 - Bound complete native control scans
 
 Accessibility messaging timeouts belong to each AX element. Set the timeout before each attribute read, share one monotonic time/node budget across descendant searches, and check cancellation before and after native reads. A truncated or timed-out scan is unknown, never proof that a call is inactive or permission to replay. Dot lookup follows the pre-existing bounded Voice scan and speed-picker wait; deadline, cancellation, depth and shared-node fixtures pass without real call actions.
+
+## Agent Bridge control discovery and delivery
+
+- Older H Chat executables accept unknown arguments and continue into normal app startup. Before invoking the agent control CLI, check the installed bundle's integer `HChatAgentControlProtocol` marker. The CLI exits before app initialization and submits its request to the already-running desktop.
+- A GUI action can succeed before its sending CLI receives a reply. The control mailbox binds the original envelope to its UUID, claims it before dispatch and returns the same receipt to a duplicate caller. A restarted receiver leaves an earlier unresolved claim unknown. The private mailbox regression exercises concurrent submission, delayed completion, expiry and process replacement without controlling live Voice.
+- Native Voice Start returns no session ID with its shortcut. An agent can withdraw its own pending Start before native dispatch or call reuse by matching the request and current opening generation, then cancelling that task with call preservation. After either boundary, only an explicit End with an independently identified current call can select a target.
+
+## App Intents packaging across Swift toolchains
+
+The Swift 6.3.3 frontend in Xcode 26.6 accepts `-const-gather-protocols-file`. Its driver rejects `-const-gather-protocols-list`. Swift 6.4.2 in Xcode 27.2 also accepts the frontend `-file` spelling. Forward the flag and its protocol-array path separately with `-Xfrontend`. On both toolchains the packaging check extracted ten discoverable intents, eight automatic shortcuts and the English Siri phrase assets from `AppShortcuts.swift`.

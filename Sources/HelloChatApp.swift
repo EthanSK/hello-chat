@@ -11,6 +11,7 @@ import Darwin
 @main enum Main {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments == ["--agent-control-v1"] { exit(HControlMailbox.command()) }
         if arguments.count == 2, arguments[0] == "--check-spotify-volume-phrase" {
             let aliases = PhraseList.decode(UserDefaults.standard.object(forKey: PhraseList.defaultsKey))
             let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map {
@@ -108,22 +109,7 @@ import Darwin
             RunLoop.main.run()
             return
         }
-        if ["--voice-peer-status", "--voice-peer-end", "--voice-peer-confirm-end"].contains(arguments.first ?? "") {
-            let receipt: VoicePeerReceipt
-            let expires = Date().timeIntervalSince1970 + 4
-            if VoicePeerConfiguration.installed == nil {
-                receipt = .init(status: .disabled)
-            } else if arguments == ["--voice-peer-status"] {
-                receipt = VoicePeerMailbox.submit(.init(action: .status, call: nil, expires: expires))
-            } else if arguments.count == 2, arguments[0] == "--voice-peer-confirm-end",
-                      let call = VoicePeerCall(token: arguments[1]) {
-                receipt = VoicePeerMailbox.submit(.init(action: .confirmEnd, call: call, expires: expires))
-            } else if arguments.count == 4, arguments[0] == "--voice-peer-end", arguments[3] == "v2",
-                      let call = VoicePeerCall(token: arguments[1]), let deadline = TimeInterval(arguments[2]) {
-                receipt = VoicePeerMailbox.submit(.init(action: .end, call: call, expires: deadline))
-            } else {
-                receipt = .init(status: .unknown)
-            }
+        if let receipt = VoicePeerMailbox.command(arguments) {
             let data = try! JSONEncoder().encode(receipt)
             print(VoicePeerReceipt.wirePrefix + String(decoding: data, as: UTF8.self))
             return
@@ -402,11 +388,18 @@ enum AppVersion {
 struct HelloChatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model: GateModel
-    @StateObject private var zoom = InterfaceZoom()
-    @StateObject private var updater = AppUpdater()
+    @StateObject private var zoom: InterfaceZoom
+    @StateObject private var updater: AppUpdater
+    private let agentControl: HAgentControl
     init() {
         let model = GateModel()
+        let zoom = InterfaceZoom()
+        let updater = AppUpdater()
         _model = StateObject(wrappedValue: model)
+        _zoom = StateObject(wrappedValue: zoom)
+        _updater = StateObject(wrappedValue: updater)
+        agentControl = HAgentControl(model, zoom: zoom, updater: updater)
+        agentControl.start()
         HChatShortcutActions.handler = { [weak model] action in
             guard let model else { throw HChatShortcutError.unavailable }
             return try await model.performShortcut(action)
@@ -415,6 +408,7 @@ struct HelloChatApp: App {
     var body: some Scene {
         Window("Hello Chat · \(AppVersion.display)", id: "main") {
             MainView(model: model, zoom: zoom, updater: updater)
+                .modifier(HControlWindow(control: agentControl))
                 .background(InitialWindowPlacement())
                 .onAppear {
                     delegate.model = model
@@ -450,12 +444,26 @@ struct HelloChatApp: App {
         }
         Window("Hello Chat Settings", id: "settings") {
             SettingsView(model: model, zoom: zoom, updater: updater)
+                .modifier(HControlWindow(control: agentControl))
                 .background(InitialWindowPlacement())
         }
         .defaultSize(width: 560, height: 660)
         .windowResizability(.contentMinSize)
         MenuBarExtra("Hello Chat", systemImage: model.enabled ? "waveform.circle.fill" : "waveform.circle") {
-            MenuView(model: model)
+            MenuView(model: model).modifier(HControlWindow(control: agentControl))
+        }
+    }
+}
+
+private struct HControlWindow: ViewModifier {
+    @Environment(\.openWindow) var openWindow
+    let control: HAgentControl
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            control.openWindow = { id in
+                openWindow(id: id); NSApp.activate(ignoringOtherApps: true)
+            }
         }
     }
 }

@@ -5,18 +5,69 @@ import Darwin
 import Foundation
 
 final class VoicePeerMailbox {
-    enum Action: String, Codable { case status, end, confirmEnd }
+    enum Action: String, Codable {
+        case status = "--voice-peer-status"
+        case resolve = "--voice-peer-resolve"
+        case end = "--voice-peer-end"
+        case confirmEnd = "--voice-peer-confirm-end"
+    }
 
     struct Request: Codable {
         let action: Action
         let call: VoicePeerCall?
         let expires: TimeInterval
+        var otherCall: VoicePeerCall? = nil
 
-        var valid: Bool {
-            let now = Date().timeIntervalSince1970
+        static let queryLifetime: TimeInterval = 4
+        var valid: Bool { valid(at: Date().timeIntervalSince1970) }
+
+        func valid(at now: TimeInterval) -> Bool {
             guard expires > now, expires <= now + 15 else { return false }
-            return action == .status ? call == nil : (call?.pid ?? 0) > 0
+            switch action {
+            case .status: return call == nil && otherCall == nil
+            case .resolve, .end: return (call?.pid ?? 0) > 0 && (otherCall?.pid ?? 0) > 0
+            case .confirmEnd: return (call?.pid ?? 0) > 0 && otherCall == nil
+            }
         }
+
+        var arguments: [String]? {
+            switch action {
+            case .status: return [action.rawValue]
+            case .confirmEnd:
+                guard let call else { return nil }
+                return [action.rawValue, call.token]
+            case .resolve, .end:
+                guard let call, let otherCall else { return nil }
+                return [action.rawValue, call.token, otherCall.token, String(expires), VoicePeerReceipt.endVersion]
+            }
+        }
+
+        static func parse(_ arguments: [String], now: TimeInterval) -> Self? {
+            guard let command = arguments.first, let action = Action(rawValue: command) else { return nil }
+            let request: Self
+            switch (action, arguments.count) {
+            case (.status, 1):
+                request = .init(action: action, call: nil, expires: now + queryLifetime)
+            case (.confirmEnd, 2):
+                request = .init(action: action, call: VoicePeerCall(token: arguments[1]), expires: now + queryLifetime)
+            case (.resolve, 5), (.end, 5):
+                guard arguments[4] == VoicePeerReceipt.endVersion, let expires = TimeInterval(arguments[3]) else { return nil }
+                request = .init(action: action, call: VoicePeerCall(token: arguments[1]), expires: expires,
+                                otherCall: VoicePeerCall(token: arguments[2]))
+            default: return nil
+            }
+            return request.valid(at: now) ? request : nil
+        }
+    }
+
+    // CLI requests enter the signed desktop app through this same versioned parser. — GPT-6.2 Astra
+    static func command(_ arguments: [String], enabled: () -> Bool = { VoicePeerConfiguration.installed != nil },
+                        now: TimeInterval = Date().timeIntervalSince1970,
+                        send: (Request) -> VoicePeerReceipt = { submit($0) }) -> VoicePeerReceipt? {
+        guard let flag = arguments.first, Action(rawValue: flag) != nil else { return nil }
+        guard enabled() else { return .init(status: .disabled) }
+        guard let request = Request.parse(arguments, now: now) else { return .init(status: .unknown) }
+        return send(request)
     }
 
     // Keep an in-flight request from an older executable out of the new
