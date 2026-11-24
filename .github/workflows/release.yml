@@ -27,7 +27,7 @@ concurrency:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-15
+    runs-on: macos-26
     # The signed archive is about 1 GB. Leave room for Apple notarization
     # and uploading the verified package. — GPT-6.1 Sol
     timeout-minutes: 180
@@ -38,7 +38,7 @@ jobs:
       contents: write
       actions: read
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
       HELLOCHAT_NOTARY_PROFILE: ReleaseCI
       HELLOCHAT_SPARKLE_ACCOUNT: com.ethansk.HelloChat
@@ -51,6 +51,7 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+          test -f "$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/share/swift/SwiftConstantValues/AppIntents.json"
       - name: Prepare isolated release paths
         shell: bash
         run: |
