@@ -24,6 +24,15 @@ import SwiftUI
     private let repetitions = RepeatedCommands()
     private var repeatAppTargets: [UUID: AppCommandCandidate] = [:]
     private var repetitionDetails: [UUID: (String?, String?)] = [:]
+    private final class SpotifySpokenVolume {
+        var value: Int
+        var root: UUID?
+        var cuePlayed = false
+        var valid = true
+        init(_ value: Int) { self.value = value }
+    }
+    private var spotifyVolumeRequests: [UUID: SpotifySpokenVolume] = [:]
+    private var finalValueFrame = false
     @Published private(set) var lastCommandMessage: String?
     @Published private(set) var lastCommandDetail: String?
     private var latestCommandID: UUID?
@@ -84,7 +93,8 @@ import SwiftUI
     // Use the accepted words' audio time, even when an ASR revision arrives after Voice's handoff.
     // Every speech action supplies its normal replay route here. New actions cannot opt out
     // accidentally: the callback is required, while the user's per-command toggle defaults on. — GPT-6.1 Sol
-    private func reserveSpeech(_ action: String, target: String = "", range: Range<Int>?,
+    private func reserveSpeech(_ action: String, target: String = "", range: Range<Int>?, discard: Bool = false,
+                               onReserved: (UUID) -> Void = { _ in },
                                repeatAction: @escaping (UUID) -> Void) -> UUID? {
         guard let range else { return nil }
         let now = Date().timeIntervalSince1970
@@ -93,6 +103,7 @@ import SwiftUI
         do {
             switch try receipts.begin(action, target: target, session: receiptSession, at: now - age) {
             case .run(let id):
+                onReserved(id)
                 latestCommandID = id
                 let title = commandTitle(action)
                 let summary = title + " · Heard"
@@ -101,7 +112,7 @@ import SwiftUI
                 Diagnostics.shared.record("command.history", numbers: ["spoken_at": now - age],
                                           info: ["receipt": id.uuidString, "command": title, "result": "Heard", "summary": summary])
                 var reserving = true
-                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(repetitionKey(action)), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true) { [weak self] step in
+                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(repetitionKey(action)), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true || action == PhraseSlot.spotifyVolumePhrase.rawValue, valueArgument: action == PhraseSlot.spotifyVolumePhrase.rawValue, discard: discard) { [weak self] step in
                     if reserving { return } // The unqueued first action stays immediate; queued first actions use this callback later.
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -173,6 +184,34 @@ import SwiftUI
             }
             if outcome.didOpen, self.repetitions.isFirst(id) { self.feedback.play(PhraseSlot.showVoicePhrase.cue) }
             Diagnostics.shared.record("voice.show", info: ["outcome": outcome.rawValue])
+        }
+    }
+    private func requestSpotifyVolume(_ request: SpotifySpokenVolume, receipt id: UUID) {
+        guard !quitting, repetitions.shouldRun(id) else { finishCommand(id, .superseded); return }
+        let volume = request.value
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let actual = try await self.spotifyVolume.setVolume(to: volume)
+                self.finishCommand(id, actual == volume ? .confirmed : .unknown,
+                                   detail: "Spotify volume · \(actual)%")
+                if actual == volume, request.valid, request.value == volume, !request.cuePlayed {
+                    request.cuePlayed = true
+                    self.feedback.play(PhraseSlot.spotifyVolumePhrase.cue)
+                }
+                Diagnostics.shared.record("spotify.volume.command", numbers: ["requested": Double(volume), "actual": Double(actual)])
+            } catch {
+                let detail: String
+                let failure = error as? SpotifyVolumeOperationFailure
+                let phase: SpokenCommandJournal.Phase = failure?.beforeDispatch == true ? .failedBeforeDispatch : .unknown
+                switch failure?.underlying ?? error {
+                case SpotifyControlError.unavailable: detail = "Open Spotify, then try again."
+                case SpotifyControlError.permissionRequired: detail = "Allow Spotify control in Settings."
+                default: detail = "Couldn’t set Spotify volume."
+                }
+                self.finishCommand(id, phase, detail: detail)
+                Diagnostics.shared.failure("spotify.volume.command_failed", error)
+            }
         }
     }
     private let voicePeerPriority = VoicePeerPriority()
@@ -285,6 +324,9 @@ import SwiftUI
     @Published var playMusicPhrase = PhraseSlot.playMusicPhrase.savedValue() {
         didSet { UserDefaults.standard.set(playMusicPhrase, forKey: "playMusicPhrase"); updatePhrases() }
     }
+    @Published var spotifyVolumePhrase = PhraseSlot.spotifyVolumePhrase.savedValue() {
+        didSet { UserDefaults.standard.set(spotifyVolumePhrase, forKey: PhraseSlot.spotifyVolumePhrase.rawValue); updatePhrases() }
+    }
     @Published var switchAppPhrase = PhraseSlot.switchAppPhrase.savedValue() {
         didSet { UserDefaults.standard.set(switchAppPhrase, forKey: "switchAppPhrase"); updatePhrases() }
     }
@@ -320,6 +362,7 @@ import SwiftUI
     @Published private(set) var speakerOutputSettings = SpeakerOutputSettings.load()
     @Published private(set) var speakerOutputStatus: String?
     private var showVoiceDetector = StandaloneWake()
+    private var spotifyVolumeDetector = SpotifyVolumePhrase()
     private var showVoiceTask: Task<Void, Never>?
     private var speakerOutputDetector = StandaloneWake(speakerRoute: true)
     private var speakerQueue = SpeakerOutputQueue()
@@ -332,6 +375,7 @@ import SwiftUI
     }
     @Published private(set) var speakerOutputConflict: String?
     private var activeSpeakerCommands: [(pattern: PhrasePattern, output: String)] = []
+    private var activeSpeakerPrefixes: [PhrasePattern] = []
     // Recognition checks each audio frame. Compile speaker combinations only when settings
     // change, not on that hot path, and share the result with highlighting and cancellation.
     private func rebuildSpeakerCommands() {
@@ -343,6 +387,13 @@ import SwiftUI
         let conflict = effective.conflictingPhrase(with: otherPatterns, alternateSpellings: similarPhrases)
         if speakerOutputConflict != conflict { speakerOutputConflict = conflict }
         activeSpeakerCommands = conflict == nil ? effective.commands(alternateSpellings: similarPhrases) : []
+        let appPrefixes = patterns(for: .switchAppPhrase) + patterns(for: .openAppPhrase)
+        // Preserve explicitly configured app prefixes even when the speaker editor uses the
+        // same wording; only the complete speaker request owns that ambiguous phrase. — GPT-6.1 Sol
+        activeSpeakerPrefixes = activeSpeakerCommands.isEmpty ? [] : effective.commandPrefixes(alternateSpellings: similarPhrases).filter { speaker in
+            let words = PhraseMatcher.words(speaker.text)
+            return !appPrefixes.contains { app in app.matches(in: words).contains { $0.start == 0 && $0.end == words.count } }
+        }
     }
     func saveSpeakerOutputSettings(_ settings: SpeakerOutputSettings) -> Bool {
         let settings = settings.cleaned()
@@ -361,7 +412,7 @@ import SwiftUI
     // "Play music" -> "Pause music" hypothesis from sending the same toggle twice.
     private var musicPhraseDetector = StandaloneWake()
     private var musicPatterns: [(slot: PhraseSlot, pattern: PhrasePattern)] {
-        PhraseSlot.musicSlots.flatMap { slot in patterns(for: slot).map { (slot, $0) } }
+        [PhraseSlot.pauseMusicPhrase, .playMusicPhrase].flatMap { slot in patterns(for: slot).map { (slot, $0) } }
     }
     private var appCommandDetector = AppCommandDetector()
     private var desktopTask: Task<Void, Never>?
@@ -501,6 +552,7 @@ import SwiftUI
         case .playVideoPhrase: return \.playVideoPhrase
         case .pauseMusicPhrase: return \.pauseMusicPhrase
         case .playMusicPhrase: return \.playMusicPhrase
+        case .spotifyVolumePhrase: return \.spotifyVolumePhrase
         case .switchAppPhrase: return \.switchAppPhrase
         case .openAppPhrase: return \.openAppPhrase
         case .showVoicePhrase: return \.showVoicePhrase
@@ -622,6 +674,7 @@ import SwiftUI
         }
         listener.onUtteranceEnd = { [weak self] in
             self?.repetitions.endUtterance()
+            self?.finalValueFrame = true
             guard let self, var capture = self.startupSpeech else { return }
             let complete = capture.markUtteranceEnded()
             self.startupSpeech = capture
@@ -636,6 +689,7 @@ import SwiftUI
             self?.zoomPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.musicPhraseDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.showVoiceDetector.audio(level: level, seconds: seconds, at: audioTime)
+            self?.spotifyVolumeDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.speakerOutputDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
@@ -1021,11 +1075,14 @@ import SwiftUI
     }
     private func resetAudioPhrases() {
         repetitions.boundary()
+        spotifyVolumeRequests.removeAll()
+        finalValueFrame = false
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
         videoPhraseDetectors.reset()
         zoomPhraseDetectors.reset()
         musicPhraseDetector.reset()
         showVoiceDetector.reset()
+        spotifyVolumeDetector.reset()
         speakerOutputDetector.reset()
         appCommandDetector.reset()
     }
@@ -1519,6 +1576,7 @@ import SwiftUI
         zoomPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         musicPhraseDetector.update(text, at: Diagnostics.now, timings: timings)
         showVoiceDetector.update(text, at: Diagnostics.now, timings: timings)
+        spotifyVolumeDetector.update(text, at: Diagnostics.now, timings: timings)
         speakerOutputDetector.update(text, at: Diagnostics.now, timings: timings)
         appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
@@ -1546,6 +1604,9 @@ import SwiftUI
     }
     private func checkStandaloneWake() {
         guard enabled, detectionRunning else { return }
+        defer {
+            if finalValueFrame { spotifyVolumeDetector.endUtterance(); finalValueFrame = false }
+        }
         // Every listed phrase for a command shares its detector, occurrence count and sound.
         // A phrase listed for different commands keeps its first owner in PhraseConfiguration.
         let wakePatterns = patterns(for: .wakePhrase), endPatterns = patterns(for: .sleepPhrase)
@@ -1558,6 +1619,7 @@ import SwiftUI
             zoomPhraseDetectors.cancelPending(aliases: zoomPatterns, endPatterns: endPatterns) // ...and desktop commands.
             musicPhraseDetector.cancelPending(patterns: musicPatterns.map(\.pattern), endPatterns: endPatterns)
             showVoiceDetector.cancelPending(patterns: patterns(for: .showVoicePhrase), endPatterns: endPatterns)
+            spotifyVolumeDetector.cancelPending(prefixes: patterns(for: .spotifyVolumePhrase), endPatterns: endPatterns)
             speakerOutputDetector.cancelPending(patterns: activeSpeakerCommands.map(\.pattern), endPatterns: endPatterns)
             appCommandDetector.consumeAll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
             cancelStartupSpeech()
@@ -1604,6 +1666,31 @@ import SwiftUI
             requestMusic(music[index].slot)
         }
         let showPatterns = patterns(for: .showVoicePhrase)
+        for command in spotifyVolumeDetector.poll(at: Diagnostics.now, prefixes: patterns(for: .spotifyVolumePhrase)) {
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: [command.pattern])
+            if command.revised {
+                guard let request = spotifyVolumeRequests[command.id], let root = request.root else { continue }
+                if command.invalid {
+                    request.valid = false; repetitionDetails[root] = nil
+                    repetitions.invalidateValue(root)
+                    continue
+                }
+                _ = repetitions.reviseValue(root, range: command.range, reapply: request.value != command.volume, finishingUtterance: finalValueFrame) {
+                    guard receipts.retarget(root, to: String(command.volume), revisingValue: true) else { return false }
+                    request.value = command.volume
+                    repetitionDetails[root] = nil
+                    return true
+                }
+            } else {
+                let request = SpotifySpokenVolume(command.volume)
+                spotifyVolumeRequests[command.id] = request
+                if let id = reserveSpeech(PhraseSlot.spotifyVolumePhrase.rawValue, target: String(command.volume), range: command.range,
+                    onReserved: { request.root = $0 },
+                    repeatAction: { [weak self] id in self?.requestSpotifyVolume(request, receipt: id) }) {
+                    requestSpotifyVolume(request, receipt: id)
+                }
+            }
+        }
         if let first = showPatterns.first,
            showVoiceDetector.poll(at: Diagnostics.now, phrase: first.text, similar: first.similar,
                                   rejectNegated: true, patterns: showPatterns, directOnly: true) {
@@ -1636,6 +1723,7 @@ import SwiftUI
         }
         let appCommands = appCommandDetector.poll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase),
             reserved: patterns(for: .showVoicePhrase) + activeSpeakerCommands.map(\.pattern),
+            reservedSwitchPrefixes: activeSpeakerPrefixes,
             onDecision: { command, decision, evidence in
                 // Counts and timing only, never words: separates a missed pause from discussion.
                 var numbers = ["left_words": Double(evidence.leftWords), "name_words": Double(evidence.nameWords)]
@@ -1659,9 +1747,8 @@ import SwiftUI
             guard !quitting else { return }
             if busy {
                 for item in actions {
-                    let id = reserveSpeech(item.action.rawValue, range: audioPhraseDetectors[item.action]?.acceptedRange,
+                    _ = reserveSpeech(item.action.rawValue, range: audioPhraseDetectors[item.action]?.acceptedRange, discard: true,
                         repeatAction: { [weak self] id in self?.repeatAudio(item.action, receipt: id) })
-                    finishCommand(id, .superseded)
                 }
                 return
             }

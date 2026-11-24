@@ -1,11 +1,34 @@
 #!/bin/zsh
-# Build the app bundle, embed pinned libraries, then sign inside-out.
+# Build a release bundle, allocate its version, embed libraries and sign inside-out. — GPT-6.1 Sol
 set -euo pipefail
 cd "${0:A:h:h}"
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 export HELLOCHAT_BUILD_DIR="$build_dir"
 app="$build_dir/HelloChat.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$build_dir/HelloChat.iconset"
+# A native file lock serializes local signed builds and releases itself after a crash.
+# CI already owns its release lock and allocation. — GPT-6.1 Sol
+if [[ -z "${HELLOCHAT_RELEASE_TAG:-}" && "${HELLOCHAT_RELEASE_LOCKED:-}" != "$PWD" ]]; then
+  exec python3 - "${0:A}" "$PWD" <<'PY'
+import fcntl, os, subprocess, sys
+script, root = sys.argv[1:]
+lock_path = subprocess.check_output(['git', 'rev-parse', '--git-path', 'hello-chat-release.lock'], text=True).strip()
+with open(lock_path, 'a') as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit('Another local release is building; leave its version allocation alone.')
+    environment = dict(os.environ, HELLOCHAT_RELEASE_LOCKED=root)
+    sys.exit(subprocess.call(['zsh', script], env=environment, pass_fds=(lock.fileno(),)))
+PY
+fi
+# Local signed releases use the shared allocator, and only record a successful
+# build as the new source floor. Found and fixed by GPT-6.1 Sol.
+local_release=false
+if [[ -z "${HELLOCHAT_RELEASE_TAG:-}" ]]; then
+  cp Info.plist "$build_dir/SourceInfo.plist"
+  local_release=true
+fi
 swift scripts/make-icon.swift "$build_dir/icons"
 for spec in '16 16' '16@2x 32' '32 32' '32@2x 64' '128 128' '128@2x 256' '256 256' '256@2x 512' '512 512' '512@2x 1024'; do
   parts=(${=spec})
@@ -52,6 +75,13 @@ fi
 mkdir -p "$app/Contents/Resources/Sounds"
 cp Resources/Sounds/*.wav "$app/Contents/Resources/Sounds/"
 cp Info.plist "$app/Contents/Info.plist"
+if $local_release; then
+  python3 scripts/prepare-release.py --local --plist "$app/Contents/Info.plist" \
+    --installed-plist /Applications/HelloChat.app/Contents/Info.plist \
+    --commit "$(git rev-parse HEAD)" --output "$build_dir/local-release-manifest.json"
+else
+  [[ "$HELLOCHAT_RELEASE_TAG" == "v$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" ]] || { echo 'Allocated release tag differs from source version.' >&2; exit 1; }
+fi
 # Finder localizes the on-disk name through InfoPlist.strings. Derive the
 # English display name from the same bundle name used for public releases.
 display_name=$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$app/Contents/Info.plist")
@@ -88,4 +118,11 @@ else
   codesign --force --sign - --identifier com.ethansk.HeyChat --entitlements Resources/HelloChat.entitlements "$app"
 fi
 codesign --verify --deep --strict "$app"
+if $local_release; then
+  python3 - Info.plist "$build_dir/SourceInfo.plist" "$app/Contents/Info.plist" <<'PY'
+from pathlib import Path
+import runpy, sys
+runpy.run_path('scripts/prepare-release.py')['record_local_release'](*map(Path, sys.argv[1:]))
+PY
+fi
 echo "$app"

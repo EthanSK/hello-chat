@@ -112,6 +112,7 @@ write("Silent", voice(0.26, lambda t: (1050.0 / 4 ** (t / 0.085)) if t < 0.085 e
 
 # A rising two-note bell acknowledges opening the active Voice conversation.
 write("ShowVoice", hits(0.31, (0.035, 0.09, 0.205), (1746, 1556, 2093), WOOD, 43, 0.06))
+write("SpotifyVolume", hits(0.28, (0.0, 0.06, 0.15), (660, 880, 1100), BUBBLE, 35, 0.08))
 
 write("Rewind", hits(0.37, (0.0, 0.085, 0.185), (1397, 932, 740), SQUAREISH, 40, 0.1))
 write("RewindFive", hits(0.39, (0.0, 0.065, 0.23), (880, 698, 523), SQUAREISH, 38, 0.1))

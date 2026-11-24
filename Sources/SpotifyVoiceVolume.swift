@@ -135,10 +135,12 @@ enum SpotifyVolumeControl {
     func requestPermission() {
         let generation = self.generation
         queue.async { [weak self] in
-            do { try SpotifyVolumeControl.authorize(ask: true) }
-            catch { Diagnostics.shared.failure("spotify.permission.failed", error) }
+            let granted: Bool
+            do { try SpotifyVolumeControl.authorize(ask: true); granted = true }
+            catch { granted = false; Diagnostics.shared.failure("spotify.permission.failed", error) }
             Task { @MainActor [weak self] in
                 guard let self, self.generation == generation else { return }
+                if granted { self.permissionRequired = false }
                 self.reconcile(); self.monitor.refresh()
             }
         }
@@ -160,6 +162,31 @@ enum SpotifyVolumeControl {
         if enabled, presence == .active { reconcile(limitEdited: true) }
     }
 
+    func setVolume(to volume: Int) async throws -> Int {
+        generation += 1 // Older automatic checks cannot replace this command's permission result.
+        let generation = self.generation
+        let session = self.session
+        let preserve = enabled && presence != .inactive
+        let identifier = callIdentifier
+        do {
+            let actual: Int = try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    do { continuation.resume(returning: try session.setVolume(volume, preservingForCall: preserve, callIdentifier: identifier)) }
+                    catch { continuation.resume(throwing: error) }
+                }
+            }
+            if self.generation == generation { permissionRequired = false; message = "" }
+            return actual
+        } catch {
+            let cause = (error as? SpotifyVolumeOperationFailure)?.underlying ?? error
+            if self.generation == generation, case SpotifyControlError.permissionRequired = cause {
+                permissionRequired = true
+                message = "Allow Spotify control to set its volume."
+            }
+            throw error
+        }
+    }
+
     private func reconcile(limitEdited: Bool = false) {
         let limit = SpotifyVolumePolicy.limit()
         let state = enabled ? presence : .inactive
@@ -179,7 +206,7 @@ enum SpotifyVolumeControl {
                 ])
                 Task { @MainActor [weak self] in
                     guard let self, self.generation == generation else { return }
-                    self.permissionRequired = false
+                    if [.lowered, .restored, .manualChange, .unchanged].contains(result) { self.permissionRequired = false }
                     switch result {
                     case .lowered: self.message = "Spotify chat volume limit is \(limit)%."
                     case .restored: self.message = "Spotify volume restored."

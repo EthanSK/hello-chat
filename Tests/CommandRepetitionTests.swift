@@ -44,6 +44,10 @@ import Foundation
         disabled.update(["pause", "music", "five"], timings: nil)
         disabled.begin(id: UUID(), range: 0..<2, repeats: false) { id in calls += 1; disabled.finish(id, .submitted) }
         disabled.update(["pause", "music", "ten"], timings: nil); disabled.poll(); precondition(calls == 1)
+        let invalid = RepeatedCommands(); var invalidCalls = 0
+        invalid.update(["zoom", "zero"], timings: nil)
+        precondition(invalid.begin(id: UUID(), range: 0..<1, repeats: true) { _ in invalidCalls += 1 } == nil)
+        precondition(invalidCalls == 0, "An invalid initial count must fail before dispatch")
 
         let pending = RepeatedCommands(); calls = 0; let pendingID = UUID()
         pending.update(["switch", "speaker", "kitchen", "3"], timings: nil)
@@ -75,6 +79,33 @@ import Foundation
         precondition(orderedCalls == ["rewind"], "A later command waits for the preceding requested actions")
         while !pendingSteps.isEmpty { let step = pendingSteps.removeFirst(); ordered.finish(step.0, .confirmed) }
         precondition(orderedCalls == ["rewind", "rewind", "rewind", "pause", "pause"], "Every requested repetition runs in spoken order")
+
+        let independent = RepeatedCommands(); var independentCalls: [UUID] = []
+        independent.update(["speaker"], timings: nil)
+        independent.begin(id: UUID(), range: 0..<1, repeats: true) { independentCalls.append($0) }
+        independent.begin(id: UUID(), range: 0..<1, repeats: true) { independentCalls.append($0) }
+        precondition(independentCalls.count == 2, "Single actions reach their own queues without waiting for Bluetooth")
+        independentCalls.forEach { independent.finish($0, .confirmed) }
+
+        for expected in [RepeatedCommands.Outcome.confirmed, .submitted, .unknown] {
+            let cancelled = RepeatedCommands(); var result: RepeatedCommands.Progress?
+            cancelled.onProgress = { result = $0 }
+            cancelled.update(["speaker"], timings: nil)
+            let active = cancelled.begin(id: UUID(), range: 0..<1, repeats: true) { _ in }!
+            cancelled.cancelPending(); cancelled.finish(active, expected)
+            precondition(result?.outcome == expected, "A cancelled queue preserves an in-flight result")
+        }
+        let discarded = RepeatedCommands(); var discardCalls = 0; var discardedProgress: RepeatedCommands.Progress?
+        discarded.onProgress = { discardedProgress = $0 }
+        discarded.update(["mute", "three"], timings: nil)
+        precondition(discarded.begin(id: UUID(), range: 0..<1, repeats: true, discard: true) { _ in discardCalls += 1 } == nil)
+        discarded.poll()
+        precondition(discardCalls == 0 && discardedProgress?.requested == 3 && discardedProgress?.outcome == .superseded,
+                     "Busy Voice requests stay discarded, rather than running later")
+        for text in [["fixture", "zero"], ["fixture", "101"]] {
+            let invalid = RepeatedCommands(); invalid.update(text, timings: nil)
+            precondition(invalid.begin(id: UUID(), range: 0..<1, repeats: true) { _ in preconditionFailure("Invalid count dispatched") } == nil)
+        }
 
         let rewind = RepeatedCommands(); calls = 0
         rewind.update(["rewind", "video", "five"], timings: nil)

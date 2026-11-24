@@ -6,10 +6,15 @@ enum SpotifyControlError: Error {
     case permissionRequired, unavailable, invalidReply, volumeChanged, appleEvent(Int32)
 }
 
+struct SpotifyVolumeOperationFailure: Error {
+    let underlying: Error
+    let beforeDispatch: Bool
+}
+
 enum VoiceCallPresence: String { case active, inactive, unknown }
 
 enum SpotifyVolumePolicy {
-    // Ethan's persistent voice-call preference is 50%, replacing 30%.
+    // Factory fallback only; a user's saved Maximum volume takes precedence.
     static let maximumVolume = 50
     static let preferenceKey = "spotifyVoiceVolumeLimit"
     static func limit(in defaults: UserDefaults = .standard) -> Int {
@@ -209,16 +214,43 @@ final class SpotifyVolumeSession: @unchecked Sendable {
 
     init(access: Access) { self.access = access }
 
+    // A spoken absolute volume is a deliberate manual choice, including when it
+    // equals our current cap. Persist that override before sending so End/Quit
+    // cannot restore the pre-call value over it. — GPT-6.1 Sol
+    func setVolume(_ volume: Int, preservingForCall: Bool, callIdentifier: String?) throws -> Int {
+        var dispatched = false
+        do {
+            guard (0...100).contains(volume) else { throw SpotifyControlError.invalidReply }
+            try load()
+            guard let current = try access.read() else { throw SpotifyControlError.unavailable }
+            guard (0...100).contains(current) else { throw SpotifyControlError.invalidReply }
+            if var saved = lease ?? (preservingForCall
+                ? SpotifyVolumeLease(original: current, applied: current, confirmed: true, callIdentifier: callIdentifier, cap: 100) : nil) {
+                saved.mutePhase = .manualOverride
+                if preservingForCall { saved.callIdentifier = callIdentifier }
+                try keep(saved)
+            }
+            if current == volume { return current }
+            dispatched = true
+            return try access.write(volume, current, true)
+        } catch {
+            throw SpotifyVolumeOperationFailure(underlying: error, beforeDispatch: !dispatched)
+        }
+    }
+
+    private func load() throws {
+        guard !loaded else { return }
+        let saved = try access.load()
+        if let saved, !saved.valid { throw CocoaError(.fileReadCorruptFile) }
+        lease = saved; loaded = true
+    }
+
     // Save BEFORE sending the volume change. A crash between the event and its
     // reply must not lose the original value or save the cap as the next original.
     func reconcile(_ call: VoiceCallPresence, preservingManualOverride: Bool = false,
                    callIdentifier: String? = nil, microphoneMuted: Bool? = nil,
                    limit: Int = SpotifyVolumePolicy.maximumVolume, limitEdited: Bool = false) throws -> Result {
-        if !loaded {
-            let saved = try access.load()
-            if let saved, !saved.valid { throw CocoaError(.fileReadCorruptFile) }
-            lease = saved; loaded = true
-        }
+        try load()
         guard call != .unknown else { return .uncertain }
         if call == .active, let currentID = callIdentifier, let previousID = lease?.callIdentifier,
            previousID != currentID {

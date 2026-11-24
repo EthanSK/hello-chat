@@ -29,7 +29,9 @@ If Apple returns HTTP 403 for a missing or expired agreement, open Agreements fo
 
 ## Version ownership
 
-`Info.plist` owns the requested major/minor version baseline and installed preview build floor. The serialized release job selects the next public patch above existing releases, starting with `1.0.0`. It assigns a build above the source floor, workflow counter offset and last published build. The generated `release-manifest.json` records the source commit, version and build; it is an immutable receipt, not another editable configuration file.
+`Info.plist` owns the source version and build floor. Every local signed release through `zsh scripts/build.sh` automatically advances the patch version and build above both that floor and the installed H Chat bundle. A successful signed build updates only those two source fields; a failed build leaves the source floor unchanged. No manual version flag or second version file is needed. Ordinary `swift build` compilation does not allocate a release. User-requested — 2026-11-24.
+
+The serialized public Release job uses the same allocator, selecting the next public patch above existing releases or the newer source baseline. It assigns a build above the source floor, workflow counter offset and last published build. Its prepared tag bypasses local allocation, so CI does not increment twice. Generated `local-release-manifest.json` and public `release-manifest.json` record their source commit, version and build; these are immutable receipts, not editable configuration files.
 
 Do not bump a second version file or commit generated release metadata back to main. Do not replace published tags/assets. A retry or later push must still produce a build newer than the one offered to installed clients.
 

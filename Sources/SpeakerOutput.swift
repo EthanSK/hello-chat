@@ -156,6 +156,17 @@ struct SpeakerOutputSettings: Codable, Equatable {
     }
     var commands: [(pattern: PhrasePattern, output: String)] { commands(alternateSpellings: true) }
 
+    // Reserve multiword speaker prefixes while their destination is arriving. A custom bare
+    // “Switch” must not take ownership of every app command. Found by Claude Opus 5.5.
+    // Fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+    func commandPrefixes(alternateSpellings: Bool) -> [PhrasePattern] {
+        var seen = Set<String>()
+        return prefixForms(alternateSpellings: alternateSpellings).compactMap { form, _ in
+            guard PhraseMatcher.words(form).count > 1, seen.insert(PhraseList.key(form)).inserted else { return nil }
+            return PhrasePattern(text: form, similar: false)
+        }
+    }
+
     func commands(alternateSpellings: Bool) -> [(pattern: PhrasePattern, output: String)] {
         guard issue(alternateSpellings: alternateSpellings) == nil else { return [] }
         var result: [(PhrasePattern, String)] = [], seen = Set<String>()
@@ -219,7 +230,7 @@ extension StandaloneWake {
                                   dispatch: (String, Range<Int>) -> Void) {
         guard let first = commands.first,
               poll(at: time, phrase: first.pattern.text, similar: false, rejectNegated: true,
-                   patterns: commands.map(\.pattern), directOnly: true, onDecision: onDecision),
+                   patterns: commands.map(\.pattern), directOnly: true, embeddedCommand: true, onDecision: onDecision),
               let index = acceptedPatternIndex, commands.indices.contains(index), let range = acceptedRange
         else { return }
         dispatch(commands[index].output, range)
@@ -338,7 +349,9 @@ enum SpeakerOutput {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = [helper.path, "--", output]
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        // The helper returns structured errors on stdout. An unread stderr pipe can fill
+        // and block both the helper and H Chat's completion receipt. Found and fixed by GPT-6.1 Sol.
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -349,7 +362,8 @@ enum SpeakerOutput {
                 let message = (["Switched speakers to \(output)"] + (result.warnings ?? [])).joined(separator: ". ")
                 return SpeakerSwitchOutcome(phase: .confirmed, message: message)
             }
-            return .failure((result.errors ?? ["Couldn't switch speakers."]).joined(separator: " "))
+            let errors = (result.errors ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            return .failure(errors.isEmpty ? "Couldn't switch speakers." : errors.joined(separator: " "))
         } catch { return .failure("Couldn't start audio switch: \(error.localizedDescription)", beforeDispatch: true) }
     }
 }

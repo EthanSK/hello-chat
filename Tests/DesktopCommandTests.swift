@@ -127,6 +127,25 @@ private final class Probe {
         let combined = ["Switch app", "Open app", "Switch up", "Switch to", "Switch"].map {
             PhrasePattern(slot: .switchAppPhrase, text: $0, similar: true, dictionaries: .init())
         }
+        let speakerPrefixes = ["Switch speakers", "Switch speaker", "Switch audio"].map { PhrasePattern(text: $0, similar: false) }
+        var incompleteSpeaker = AppCommandDetector()
+        incompleteSpeaker.audio(level: 0.2, seconds: 0.1)
+        incompleteSpeaker.update("Switch speakers kitchen", at: 1, timings: [("switch",0,0.2),("speakers",0.2,0.4),("kitchen",1.3,1.5)])
+        incompleteSpeaker.audio(level: 0, seconds: 1)
+        check(incompleteSpeaker.poll(switchPrefixes: combined, openPrefixes: [], reservedSwitchPrefixes: speakerPrefixes).isEmpty,
+              "A hesitation after a speaker prefix cannot open an app named Speakers")
+        var explicitApp = AppCommandDetector()
+        explicitApp.audio(level: 0.2, seconds: 0.1); explicitApp.update("Switch app Speakers", at: 1)
+        explicitApp.audio(level: 0, seconds: 1)
+        check(explicitApp.poll(switchPrefixes: combined, openPrefixes: [], reservedSwitchPrefixes: speakerPrefixes).first?.name == "speakers",
+              "Explicit Switch app keeps its existing meaning")
+        var appTimingFlip = AppCommandDetector()
+        appTimingFlip.audio(level: 0.2, seconds: 0.1)
+        appTimingFlip.update("Switch app Chrome", at: 3, timings: [("switch",3,3),("app",3,3),("chrome",3,3)])
+        appTimingFlip.audio(level: 0, seconds: 1)
+        check(appTimingFlip.poll(switchPrefixes: combined, openPrefixes: []).count == 1, "Arrival-timed app request runs once")
+        appTimingFlip.update("Switch app Chrome please", at: 4, timings: [("switch",0,0.2),("app",0.2,0.4),("chrome",0.4,0.6),("please",0.6,0.8)])
+        check(appTimingFlip.poll(switchPrefixes: combined, openPrefixes: []).isEmpty, "Audio timing replacement cannot reopen the app")
         var speakerThenApp = AppCommandDetector()
         speakerThenApp.audio(level: 0.2, seconds: 0.1)
         speakerThenApp.update("Switch audio to kitchen. Switch app Chrome", at: 1)

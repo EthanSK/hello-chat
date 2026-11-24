@@ -82,10 +82,12 @@ struct StandaloneWake {
     private var sentenceStarts: [Int] = []
     private var desktopBoundaries: [Int] = []
     private var audioBoundary = 0
+    private var directAudioBoundaries: [Int] = []
     private var quiet = 1.0
     private var audioTime: Double?
     private var changedAt = 0.0
     private var consumed = 0
+    private var consumedUntimed = 0
     private var consumedAudioRanges: [Range<Double>] = []
     private var heardSpeech = false
     private var revision = 0
@@ -96,8 +98,9 @@ struct StandaloneWake {
     struct Occurrence {
         let words: Range<Int>
         let audio: Range<Double>?
+        var timed = true
         func overlaps(_ other: Self) -> Bool {
-            if let audio, let compared = other.audio { return audio.overlaps(compared) }
+            if timed && other.timed, let audio, let compared = other.audio { return audio.overlaps(compared) }
             return words.overlaps(other.words)
         }
     }
@@ -108,8 +111,10 @@ struct StandaloneWake {
     mutating func reset() { self = StandaloneWake(requiredPause: requiredPause, speakerRoute: speakerRoute) }
     mutating func resetContext() {
         context = []; sentenceStarts = []; desktopBoundaries = []; audioBoundary = 0
+        directAudioBoundaries = []
         wordTimings = nil
         consumed = 0; revision += 1; quiet = 0
+        consumedUntimed = 0
         consumedAudioRanges.removeAll()
         waitingForPause = false
         audioTime = nil
@@ -121,7 +126,13 @@ struct StandaloneWake {
         audioTime = time
         if level < 0.02 { quiet += seconds }
         else {
-            if quiet >= 0.35, heardSpeech { audioBoundary = context.count }
+            if quiet >= 0.35, heardSpeech {
+                audioBoundary = context.count
+                if directAudioBoundaries.last != context.count {
+                    directAudioBoundaries.append(context.count)
+                    if directAudioBoundaries.count > 64 { directAudioBoundaries.removeFirst() }
+                }
+            }
             heardSpeech = true; quiet = 0
         }
     }
@@ -140,6 +151,9 @@ struct StandaloneWake {
         if audioBoundary > 0 {
             let common = zip(context, words).prefix { $0 == $1 }.count
             audioBoundary = min(audioBoundary, common)
+            var clamped: [Int] = []
+            for boundary in directAudioBoundaries.map({ min($0, common) }) where clamped.last != boundary { clamped.append(boundary) }
+            directAudioBoundaries = clamped
         }
         context = words; sentenceStarts = starts; desktopBoundaries = boundaries; changedAt = time; revision += 1
     }
@@ -181,13 +195,17 @@ struct StandaloneWake {
         waitingForPause = false
         occurrences.removeAll(keepingCapacity: true)
         var accepted: (start: Int, end: Int)?
+        var evaluatedFreshOccurrence = false
+        var rejection = "rejected_context"
         for (index, match) in candidates.enumerated() {
+            if index < consumedUntimed { continue }
             if let range = audioRanges[index] {
                 if consumedAudioRanges.contains(where: { $0.overlaps(range) }) {
                     rememberConsumed(range)
                     continue
                 }
             } else if index + 1 <= consumed { continue }
+            evaluatedFreshOccurrence = true
             let weakSplit = patterns.contains { !$0.ending && $0.similar && PhraseMatcher.words($0.text) == ["hello", "chat"]
                 && $0.dictionaries[PhraseMatcher.words($0.text).joined()] == nil }
                 && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
@@ -203,8 +221,14 @@ struct StandaloneWake {
                     continue
                 }
             }
-            if (directOnly && !isDirectCommand(start: match.start, end: match.end, allowEmbedded: embeddedCommand)) ||
-                isMention(start: match.start, end: match.end, rejectNegated: rejectNegated, directOnly: directOnly) || weakSplit {
+            if directOnly && !isDirectCommand(start: match.start, end: match.end, allowEmbedded: embeddedCommand) {
+                rejection = "rejected_context"
+                consumed = index + 1
+                rememberConsumed(audioRanges[index])
+                continue
+            }
+            if isMention(start: match.start, end: match.end, rejectNegated: rejectNegated, directOnly: directOnly) || weakSplit {
+                rejection = "rejected_mention"
                 consumed = index + 1
                 rememberConsumed(audioRanges[index])
                 continue
@@ -215,6 +239,7 @@ struct StandaloneWake {
                 guard let timings = wordTimings, timings.map(\.word) == context,
                       timings[match.end].start.isFinite,
                       timings[match.end].start - timings[match.end - 1].end + 1e-9 >= requiredPause else { // Avoid rounding an exact configured gap below the boundary.
+                    rejection = "rejected_pause"
                     consumed = index + 1
                     rememberConsumed(audioRanges[index])
                     continue
@@ -233,7 +258,8 @@ struct StandaloneWake {
             }
             accepted = match
             // If one delayed hypothesis contains two physical output requests, the last destination wins.
-            if collectOccurrences { occurrences.append(Occurrence(words: match.start..<match.end, audio: audioRanges[index])) }
+            if collectOccurrences { occurrences.append(Occurrence(words: match.start..<match.end, audio: audioRanges[index],
+                timed: DesktopSpeechBoundaries.hasAudioSpans(alignedTimings, in: match.start..<match.end))) }
             if !speakerRoute && !collectOccurrences { break }
         }
         acceptedRange = accepted.map { $0.start..<$0.end }
@@ -244,10 +270,13 @@ struct StandaloneWake {
         // from replaying either a rejected mention or an accepted address.
         if !waitingForPause {
             consumed = max(consumed, candidates.count)
+            for (index, match) in candidates.enumerated() where !DesktopSpeechBoundaries.hasAudioSpans(alignedTimings, in: match.start..<match.end) {
+                consumedUntimed = max(consumedUntimed, index + 1)
+            }
             audioRanges.forEach { rememberConsumed($0) }
         }
-        if !candidates.isEmpty {
-            onDecision?(directAddress ? (requiredPause > 0 ? "accepted_after_pause" : "accepted_without_pause") : (waitingForPause ? "waiting_for_pause" : "rejected_context_or_consumed"), quiet, time - changedAt)
+        if evaluatedFreshOccurrence {
+            onDecision?(directAddress ? (requiredPause > 0 ? "accepted_after_pause" : "accepted_without_pause") : (waitingForPause ? "waiting_for_pause" : rejection), quiet, time - changedAt)
         }
         return directAddress
     }
@@ -275,6 +304,10 @@ struct StandaloneWake {
         guard let end = endPatterns.compactMap({ $0.matches(in: context, timings: wordTimings).last?.end }).max() else { return }
         let earlier = Array(Set(patterns.flatMap { $0.matches(in: context, timings: wordTimings) }.filter { $0.end <= end }.map { $0.start..<$0.end })) // Count the same ranges as poll when two spellings share one action.
         consumed = max(consumed, earlier.count)
+        let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
+        if earlier.contains(where: { !DesktopSpeechBoundaries.hasAudioSpans(alignedTimings, in: $0) }) {
+            consumedUntimed = max(consumedUntimed, earlier.count)
+        }
         if let wordTimings, wordTimings.map(\.word) == context {
             for match in earlier {
                 let start = wordTimings[match.lowerBound].start, finish = wordTimings[match.upperBound - 1].end
@@ -294,7 +327,8 @@ struct StandaloneWake {
     private func isMention(start: Int, end: Int, rejectNegated: Bool, directOnly: Bool) -> Bool {
         if DesktopSpeechBoundaries.introducesQuotation(words: context, before: start, sentences: sentenceStarts) { return true }
         let (sentenceStart, sentenceEnd) = contextBounds(start: start, end: end, directOnly: directOnly)
-        let left = Array(context[max(min(audioBoundary, start), sentenceStart)..<start].suffix(3))
+        let boundary = directOnly ? (directAudioBoundaries.last(where: { $0 <= start }) ?? 0) : min(audioBoundary, start)
+        let left = Array(context[max(boundary, sentenceStart)..<start].suffix(3))
         let right = Array(context[end..<sentenceEnd].prefix(3))
         // Mute requests are reversible toggles, so "don't mute chat" is not a
         // command. Leave the already-tuned wake behavior unchanged.
@@ -320,7 +354,11 @@ struct StandaloneWake {
 
     private func isDirectCommand(start: Int, end: Int, allowEmbedded: Bool = false) -> Bool {
         let (sentenceStart, sentenceEnd) = contextBounds(start: start, end: end, directOnly: true)
-        let left = context[max(min(audioBoundary, start), sentenceStart)..<start]
+        // A hesitation inside a command cannot erase its preceding negation/reference.
+        // Preserve the established non-direct wake/End rules. Found by Claude Opus 5.5.
+        // Fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+        let boundary = directAudioBoundaries.last(where: { $0 <= start }) ?? 0
+        let left = context[max(boundary, sentenceStart)..<start]
         let right = context[end..<sentenceEnd].drop(while: { $0 == "please" || $0 == "now" })
         let politeOpeners: Set<String> = ["please", "can", "could", "would", "you", "okay", "ok", "now", "and", "then"]
         // A fixed command is complete at its last keyword. Requiring an empty tail made
@@ -328,25 +366,40 @@ struct StandaloneWake {
         // target-taking prose; ordinary mention/negation checks still run in isMention.
         let deferredOrQualified: Set<String> = ["later", "tomorrow", "tonight", "after", "when", "if", "unless", "on", "into"]
         guard !(right.first.map(deferredOrQualified.contains) ?? false) else { return false }
+        if allowEmbedded, let first = right.first,
+           ["never", "did", "didn", "didnt", "won", "wont"].contains(first) { return false }
         if left.allSatisfy(politeOpeners.contains) { return true }
-        // Ethan's 23 November interruption: narration + “pause video” + narration.
-        // Absolute browser playback commands do not need a silence gap or a polite opener.
-        // Keep plans, quotations and references out; isMention still applies after this test. — GPT-6.1 Sol
-        if allowEmbedded {
-            let governed: Set<String> = ["i", "we", "you", "they", "he", "she", "it", "ll", "will", "would", "should",
-                "can", "could", "might", "may", "must", "to", "want", "wanna", "need", "try", "trying",
-                "think", "thinking", "thought", "mean", "means", "meant", "pressed", "pressing", "clicked", "clicking"]
-            if !left.suffix(3).contains(where: governed.contains) { return true }
-        }
         // Ethan's "also switch speaker kitchen" and "but switch audio kitchen" arrived
         // inside a single recognition segment with other speech. A conjunction can start a
         // fresh imperative. Keep the ordinary quote, negation and qualified-command guards.
-        guard speakerRoute, let conjunction = left.lastIndex(where: { $0 == "also" || $0 == "but" }),
-              left[left.index(after: conjunction)...].allSatisfy(politeOpeners.contains) else { return false }
-        let previous = left[..<conjunction].last
-        let governed: Set<String> = ["i", "we", "you", "they", "he", "she", "it", "ll", "can", "could", "may",
-                                     "might", "must", "should", "will", "would", "to", "not", "never", "t",
-                                     "anything", "nothing", "all", "everything", "only"]
-        return previous.map { !governed.contains($0) } ?? true
+        if speakerRoute, let conjunction = left.lastIndex(where: { $0 == "also" || $0 == "but" }),
+           left[left.index(after: conjunction)...].allSatisfy(politeOpeners.contains) {
+            let previous = left[..<conjunction].last
+            let governed: Set<String> = ["i", "we", "you", "they", "he", "she", "it", "ll", "can", "could", "may",
+                                         "might", "must", "should", "will", "would", "to", "not", "never", "t",
+                                         "anything", "nothing", "all", "everything", "only"]
+            return previous.map { !governed.contains($0) } ?? true
+        }
+        // Exact absolute playback and configured speaker requests can interrupt narration.
+        // Preserve the contrast rule above (“anything but…”), plus plans and mention checks;
+        // no silence gap or post-keyword wait is added. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+        if allowEmbedded {
+            let governed: Set<String> = ["i", "we", "you", "they", "he", "she", "it", "ll", "will", "would", "should",
+                "can", "could", "might", "may", "must", "to", "want", "wanna", "need", "try", "trying",
+                "think", "thinking", "thought", "mean", "means", "meant", "pressed", "pressing", "clicked", "clicking",
+                "except", "avoid", "without", "rather", "instead", "because", "cause", "why", "how", "come",
+                "command", "typing", "typed", "type", "didn", "didnt", "won", "wont", "wouldn", "couldn",
+                "shouldn", "isn", "wasn", "aren", "wouldnt", "couldnt", "shouldnt", "isnt", "wasnt", "arent"]
+            if !left.suffix(3).contains(where: governed.contains) { return true }
+        }
+        return false
+    }
+
+    // Value commands retain their prefix's occurrence while ASR completes the
+    // argument. Recheck the same context rules for the whole revised value.
+    func permitsDirectCommand(in range: Range<Int>) -> Bool {
+        guard range.lowerBound >= 0, range.upperBound <= context.count, !range.isEmpty else { return false }
+        return isDirectCommand(start: range.lowerBound, end: range.upperBound)
+            && !isMention(start: range.lowerBound, end: range.upperBound, rejectNegated: true, directOnly: true)
     }
 }

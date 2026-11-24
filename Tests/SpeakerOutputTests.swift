@@ -22,16 +22,21 @@ import Foundation
                 return (word: word, start: time, end: time + 0.12)
             }
             detector.update(text, at: 1, timings: timings)
-            guard let first = commands.first,
-                  detector.poll(at: 1, phrase: first.pattern.text, similar: false, rejectNegated: true,
-                                patterns: commands.map(\.pattern), directOnly: true),
-                  let index = detector.acceptedPatternIndex else { return nil }
-            precondition(!detector.poll(at: 2, phrase: first.pattern.text, similar: false, rejectNegated: true,
-                                        patterns: commands.map(\.pattern), directOnly: true), "An occurrence must not replay")
-            return commands[index].output
+            var selected: String?
+            detector.dispatchSpeaker(at: 1, commands: commands) { output, _ in selected = output }
+            detector.dispatchSpeaker(at: 2, commands: commands) { _, _ in preconditionFailure("An occurrence must not replay") }
+            return selected
         }
         precondition(detect("switch speakers") == nil, "A missing target must not change the output")
         precondition(detect("switch speakers computer") == "Scarlett")
+        for text in ["because switch speakers kitchen didn't work", "the command switch speakers kitchen",
+                     "nothing happened switch speakers kitchen never works", "how come switch speakers kitchen",
+                     "typing switch speakers kitchen", "music didn't switch speakers kitchen",
+                     "the app won't switch speakers kitchen", "Ethan didn't switch speakers kitchen"] {
+            precondition(detect(text) == nil, text)
+        }
+        precondition(detect("of an intersection switch speakers kitchen all over") == "Soundcore",
+                     "The recorded mixed-narration command dispatches without a silence gap")
         precondition(detect("double starting it now switch speakers computer", pauseBefore: "switch") == "Scarlett")
         for text in ["switch speakers kitchen", "switch speaker, kitchen", "switch audio kitchen",
                      "include vegetables also switch speaker kitchen check recent orders but switch audio kitchen",
@@ -42,9 +47,50 @@ import Foundation
         }
         for text in ["just recognize switch audio kitchen and it didn't switch", "I should be able to say switch speakers kitchen",
                      "I might also switch speaker kitchen", "don't also switch audio kitchen", "anything but switch speaker kitchen",
-                     "also switch audio kitchen later", "I said also switch speakers kitchen"] {
+                     "also switch audio kitchen later", "I said also switch speakers kitchen",
+                     "anything except switch speaker kitchen", "avoid switch speaker kitchen",
+                     "instead switch speakers kitchen later", "I want to switch speakers kitchen",
+                     "the phrase switch speakers kitchen", "say switch speakers kitchen"] {
             precondition(detect(text) == nil, text)
         }
+        for text in ["because switch speakers kitchen didn't work", "the command switch speakers kitchen",
+                     "nothing happened switch speakers kitchen never works", "how come switch speakers kitchen",
+                     "typing switch speakers kitchen", "music didn't switch speakers kitchen", "the app won't switch speakers kitchen",
+                     "Ethan didn't switch speakers kitchen", "it wouldnt switch speakers kitchen"] {
+            precondition(detect(text) == nil, text)
+        }
+        for prefix in ["don't switch speakers", "I should be able to say switch speakers", "the app won't switch speakers"] {
+            var paused = StandaloneWake(speakerRoute: true)
+            paused.audio(level: 0.2, seconds: 0.2)
+            paused.update(prefix, at: 1)
+            paused.audio(level: 0, seconds: 0.6)
+            paused.audio(level: 0.2, seconds: 0.1)
+            paused.update(prefix + " kitchen", at: 2)
+            paused.dispatchSpeaker(at: 2, commands: commands) { _, _ in preconditionFailure("An internal hesitation must preserve context: " + prefix) }
+        }
+        var timingFlip = StandaloneWake(speakerRoute: true)
+        timingFlip.audio(level: 0.2, seconds: 0.2)
+        var flipCalls = 0
+        timingFlip.update("switch speakers kitchen", at: 3, timings: [("switch",3,3),("speakers",3,3),("kitchen",3,3)])
+        timingFlip.dispatchSpeaker(at: 3, commands: commands) { _, _ in flipCalls += 1 }
+        timingFlip.update("switch speakers kitchen now", at: 4, timings: [("switch",0,0.2),("speakers",0.2,0.4),("kitchen",0.4,0.6),("now",0.6,0.8)])
+        timingFlip.dispatchSpeaker(at: 4, commands: commands) { _, _ in flipCalls += 1 }
+        precondition(flipCalls == 1, "Replacing arrival estimates with audio spans cannot replay a speaker switch")
+        var musicFlip = StandaloneWake()
+        musicFlip.audio(level: 0.2, seconds: 0.2)
+        let music = [PhrasePattern(text: "pause music", similar: false), PhrasePattern(text: "play music", similar: false)]
+        musicFlip.update("pause music", at: 3, timings: [("pause",3,3),("music",3,3)])
+        precondition(musicFlip.poll(at: 3, phrase: "pause music", similar: false, patterns: music, directOnly: true))
+        musicFlip.update("play music now", at: 4, timings: [("play",0,0.2),("music",0.2,0.4),("now",0.4,0.6)])
+        precondition(!musicFlip.poll(at: 4, phrase: "pause music", similar: false, patterns: music, directOnly: true), "A revised toggle phrase cannot toggle again")
+        enum Playback: CaseIterable { case pause, play }
+        var revisedAction = CommandPhraseDetectors<Playback>()
+        let playbackPatterns: [Playback: [PhrasePattern]] = [.pause: [.init(text: "pause video", similar: false)], .play: [.init(text: "play video", similar: false)]]
+        revisedAction.audio(level: 0.2, seconds: 0.2)
+        revisedAction.update("pause video", at: 3, timings: [("pause",3,3),("video",3,3)])
+        precondition(revisedAction.poll(at: 3, aliases: playbackPatterns).count == 1)
+        revisedAction.update("play video now", at: 4, timings: [("play",0,0.2),("video",0.2,0.4),("now",0.4,0.6)])
+        precondition(revisedAction.poll(at: 4, aliases: playbackPatterns).isEmpty, "Changing action and timing together still represents one utterance")
         // In the observed microphone transcript, discussion ran into an actual saved phrase.
         // A short pause before the quote must not turn the end of the sentence into a command.
         for text in ["it's a separate case where switch speakers kitchen didn't",
@@ -191,12 +237,16 @@ import Foundation
         try! "import json,sys\nprint(json.dumps({'status':'ok','output':sys.argv[-1], 'warnings':['Input kept']}))\n".write(to: fake, atomically: true, encoding: .utf8)
         let success = SpeakerOutput.run("Example device", helper: fake)
         precondition(success.verified && success.message == "Switched speakers to Example device. Input kept")
+        try! "import json,sys\nsys.stderr.write('diagnostic' * 131072)\nprint(json.dumps({'status':'ok','output':sys.argv[-1]}))\n".write(to: fake, atomically: true, encoding: .utf8)
+        precondition(SpeakerOutput.run("Example device", helper: fake).verified, "Verbose helper diagnostics must not block completion")
         try! "import json\nprint(json.dumps({'status':'ok','output':'Wrong device'}))\n".write(to: fake, atomically: true, encoding: .utf8)
         precondition(SpeakerOutput.run("Example device", helper: fake).phase == .unknown)
         precondition(SpeakerSwitchOutcome.failure("Missing helper", beforeDispatch: true).phase == .failedBeforeDispatch)
         try! "import json,sys\nprint(json.dumps({'status':'failed','errors':['Output unavailable']})); sys.exit(1)\n".write(to: fake, atomically: true, encoding: .utf8)
         let failure = SpeakerOutput.run("Example device", helper: fake)
         precondition(!failure.verified && failure.message == "Output unavailable")
+        try! "import json\nprint(json.dumps({'status':'failed','errors':[]}))\n".write(to: fake, atomically: true, encoding: .utf8)
+        precondition(SpeakerOutput.run("Example device", helper: fake).message == "Couldn't switch speakers.")
         print("Speaker output configuration, recognition and helper results passed")
     }
 }

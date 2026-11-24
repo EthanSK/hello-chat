@@ -19,6 +19,18 @@ import Foundation
             try journal.decide(action: action, target: target, session: session, frame: id, from: 997, through: 1002, allowFallback: claim)
         }
         func expect(_ value: String, _ other: String) { precondition(value == other, "Expected "+other+", got "+value) }
+        let valueJournal = SpokenCommandJournal(directory: path.appendingPathComponent("volume"), now: { 1000 })
+        guard case .run(let valueID) = try valueJournal.begin("spotifyVolumePhrase", target: "40", session: session, at: 999) else { fatalError() }
+        valueJournal.progress(valueID, requested: 1, completed: 1, phase: .confirmed)
+        precondition(!valueJournal.retarget(valueID, to: "45"), "Ordinary targets cannot revise a completed action")
+        precondition(valueJournal.retarget(valueID, to: "45", revisingValue: true))
+        try expect(valueJournal.decide(action: "spotifyVolumePhrase", target: "45", session: session, frame: frame,
+                                      from: 997, through: 1002, allowFallback: true), "attempted")
+        valueJournal.progress(valueID, requested: 1, completed: 1, phase: .confirmed)
+        try expect(valueJournal.decide(action: "spotifyVolumePhrase", target: "45", session: session, frame: frame,
+                                      from: 997, through: 1002, allowFallback: true), "confirmed")
+        let values = try JSONDecoder().decode([SpokenCommandJournal.Entry].self, from: Data(contentsOf: path.appendingPathComponent("volume/recent.json")))
+        precondition(values.count == 1 && values[0].id == valueID && values[0].target == "45", "Value revisions preserve one durable receipt")
         let music = "pauseMusicPhrase"
         guard case .run(let receipt) = try journal.begin(music, target: "", session: session, at: 999) else { fatalError() }
         try expect(decision(music), "attempted")

@@ -81,6 +81,9 @@ struct AppCommandDetector {
     private static let maximumAudioBoundaries = 64
     private var consumedAudio: [Range<Double>] = []
     private var consumedCount = 0
+    // Reserving a later speaker prefix must leave an earlier app request eligible.
+    // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+    private var consumedUntimed: Set<Int> = []
     private var suppressedStarts: Set<Int> = []
     private var revision = 0
     private var checkedRevision = -1
@@ -143,7 +146,8 @@ struct AppCommandDetector {
     mutating func consume(overlapping range: Range<Int>, switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern]) {
         let found = prefixes(switchPrefixes: switchPrefixes, openPrefixes: openPrefixes)
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
-        for prefix in found where (prefix.start..<prefix.end).overlaps(range) {
+        for (index, prefix) in found.enumerated() where (prefix.start..<prefix.end).overlaps(range) {
+            if !DesktopSpeechBoundaries.hasAudioSpans(alignedTimings, in: prefix.start..<prefix.end) { consumedUntimed.insert(index) }
             if let audio = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
                 if !consumedAudio.contains(where: { $0.overlaps(audio) }) { consumedAudio.append(audio) }
             } else { suppressedStarts.insert(prefix.start) }
@@ -159,14 +163,16 @@ struct AppCommandDetector {
     // `reserved` lists another command's own phrases (Show voice). Words that form one of them are
     // never an app request, whether or not that command itself was accepted, so "Show voice" can't
     // become "Show" followed by an app named Voice.
-    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern], reserved: [PhrasePattern] = [],
+    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern], reserved: [PhrasePattern] = [], reservedSwitchPrefixes: [PhrasePattern] = [],
                        onDecision: ((AppCommandKind, String, Evidence) -> Void)? = nil) -> [AppCommandCandidate] {
         guard heardSpeech, checkedRevision != revision || waiting else { return [] }
         checkedRevision = revision; waiting = false
         var result: [AppCommandCandidate] = []
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
         let reservedRanges = reserved.flatMap { $0.matches(in: context, timings: wordTimings, forReservation: true) }.map { $0.start..<$0.end }
+        let reservedSwitchRanges = reservedSwitchPrefixes.flatMap { $0.matches(in: context, timings: wordTimings, forReservation: true) }.map { $0.start..<$0.end }
         for (index, prefix) in prefixes(switchPrefixes: switchPrefixes, openPrefixes: openPrefixes).enumerated() {
+            if consumedUntimed.contains(index) { continue }
             if suppressedStarts.contains(prefix.start) { continue }
             if let range = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
                 if consumedAudio.contains(where: { $0.overlaps(range) }) { continue }
@@ -184,7 +190,8 @@ struct AppCommandDetector {
             } else { elapsed = quiet }
             var evidence = Self.evidence(prefix: prefix.start, end: sentenceEnd, timings: alignedTimings)
             evidence.elapsed = elapsed.isFinite ? elapsed : nil
-            if reservedRanges.contains(where: { $0.overlaps(prefix.start..<sentenceEnd) }) {
+            if reservedRanges.contains(where: { $0.overlaps(prefix.start..<sentenceEnd) }) ||
+               (prefix.kind == .switchApp && reservedSwitchRanges.contains(where: { $0.overlaps(prefix.start..<prefix.end) })) {
                 consume(index: index, start: prefix.start, end: prefix.end)
                 onDecision?(prefix.kind, "rejected_reserved", evidence)
                 continue
@@ -305,6 +312,7 @@ struct AppCommandDetector {
     private mutating func consume(index: Int, start: Int, end: Int) {
         consumedCount = max(consumedCount, index + 1)
         let alignedTimings = wordTimings.flatMap { $0.map(\.word) == context ? $0 : nil }
+        if !DesktopSpeechBoundaries.hasAudioSpans(alignedTimings, in: start..<end) { consumedUntimed.insert(index) }
         if let range = audioRange(start: start, end: end, timings: alignedTimings),
            !consumedAudio.contains(where: { $0.overlaps(range) }) { consumedAudio.append(range) }
     }

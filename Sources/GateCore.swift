@@ -58,7 +58,7 @@ struct MicrophoneOwnership {
 enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
     case pauseVideoPhrase, playVideoPhrase, rewindVideoPhrase, rewindFivePhrase, rewindTenPhrase
-    case pauseMusicPhrase, playMusicPhrase
+    case pauseMusicPhrase, playMusicPhrase, spotifyVolumePhrase
     case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase
     var id: String { rawValue }
     var label: String {
@@ -77,6 +77,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .rewindTenPhrase: return "Rewind ten seconds phrase"
         case .pauseMusicPhrase: return "Pause music phrase"
         case .playMusicPhrase: return "Play music phrase"
+        case .spotifyVolumePhrase: return "Spotify volume phrase"
         case .switchAppPhrase, .openAppPhrase: return "App prefix"
         case .zoomInPhrase: return "Zoom in phrase"
         case .zoomOutPhrase: return "Zoom out phrase"
@@ -89,6 +90,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         switch self {
         case .switchAppPhrase: return "Say a phrase followed by an app name."
         case .rewindVideoPhrase: return "A phrase with a duration uses that duration."
+        case .spotifyVolumePhrase: return "Say a phrase followed by a volume from 0 to 100."
 
         default: return nil
         }
@@ -109,6 +111,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .rewindTenPhrase: return "Rewind video ten seconds"
         case .pauseMusicPhrase: return "Pause music"
         case .playMusicPhrase: return "Play music"
+        case .spotifyVolumePhrase: return "Spotify volume"
         case .switchAppPhrase: return "Switch app"
         case .openAppPhrase: return "Open app"
         case .zoomInPhrase: return "Zoom in"
@@ -121,10 +124,11 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     var isRewind: Bool { [.rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase].contains(self) }
     var settingsTitle: String {
         if isRewind { return "Rewind video" }
+        if self == .spotifyVolumePhrase { return "Spotify volume" }
         if controlsMusic { return self == .pauseMusicPhrase ? "Pause music" : "Play music" }
         return action.settingsTitle
     }
-    var controlsMusic: Bool { self == .pauseMusicPhrase || self == .playMusicPhrase }
+    var controlsMusic: Bool { [.pauseMusicPhrase, .playMusicPhrase, .spotifyVolumePhrase].contains(self) }
     // Desktop phrases act on Mac apps and never reach Codex Voice either.
     var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase].contains(self) }
     static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop }
@@ -179,6 +183,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
             .rewindVideoPhrase: ["Rewind video": ["Rewind the video", "Rewind this video", "Rewind vid"]],
             .pauseMusicPhrase: ["Pause music": ["Pause the music", "Paws music", "Paws the music"]],
             .playMusicPhrase: ["Play music": ["Play the music", "Resume music", "Resume the music"]],
+            .spotifyVolumePhrase: ["Spotify volume": ["Spotify volume to", "Set Spotify volume", "Set Spotify volume to", "Spot ify volume"]],
             .switchAppPhrase: ["Switch app": ["Switch apps", "Switch the app"], "Switch up": ["Switch upp"],
                                "Switch to": ["Switch too"]],
             .openAppPhrase: ["Open app": ["Open apps", "Open the app"], "Show app": ["Show apps", "Show the app"],
@@ -223,6 +228,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .rewindFivePhrase: return .rewindFive
         case .rewindTenPhrase: return .rewindTen
         case .pauseMusicPhrase, .playMusicPhrase: return .mediaPlayPause
+        case .spotifyVolumePhrase: return .spotifyVolume
         case .switchAppPhrase, .openAppPhrase: return .app
         case .zoomInPhrase: return .zoomIn
         case .zoomOutPhrase: return .zoomOut
@@ -232,7 +238,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
 }
 
 enum PhraseAction: String, CaseIterable {
-    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, app, zoomIn, zoomOut, showVoice
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, app, zoomIn, zoomOut, showVoice
     // Ethan’s “brackets Codex” identifies the four call audio rows in Home and their phrase editors.
     var settingsTitle: String {
         switch self {
@@ -248,6 +254,7 @@ enum PhraseAction: String, CaseIterable {
         case .rewindFive: return "Rewind video 5 seconds"
         case .rewindTen: return "Rewind video 10 seconds"
         case .mediaPlayPause: return "Music"
+        case .spotifyVolume: return "Spotify volume"
         case .app: return "Switch app"
         case .zoomIn: return "Zoom in"
         case .zoomOut: return "Zoom out"
@@ -549,6 +556,13 @@ struct PhrasePattern: Equatable {
 // Use real word spans, never synthesized hypothesis-arrival timestamps, to
 // recognize the same audio boundary already used by the microphone detector.
 enum DesktopSpeechBoundaries {
+    // SpeechTimingTracker uses zero-length spans for arrival estimates. They can locate
+    // a receipt but cannot replace an already-consumed occurrence's identity.
+    // Found by Claude Opus 5.5. Fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+    static func hasAudioSpans(_ timings: [(word: String, start: Double, end: Double)]?, in range: Range<Int>) -> Bool {
+        guard let timings, !range.isEmpty, range.lowerBound >= 0, range.upperBound <= timings.count else { return false }
+        return timings[range].allSatisfy { $0.start.isFinite && $0.end.isFinite && $0.end > $0.start }
+    }
     // A short hesitation can split a quoted example from “a case where” or “it picked up”.
     // Keep the grammatical lead-in across acoustic pauses, until the next written sentence.
     // Match only an immediate reported-speech construction, never the general topic.

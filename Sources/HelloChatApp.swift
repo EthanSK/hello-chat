@@ -11,6 +11,27 @@ import Darwin
 @main enum Main {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.count == 2, arguments[0] == "--check-spotify-volume-phrase" {
+            let aliases = PhraseList.decode(UserDefaults.standard.object(forKey: PhraseList.defaultsKey))
+            let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map {
+                ($0, [$0.savedValue()] + (aliases[$0] ?? []))
+            }))
+            let dictionaries = PhraseDictionaries(savedByTrigger: UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]] ?? [:], active: configuration)
+            let prefixes = configuration.phrases(for: .spotifyVolumePhrase).map {
+                PhrasePattern(slot: .spotifyVolumePhrase, text: $0, similar: UserDefaults.standard.object(forKey: "similarPhrases") as? Bool ?? true, dictionaries: dictionaries)
+            }
+            // The installed parser and saved settings only: no model, capture,
+            // Apple Event, receipt, cue or playback action. — GPT-6.1 Sol
+            var detector = SpotifyVolumePhrase()
+            detector.audio(level: 0.2, seconds: 0.1, at: 0)
+            detector.update(arguments[1], at: 1, timings: nil); detector.endUtterance()
+            let commands = detector.poll(at: 1, prefixes: prefixes)
+            let report: [String: Any] = ["volumes": commands.map(\.volume),
+                "repeatEnabled": CommandRepetition.enabled(PhraseSlot.spotifyVolumePhrase.rawValue),
+                "title": PhraseSlot.spotifyVolumePhrase.settingsTitle]
+            print(String(decoding: try! JSONSerialization.data(withJSONObject: report, options: .sortedKeys), as: UTF8.self))
+            return
+        }
         if arguments.first == "--codex-chat-speed" {
             guard arguments.count == 3, let thread = UUID(uuidString: arguments[1]),
                   arguments[2] == "check" || CodexChatSpeed.Speed.allCases.contains(where: { $0.rawValue.lowercased() == arguments[2] })
@@ -30,13 +51,16 @@ import Darwin
             let action = arguments[6], supplied = arguments[7]
             let supported = Set(PhraseSlot.allCases.map(\.rawValue) + VoiceAudioAction.allCases.map(\.rawValue) + ["app", "speakerOutput"])
             guard supported.contains(action), supplied.count <= 160,
-                  (action == "app" || action == "speakerOutput") == !supplied.isEmpty else { print("invalid"); exit(2) }
+                  (action == "app" || action == "speakerOutput" || action == PhraseSlot.spotifyVolumePhrase.rawValue) == !supplied.isEmpty else { print("invalid"); exit(2) }
             let target: String
             switch action {
             case "app": target = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)).commandTarget(supplied)
             case "speakerOutput":
                 guard let output = SpeakerOutputSettings.load().receiptTarget(supplied) else { print("unknownSpeaker"); return }
                 target = output
+            case PhraseSlot.spotifyVolumePhrase.rawValue:
+                guard let volume = Int(supplied), (0...100).contains(volume) else { print("invalid"); exit(2) }
+                target = String(volume)
             default: target = ""
             }
             let callKey = thread.uuidString.lowercased() + ":" + session.uuidString.lowercased()
@@ -981,6 +1005,7 @@ private extension PhraseSlot {
         case .zoomInPhrase: return "Sends Zoom In to the app you’re using."
         case .zoomOutPhrase: return "Sends Zoom Out to the app you’re using."
         case .showVoicePhrase: return "Opens the current Voice chat in Codex, or your last Voice chat if the call has ended."
+        case .spotifyVolumePhrase: return "Sets Spotify’s volume to the number you say, from 0 to 100. Spotify must already be running. Without a number, it does nothing. Your Maximum volume setting, system volume and playback aren’t changed."
         }
     }
 }
@@ -1022,6 +1047,8 @@ private struct RepeatCountToggle: View {
         switch command {
         case PhraseSlot.rewindVideoPhrase.rawValue:
             return first + " Always include “times”, since a number alone can be a distance."
+        case PhraseSlot.spotifyVolumePhrase.rawValue:
+            return first + " Always include “times”, since a number alone is the volume."
         case PhraseSlot.pauseMusicPhrase.rawValue, PhraseSlot.playMusicPhrase.rawValue:
             return first + " Without a number, it runs once. Each run is another Play/Pause press, so an even number can leave playback as it was."
         default:
@@ -1181,7 +1208,7 @@ private struct CommandPhrasesView: View {
             if slots.contains(.rewindVideoPhrase) {
                 RewindAmountField(seconds: $model.rewindVideoSeconds)
             }
-            if slots.contains(.switchAppPhrase), let example = PhraseSlot.switchAppPhrase.example {
+            if let slot = slots.first(where: { $0 == .switchAppPhrase || $0 == .spotifyVolumePhrase }), let example = slot.example {
                 Text(example).font(.caption).foregroundStyle(.secondary)
             }
             ScrollViewReader { reader in
@@ -1245,7 +1272,9 @@ private struct CommandPhrasesView: View {
     private func repeatExample(_ slot: PhraseSlot) -> String {
         let phrase = model[keyPath: model.phraseKeyPath(for: slot)].trimmingCharacters(in: .whitespacesAndNewlines)
         let main = phrase.isEmpty ? slot.defaultText : phrase
-        return slot == .switchAppPhrase ? main + " Chrome" : main
+        if slot == .switchAppPhrase { return main + " Chrome" }
+        if slot == .spotifyVolumePhrase { return main + " forty percent" }
+        return main
     }
     private func add(to slot: PhraseSlot) {
         commitFocused()
@@ -1738,7 +1767,7 @@ struct SettingsView: View {
                     Text("%")
                     Stepper("Maximum volume", value: limit, in: 0...100).labelsHidden()
                 }
-                Text("Keeps Spotify at or below this volume during Voice. Restores the previous volume afterwards unless you changed it in Spotify.")
+                Text("Keeps Spotify at or below this volume during Voice. Restores the previous volume afterwards unless you changed the volume.")
                     .foregroundStyle(.secondary)
                 SpotifyVolumeStatus(volume: model.spotifyVolume)
             }

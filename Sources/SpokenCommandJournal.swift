@@ -80,10 +80,12 @@ struct SpokenCommandJournal {
             return entries[index]
         }
     }
-    @discardableResult func retarget(_ id: UUID, to target: String) -> Bool {
+    @discardableResult func retarget(_ id: UUID, to target: String, revisingValue: Bool = false) -> Bool {
         (try? transaction { entries in
-            guard let i = entries.firstIndex(where: { $0.id == id && $0.phase == .attempted }) else { return false }
+            guard let i = entries.firstIndex(where: { $0.id == id && ($0.phase == .attempted ||
+                (revisingValue && ($0.phase == .confirmed || $0.phase == .submitted))) }) else { return false }
             entries[i].target = target
+            if revisingValue { entries[i].phase = .attempted }
             entries[i].updatedAt = now()
             return true
         }) ?? false

@@ -36,7 +36,50 @@ import SwiftUI
         }
     }
 
+    static func spokenVolume() throws {
+        for active in [false, true] {
+            for volume in [0, 40, 100] {
+                let f = Fixture(), session = f.session()
+                if active { _ = try session.reconcile(.active, callIdentifier: "call", limit: 40) }
+                check(try session.setVolume(volume, preservingForCall: active, callIdentifier: active ? "call" : nil) == volume)
+                if active {
+                    _ = try session.reconcile(.active, callIdentifier: "call", microphoneMuted: true, limit: 40)
+                    _ = try session.reconcile(.active, callIdentifier: "call", microphoneMuted: false, limit: 40)
+                }
+                _ = try session.reconcile(.inactive); _ = try session.reconcile(.inactive)
+                check(f.volume == volume && f.receipt == nil)
+            }
+        }
+        let fresh = Fixture(), pending = fresh.session()
+        _ = try pending.setVolume(70, preservingForCall: true, callIdentifier: nil)
+        _ = try fresh.session().reconcile(.active, callIdentifier: "first", limit: 40)
+        check(fresh.volume == 70 && fresh.receipt?.mutePhase == .manualOverride)
+        _ = try fresh.session().reconcile(.active, callIdentifier: "next", limit: 40)
+        check(fresh.volume == 40 && fresh.receipt?.original == 70)
+        let changedCall = Fixture(), changedSession = changedCall.session()
+        _ = try changedSession.reconcile(.active, callIdentifier: "old", limit: 40)
+        _ = try changedSession.setVolume(70, preservingForCall: true, callIdentifier: "current")
+        _ = try changedSession.reconcile(.active, callIdentifier: "current", limit: 40)
+        check(changedCall.volume == 70 && changedCall.receipt?.callIdentifier == "current")
+        let closed = Fixture(); closed.volume = nil
+        do { _ = try closed.session().setVolume(40, preservingForCall: false, callIdentifier: nil); fatalError("Closed Spotify must not launch") } catch {}
+        check(closed.writes.isEmpty && closed.receipt == nil)
+        let unsafe = Fixture(); unsafe.failSave = true
+        do { _ = try unsafe.session().setVolume(40, preservingForCall: true, callIdentifier: "call"); fatalError("Save must precede write") }
+        catch let error as SpotifyVolumeOperationFailure { check(error.beforeDispatch) }
+        check(unsafe.writes.isEmpty)
+        let raced = Fixture(); raced.changeBeforeWrite = 61
+        do { _ = try raced.session().setVolume(40, preservingForCall: false, callIdentifier: nil); fatalError("Preserve intervening slider change") } catch {}
+        check(raced.volume == 61 && raced.writes.isEmpty)
+        for invalid in [-1, 101] {
+            let f = Fixture()
+            do { _ = try f.session().setVolume(invalid, preservingForCall: true, callIdentifier: "call"); fatalError("Reject out of range") } catch {}
+            check(f.writes.isEmpty && f.receipt == nil)
+        }
+    }
+
     static func main() throws {
+        try spokenVolume()
         var savedLimit = 50
         var edits: [Int] = []
         let field = Binding(get: { savedLimit }, set: { savedLimit = $0; edits.append($0) }).changes(in: 0...100)

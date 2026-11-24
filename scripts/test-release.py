@@ -26,6 +26,58 @@ feeds = load("release_feed", "create-appcast.py")
 
 
 class Releases(unittest.TestCase):
+    def test_local_releases_advance_both_numbers_without_installing_each_build(self):
+        source = {'CFBundleIdentifier': 'com.ethansk.HeyChat',
+                  'CFBundleShortVersionString': '1.5.0', 'CFBundleVersion': '1069',
+                  'SUPublicEDKey': 'unchanged'}
+        first = versions.local_release_info(source, source)
+        second = versions.local_release_info(first, source)
+        self.assertEqual((first['CFBundleShortVersionString'], first['CFBundleVersion']), ('1.5.1', '1070'))
+        self.assertEqual((second['CFBundleShortVersionString'], second['CFBundleVersion']), ('1.5.2', '1071'))
+        self.assertEqual(second['SUPublicEDKey'], 'unchanged')
+
+    def test_local_release_exceeds_newer_installed_versions_and_rejects_bad_floors(self):
+        source = {'CFBundleIdentifier': 'com.ethansk.HeyChat',
+                  'CFBundleShortVersionString': '1.5.0', 'CFBundleVersion': '1069'}
+        installed = dict(source, CFBundleShortVersionString='1.5.9', CFBundleVersion='1090')
+        allocated = versions.local_release_info(source, installed)
+        self.assertEqual((allocated['CFBundleShortVersionString'], allocated['CFBundleVersion']), ('1.5.10', '1091'))
+        for invalid in [dict(installed, CFBundleIdentifier='another.app'),
+                        dict(installed, CFBundleVersion='bad'),
+                        dict(installed, CFBundleShortVersionString='latest')]:
+            with self.assertRaises(ValueError): versions.local_release_info(source, invalid)
+
+    def test_local_cli_allocates_only_the_owned_artifact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            artifact, installed, output = [root / name for name in ['built.plist', 'installed.plist', 'manifest.json']]
+            info = {'CFBundleIdentifier': 'com.ethansk.HeyChat',
+                    'CFBundleShortVersionString': '1.5.0', 'CFBundleVersion': '1069'}
+            for path in [artifact, installed]: path.write_bytes(plistlib.dumps(info))
+            arguments = ['prepare-release', '--local', '--plist', str(artifact), '--installed-plist', str(installed),
+                         '--commit', 'a' * 40, '--output', str(output)]
+            with patch.object(sys, 'argv', arguments), contextlib.redirect_stdout(io.StringIO()): versions.main()
+            self.assertEqual(plistlib.loads(installed.read_bytes()), info)
+            self.assertEqual(plistlib.loads(artifact.read_bytes())['CFBundleVersion'], '1070')
+            self.assertEqual(json.loads(output.read_text())['version'], '1.5.1')
+
+    def test_signed_floor_preserves_other_fields_and_rejects_concurrent_edits(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, baseline, built = [root / name for name in ['source.plist', 'baseline.plist', 'built.plist']]
+            info = {'CFBundleIdentifier': 'com.ethansk.HeyChat', 'CFBundleShortVersionString': '1.5.0',
+                    'CFBundleVersion': '1069', 'SUPublicEDKey': 'unchanged'}
+            for path in [source, baseline]: path.write_bytes(plistlib.dumps(info))
+            built.write_bytes(plistlib.dumps(dict(info, CFBundleShortVersionString='1.5.1', CFBundleVersion='1070',
+                                                  GeneratedBundleOnly='not a source setting')))
+            versions.record_local_release(source, baseline, built)
+            self.assertEqual(plistlib.loads(source.read_bytes()), dict(info, CFBundleShortVersionString='1.5.1', CFBundleVersion='1070'))
+            self.assertFalse(list(root.glob('.Info.release.*')))
+            edited = dict(info, SUPublicEDKey='new user edit')
+            source.write_bytes(plistlib.dumps(edited))
+            with self.assertRaises(RuntimeError): versions.record_local_release(source, baseline, built)
+            self.assertEqual(plistlib.loads(source.read_bytes()), edited)
+
     def test_repeated_main_pushes_keep_versions_unique_and_builds_above_installed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
