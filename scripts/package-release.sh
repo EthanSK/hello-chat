@@ -21,7 +21,12 @@ codesign -d --entitlements :- "$app" > "$build_dir/entitlements.plist" 2>/dev/nu
 [[ "$(/usr/libexec/PlistBuddy -c 'Print com.apple.security.device.audio-input' "$build_dir/entitlements.plist")" == true ]]
 zip_path="$build_dir/HelloChat-macOS-arm64.zip"
 ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
-xcrun notarytool submit "$zip_path" --keychain-profile "$profile" --wait --output-format json > "$build_dir/notarization.json"
+# Use the explicit hosted Keychain; local callers retain their configured profile. — GPT-6.1 Sol
+keychain_args=()
+if [[ -n "${NOTARY_KEYCHAIN:-}" ]]; then
+  keychain_args=(--keychain "$NOTARY_KEYCHAIN")
+fi
+xcrun notarytool submit "$zip_path" "${keychain_args[@]}" --keychain-profile "$profile" --wait --output-format json > "$build_dir/notarization.json"
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["status"] == "Accepted", "Notarization was not accepted"' "$build_dir/notarization.json"
 # Accepted submissions can take a little longer to propagate to the ticket service.
 for attempt in {1..6}; do
@@ -34,10 +39,12 @@ spctl --assess --type execute --verbose=2 "$app"
 # Ship the stapled app, not the pre-notarization archive.
 ditto -c -k --sequesterRsrc --keepParent "$app" "$zip_path"
 # Sign the final stapled bytes, not the earlier notarization submission. Only
-# public signatures leave the Keychain; the private signing key is never exported.
+# public signatures enter the release; private signing material stays in the job.
 public_key=$("$tools/generate_keys" --account "$account" -p)
 [[ "$public_key" == "$(/usr/libexec/PlistBuddy -c 'Print SUPublicEDKey' "$app/Contents/Info.plist")" ]]
-"$tools/sign_update" --account "$account" -p "$zip_path" > "$build_dir/update-signature.txt"
+sparkle_args=(--account "$account")
+if [[ -n "${SPARKLE_KEY_FILE:-}" ]]; then sparkle_args=(--ed-key-file "$SPARKLE_KEY_FILE"); fi
+"$tools/sign_update" "${sparkle_args[@]}" -p "$zip_path" > "$build_dir/update-signature.txt"
 python3 scripts/create-appcast.py --plist "$app/Contents/Info.plist" --archive "$zip_path" \
   --signature-file "$build_dir/update-signature.txt" \
   --url "https://github.com/EthanSK/hello-chat/releases/download/v$version/HelloChat-macOS-arm64.zip" \

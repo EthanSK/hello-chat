@@ -1,4 +1,4 @@
-# Build runtime changes on the dedicated signing Mac; keys remain in its Keychain.
+# Build and sign on GitHub's disposable Mac with temporary signing credentials.
 name: Release
 on:
   push:
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       recover_run_id:
-        description: Failed Release run whose verified package is staged on the signing Mac
+        description: Failed Release run with a signed package saved in GitHub Actions
         type: string
         required: false
 permissions:
@@ -27,19 +27,21 @@ concurrency:
 jobs:
   release:
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS, ARM64, hello-chat-release]
+    runs-on: macos-15
     # The signed archive is about 1 GB. Leave room for Apple notarization
-    # and GitHub uploads from the signing Mac's connection.
+    # and uploading the verified package. — GPT-6.1 Sol
     timeout-minutes: 180
     outputs:
       tag: ${{ steps.draft.outputs.tag }}
       commit: ${{ steps.draft.outputs.commit }}
     permissions:
       contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
-      HELLOCHAT_NOTARY_PROFILE: ${{ vars.HELLOCHAT_NOTARY_PROFILE || 'HelloChatRelease' }}
+      HELLOCHAT_NOTARY_PROFILE: ReleaseCI
       HELLOCHAT_SPARKLE_ACCOUNT: com.ethansk.HelloChat
+      SPARKLE_ACCOUNT: com.ethansk.HelloChat
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,16 +60,24 @@ jobs:
           curl --fail --location --retry 3 https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-2.10.1.tar.xz -o "$RUNNER_TEMP/Sparkle.tar.xz"
           python3 scripts/verify-sparkle-tools.py "$RUNNER_TEMP/Sparkle.tar.xz"
           tar -xf "$RUNNER_TEMP/Sparkle.tar.xz" -C "$RUNNER_TEMP/Sparkle.noindex"
-          tools="$HOME/.local/share/sparkle-tools/2.10.1/bin"
-          # Provision this versioned copy during signing-host setup; reject missing or changed tools before any Keychain access.
-          diff -r "$RUNNER_TEMP/Sparkle.noindex/bin" "$tools"
+          tools="$RUNNER_TEMP/Sparkle.noindex/bin"
           echo "HELLOCHAT_SPARKLE_TOOLS=$tools" >> "$GITHUB_ENV"
+          echo "SPARKLE_TOOLS=$tools" >> "$GITHUB_ENV"
+      - name: Prepare temporary signing credentials
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SPARKLE_ED25519_PRIVATE_KEY: ${{ secrets.SPARKLE_ED25519_PRIVATE_KEY }}
+        run: bash scripts/prepare-hosted-signing.sh
       - name: Check local signing access
         shell: bash
         run: |
           set -euo pipefail
           security find-identity -v -p codesigning | grep -F 'Developer ID Application: Ethan Sarif-Kattan (T34G959ZG8)'
-          xcrun notarytool history --keychain-profile "$HELLOCHAT_NOTARY_PROFILE" --output-format json >/dev/null
+          xcrun notarytool history --keychain "$NOTARY_KEYCHAIN" --keychain-profile "$HELLOCHAT_NOTARY_PROFILE" --output-format json >/dev/null
           expected=$(/usr/libexec/PlistBuddy -c 'Print SUPublicEDKey' Info.plist)
           actual=$("$HELLOCHAT_SPARKLE_TOOLS/generate_keys" --account "$HELLOCHAT_SPARKLE_ACCOUNT" -p)
           [[ "$actual" == "$expected" ]]
@@ -108,7 +118,8 @@ jobs:
           jq -e 'any(.jobs[]; any(.steps[]; .name == "Notarize and sign update" and .conclusion == "success"))' <<< "$jobs" >/dev/null
           git fetch --no-tags --depth=1 origin "$source"
           git diff --quiet "$source" "$GITHUB_SHA" -- . ':(exclude).github/workflows/release.yml' ':(exclude)RELEASE.md'
-          candidate="${RUNNER_TEMP%/*}/release-recovery.noindex/$RECOVER_RUN_ID"
+          candidate="$RUNNER_TEMP/recovered-release.noindex"
+          gh run download "$RECOVER_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "signed-release-$RECOVER_RUN_ID" --dir "$candidate"
           mkdir -p "$HELLOCHAT_BUILD_DIR"
           for name in HelloChat-macOS-arm64.zip SHA256SUMS appcast.xml; do
             cp -c "$candidate/$name" "$HELLOCHAT_BUILD_DIR/$name"
@@ -122,7 +133,7 @@ jobs:
           cd "$HELLOCHAT_BUILD_DIR"
           shasum -a 256 -c SHA256SUMS
           signature=$(python3 -c 'import xml.etree.ElementTree as ET; print(ET.parse("appcast.xml").find("channel/item/enclosure").attrib["{http://www.andymatuschak.org/xml-namespaces/sparkle}edSignature"])')
-          "$HELLOCHAT_SPARKLE_TOOLS/sign_update" --account "$HELLOCHAT_SPARKLE_ACCOUNT" --verify HelloChat-macOS-arm64.zip "$signature"
+          "$HELLOCHAT_SPARKLE_TOOLS/sign_update" --ed-key-file "$SPARKLE_KEY_FILE" --verify HelloChat-macOS-arm64.zip "$signature"
           ditto -x -k HelloChat-macOS-arm64.zip .
           codesign --verify --deep --strict HelloChat.app
           codesign -dv --verbose=3 HelloChat.app 2>&1 | grep -Fx 'TeamIdentifier=T34G959ZG8'
@@ -137,10 +148,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Keep publication bound to the verified source after concurrent
-          # workflow edits; the existing Keychain login has workflow permission.
-          unset GH_TOKEN GITHUB_TOKEN
-          test "$(gh api --hostname github.com user --jq .login)" = EthanSK
+          # Publish the selected commit with this workflow's scoped token. — GPT-6.1 Sol
           release_commit="${HELLOCHAT_RELEASE_COMMIT:-$GITHUB_SHA}"
           display_name=$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$HELLOCHAT_BUILD_DIR/HelloChat.app/Contents/Info.plist")
           if release=$(gh release view "$HELLOCHAT_RELEASE_TAG" --json isDraft,targetCommitish); then
@@ -169,6 +177,14 @@ jobs:
             ${{ env.HELLOCHAT_BUILD_DIR }}/SHA256SUMS
             ${{ env.HELLOCHAT_BUILD_DIR }}/appcast.xml
             ${{ env.HELLOCHAT_BUILD_DIR }}/release-manifest.json
+
+      - name: Remove temporary signing credentials
+        if: always()
+        run: |
+          rm -f "${RELEASE_CERTIFICATE:-}" "${RELEASE_SPARKLE_KEY:-}"
+          if [[ -n "${RELEASE_KEYCHAIN:-}" && -f "$RELEASE_KEYCHAIN" ]]; then
+            security delete-keychain "$RELEASE_KEYCHAIN"
+          fi
 
   publish:
     needs: release
