@@ -82,6 +82,7 @@ enum CommandRepetition {
     }
     private final class Record {
         let id: UUID
+        let command: String?
         var words: [String]
         var range: Range<Int>
         var audio: Range<Double>?
@@ -100,9 +101,9 @@ enum CommandRepetition {
         var published: Progress?
         var acceptsRevisions = true
         var valueChanged = false
-        init(id: UUID, words: [String], range: Range<Int>, audio: Range<Double>?, repeats: Bool,
+        init(id: UUID, command: String?, words: [String], range: Range<Int>, audio: Range<Double>?, repeats: Bool,
              requiresTimes: Bool, valueArgument: Bool, requested: Int, run: @escaping (UUID) -> Void) {
-            self.id = id; self.words = words; self.range = range; self.audio = audio
+            self.id = id; self.command = command; self.words = words; self.range = range; self.audio = audio
             self.repeats = repeats; self.requiresTimes = requiresTimes; self.requested = requested; self.run = run
             self.valueArgument = valueArgument
         }
@@ -168,8 +169,8 @@ enum CommandRepetition {
         records.forEach { $0.acceptsRevisions = false }
         words = []; timings = nil; boundaries = []; contextFinal = false
     }
-    func cancelPending() {
-        for record in records where !record.stopped {
+    func cancelPending(command: String? = nil) {
+        for record in records where !record.stopped && (command == nil || record.command == command) {
             record.stopped = true
             if !record.executing && record.completed < record.requested { publish(record, .superseded) }
         }
@@ -190,7 +191,7 @@ enum CommandRepetition {
 
     @discardableResult func begin(id: UUID, range: Range<Int>, repeats: Bool, requiresTimes: Bool = false,
                                  valueArgument: Bool = false,
-                                 discard: Bool = false, run: @escaping (UUID) -> Void) -> UUID? {
+                                 discard: Bool = false, command: String? = nil, run: @escaping (UUID) -> Void) -> UUID? {
         guard !records.contains(where: { $0.id == id }), range.lowerBound >= 0,
               range.upperBound <= words.count, !range.isEmpty else { return nil }
         // Keep all requested actions in spoken order; a later request cannot silently turn
@@ -205,7 +206,7 @@ enum CommandRepetition {
         if let timings, timings[range.lowerBound].start < timings[range.upperBound - 1].end {
             audio = timings[range.lowerBound].start..<timings[range.upperBound - 1].end
         } else { audio = nil }
-        let record = Record(id: id, words: Array(words[range]), range: range, audio: audio,
+        let record = Record(id: id, command: command, words: Array(words[range]), range: range, audio: audio,
                             repeats: repeats, requiresTimes: requiresTimes, valueArgument: valueArgument, requested: requested, run: run)
         record.acceptsRevisions = !contextFinal
         records.append(record)

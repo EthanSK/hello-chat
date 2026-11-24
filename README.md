@@ -147,6 +147,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Notification Replies | Optional spoken replies after Codex notifications. Edit the **Reply** and **End reply** spellings here. **Enabled**, **Cancel after silence (seconds)** and **Maximum reply (seconds)** use the existing speech model and microphone. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
 | Recognition | **Alternate spellings for default phrases** and **Check speech recognition**. Phrase and microphone editors are on Home. |
+| Disabled Commands | Turn a Home command off with **Enabled** in its gear. It stops matching and leaves Home. Open the same gear here to turn it back on; phrases, spellings, sounds, repeat choices and values are kept. Commands are enabled by default. Menu actions, buttons and Shortcuts remain available. |
 | Resources | Hello Chat's own CPU and memory, and Core ML's estimated encoder placement. |
 | Sounds | **Sound effects** (on by default), **Volume**, and a preview button for each phrase's short sound. Volume changes only H Chat's cues. |
 | Spotify | **Lower volume during chat**, off by default. Requires permission to control Spotify. |

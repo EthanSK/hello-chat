@@ -280,6 +280,51 @@ enum PhraseAction: String, CaseIterable {
     var slots: [PhraseSlot] { PhraseSlot.allCases.filter { $0.action == self } }
 }
 
+// Ethan's "main list" is Home's distinct commands, including combined phrase groups.
+// Derive this catalogue from the same groups as their editors so future phrase slots inherit an on/off choice. — GPT-6.1 Sol
+struct HomeCommand: Identifiable, Equatable {
+    let id: String
+    let slots: [PhraseSlot]
+    var title: String { slots.first?.settingsTitle ?? "Switch speakers" }
+    static let speakerOutput = HomeCommand(id: "speakerOutput", slots: [])
+    static let all: [HomeCommand] = PhraseSlot.settingsGroups(
+        PhraseSlot.voiceSlots + PhraseSlot.dotSlots + PhraseSlot.videoSlots + PhraseSlot.musicSlots + PhraseSlot.desktopSlots
+    ).compactMap { slots in slots.first.map { HomeCommand(id: $0.rawValue, slots: slots) } } + [speakerOutput]
+    static func containing(_ slot: PhraseSlot) -> HomeCommand? { all.first { $0.slots.contains(slot) } }
+    static func forAction(_ action: String) -> HomeCommand? {
+        if action == speakerOutput.id { return speakerOutput }
+        let key = action == "app" ? PhraseSlot.switchAppPhrase.rawValue : (VoiceAudioAction(rawValue: action)?.slots.first?.rawValue ?? action)
+        return PhraseSlot(rawValue: key).flatMap(containing)
+    }
+}
+
+// Store only disabled identities; missing and future commands stay enabled without rewriting phrases or editor values. — GPT-6.1 Sol
+struct CommandAvailability: Equatable {
+    static let preferenceKey = "disabledCommands"
+    private(set) var disabledIDs: Set<String>
+    init(disabledIDs: Set<String> = []) { self.disabledIDs = disabledIDs }
+    static func load(from defaults: UserDefaults = .standard) -> Self {
+        .init(disabledIDs: Set(defaults.stringArray(forKey: preferenceKey) ?? []))
+    }
+    func save(to defaults: UserDefaults = .standard) {
+        if disabledIDs.isEmpty { defaults.removeObject(forKey: Self.preferenceKey) }
+        else { defaults.set(disabledIDs.sorted(), forKey: Self.preferenceKey) }
+    }
+    func isEnabled(_ command: HomeCommand) -> Bool { !disabledIDs.contains(command.id) }
+    func isEnabled(_ slot: PhraseSlot) -> Bool { HomeCommand.containing(slot).map(isEnabled) ?? true }
+    mutating func setEnabled(_ value: Bool, for command: HomeCommand) {
+        if value { disabledIDs.remove(command.id) } else { disabledIDs.insert(command.id) }
+    }
+}
+
+// One editor lease across Home and Settings; the edited row stays put until its sheet closes. — GPT-6.1 Sol
+struct CommandEditorRequest: Identifiable, Equatable {
+    enum Origin: Equatable { case home, settings }
+    let command: HomeCommand
+    let origin: Origin
+    var id: String { command.id }
+}
+
 // Ethan's extra phrases (14 November 2026): each section keeps its saved main phrase and can list
 // more explicit phrases below it. Typing "Open app / Switch app" is another way to add rows.
 struct PhraseRow: Identifiable, Equatable {

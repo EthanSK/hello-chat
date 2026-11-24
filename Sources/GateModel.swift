@@ -102,6 +102,8 @@ import SwiftUI
                                onReserved: (UUID) -> Void = { _ in },
                                repeatAction: @escaping (UUID) -> Void) -> UUID? {
         guard let range else { return nil }
+        let command = repetitionKey(action)
+        guard !commandAvailability.disabledIDs.contains(command) else { return nil }
         // Showing what was heard is independent of dispatch: failed or already-covered
         // commands still need visible feedback. Repeated runs reuse their receipt. — GPT-6.1 Sol
         showHomeForDetectedPhrase()
@@ -120,11 +122,11 @@ import SwiftUI
                 Diagnostics.shared.record("command.history", numbers: ["spoken_at": now - age],
                                           info: ["receipt": id.uuidString, "command": title, "result": "Heard", "summary": summary])
                 var reserving = true
-                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(repetitionKey(action)), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true || action == PhraseSlot.spotifyVolumePhrase.rawValue, valueArgument: action == PhraseSlot.spotifyVolumePhrase.rawValue, discard: discard) { [weak self] step in
+                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(command), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true || action == PhraseSlot.spotifyVolumePhrase.rawValue, valueArgument: action == PhraseSlot.spotifyVolumePhrase.rawValue, discard: discard, command: command) { [weak self] step in
                     if reserving { return } // The unqueued first action stays immediate; queued first actions use this callback later.
                     Task { @MainActor [weak self] in
                         guard let self else { return }
-                        guard !self.quitting, self.repetitions.shouldRun(step) else { self.finishCommand(step, .superseded); return }
+                        guard !self.quitting, !self.commandAvailability.disabledIDs.contains(command), self.repetitions.shouldRun(step) else { self.finishCommand(step, .superseded); return }
                         repeatAction(step)
                     }
                 }
@@ -147,9 +149,7 @@ import SwiftUI
         Diagnostics.shared.record("window.phrase", info: ["result": requested ? "requested" : "window-unavailable"])
     }
     private func repetitionKey(_ action: String) -> String {
-        let raw = action == "app" ? "switchAppPhrase" : (VoiceAudioAction(rawValue: action)?.slots.first?.rawValue ?? action)
-        guard let slot = PhraseSlot(rawValue: raw) else { return raw }
-        return PhraseSlot.settingsGroups(PhraseSlot.allCases).first(where: { $0.contains(slot) })?.first?.rawValue ?? raw
+        HomeCommand.forAction(action)?.id ?? action
     }
     private func repeatWake(receipt: UUID) {
         Task { @MainActor in
@@ -374,6 +374,30 @@ import SwiftUI
     }
     // Detection, highlighting, cancellation and startup capture all read this one configuration.
     @Published private(set) var phraseConfiguration = PhraseConfiguration(rows: [:])
+    @Published private(set) var commandAvailability = CommandAvailability.load()
+    @Published private(set) var commandEditor: CommandEditorRequest?
+    var disabledCommands: [HomeCommand] {
+        HomeCommand.all.filter { isCommandListed($0, on: .settings) }
+    }
+    func isCommandListed(_ command: HomeCommand, on origin: CommandEditorRequest.Origin) -> Bool {
+        if commandEditor?.command == command { return commandEditor?.origin == origin }
+        return commandAvailability.isEnabled(command) == (origin == .home)
+    }
+    func openCommandSettings(_ command: HomeCommand, from origin: CommandEditorRequest.Origin) {
+        guard commandEditor == nil else { return }
+        commandEditor = .init(command: command, origin: origin)
+    }
+    func closeCommandSettings(from origin: CommandEditorRequest.Origin) {
+        if commandEditor?.origin == origin { commandEditor = nil }
+    }
+    func setCommandEnabled(_ value: Bool, command: HomeCommand) {
+        guard commandAvailability.isEnabled(command) != value else { return }
+        commandAvailability.setEnabled(value, for: command)
+        commandAvailability.save()
+        if !value { repetitions.cancelPending(command: command.id) }
+        updatePhrases(cancelPendingApps: command.slots.contains(.switchAppPhrase))
+        Diagnostics.shared.record("command.availability", info: ["command": command.id, "enabled": String(value)])
+    }
     // Mac app and zoom commands don't depend on a connected Voice call.
     @Published var appNameSpellings = AppNameSpellings.load(from: .standard) { // Applies new built-ins to saved lists once.
         didSet { UserDefaults.standard.set(appNameSpellings.overrides, forKey: AppNameSpellings.defaultsKey) }
@@ -422,10 +446,11 @@ import SwiftUI
     // App prefixes are handled by the overlapping-prefix suppression below. All other
     // commands retain ownership even when they are contained inside a speaker phrase.
     var speakerOutputConflictingPhrases: [PhrasePattern] {
-        PhraseSlot.allCases.filter { $0 != .switchAppPhrase && $0 != .openAppPhrase }.flatMap { patterns(for: $0) }
+        PhraseSlot.allCases.filter { $0 != .switchAppPhrase && $0 != .openAppPhrase }.flatMap { configuredPatterns[$0] ?? [] }
     }
     @Published private(set) var speakerOutputConflict: String?
     private var activeSpeakerCommands: [(pattern: PhrasePattern, output: String)] = []
+    private var configuredSpeakerCommands: [(pattern: PhrasePattern, output: String)] = []
     private var activeSpeakerPrefixes: [PhrasePattern] = []
     // Recognition checks each audio frame. Compile speaker combinations only when settings
     // change, not on that hot path, and share the result with highlighting and cancellation.
@@ -436,8 +461,10 @@ import SwiftUI
         }
         let effective = similarPhrases ? speakerOutputSettings.omittingConflictingBuiltIns(avoiding: otherPatterns) : speakerOutputSettings
         let conflict = effective.conflictingPhrase(with: otherPatterns, alternateSpellings: similarPhrases)
-        if speakerOutputConflict != conflict { speakerOutputConflict = conflict }
-        activeSpeakerCommands = conflict == nil ? effective.commands(alternateSpellings: similarPhrases) : []
+        let enabledConflict = commandAvailability.isEnabled(.speakerOutput) ? conflict : nil
+        if speakerOutputConflict != enabledConflict { speakerOutputConflict = enabledConflict }
+        configuredSpeakerCommands = conflict == nil ? effective.commands(alternateSpellings: similarPhrases) : []
+        activeSpeakerCommands = commandAvailability.isEnabled(.speakerOutput) ? configuredSpeakerCommands : []
         let appPrefixes = patterns(for: .switchAppPhrase) + patterns(for: .openAppPhrase)
         // Preserve explicitly configured app prefixes even when the speaker editor uses the
         // same wording; only the complete speaker request owns that ambiguous phrase. — GPT-6.1 Sol
@@ -502,7 +529,7 @@ import SwiftUI
                 }
             }
         }
-        if let conflict = entries.first(where: { value in activeSpeakerCommands.contains { $0.pattern.kind(for: value) != nil } }) {
+        if let conflict = entries.first(where: { value in configuredSpeakerCommands.contains { $0.pattern.kind(for: value) != nil } }) {
             return "“" + conflict + "” already belongs to Switch speakers."
         }
         return nil
@@ -534,6 +561,7 @@ import SwiftUI
         return phraseAliases[slot]?.contains { $0.id != id && PhraseList.key($0.text) == key } == true
     }
     private var compiledPatterns: [PhraseSlot: [PhrasePattern]] = [:]
+    private var configuredPatterns: [PhraseSlot: [PhrasePattern]] = [:]
     func patterns(for slot: PhraseSlot) -> [PhrasePattern] { compiledPatterns[slot] ?? [] }
     var phrasePatterns: [PhrasePattern] { PhraseSlot.allCases.flatMap { patterns(for: $0) } + activeSpeakerCommands.map(\.pattern) }
     // Every phrase for an audio action, with the section that owns it, so the cue follows the match.
@@ -617,7 +645,7 @@ import SwiftUI
         case .zoomOutPhrase: return \.zoomOutPhrase
         }
     }
-    var controlPhrases: [String] { VoiceAudioAction.allCases.flatMap { $0.slots.flatMap { phraseConfiguration.phrases(for: $0) } } }
+    var controlPhrases: [String] { VoiceAudioAction.allCases.flatMap { $0.slots.flatMap { patterns(for: $0).map(\.text) } } }
     @Published var similarPhrases = UserDefaults.standard.object(forKey: "similarPhrases") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); updatePhrases()
@@ -1196,15 +1224,19 @@ import SwiftUI
         speakerOutputDetector.reset()
         appCommandDetector.reset()
     }
-    private func updatePhrases() {
+    private func updatePhrases(cancelPendingApps: Bool = true) {
         rebuildPhraseConfiguration()
         matchingDictionaries = PhraseDictionaries(savedByTrigger: phraseDictionaries, active: phraseConfiguration)
-        compiledPatterns = Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { slot in
-            (slot, phraseConfiguration.phrases(for: slot).map { PhrasePattern(slot: slot, text: $0, similar: similarPhrases, dictionaries: matchingDictionaries) })
+        // Disabled commands keep ownership of their saved phrases; only the derived recognition/highlight patterns disappear. — GPT-6.1 Sol
+        configuredPatterns = Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map { slot in
+            (slot, phraseConfiguration.phrases(for: slot).map {
+                PhrasePattern(slot: slot, text: $0, similar: similarPhrases, dictionaries: matchingDictionaries)
+            })
         })
+        compiledPatterns = configuredPatterns.filter { commandAvailability.isEnabled($0.key) }
         rebuildSpeakerCommands()
-        cancelAppCommands()
-        listener.contextualPhrases = phraseConfiguration.allPhrases + activeSpeakerCommands.map { $0.pattern.text }
+        if cancelPendingApps { cancelAppCommands() }
+        listener.contextualPhrases = PhraseSlot.allCases.flatMap { patterns(for: $0).map(\.text) } + activeSpeakerCommands.map { $0.pattern.text }
             + [NotificationReplyCore.Commands.replyPhrase, NotificationReplyCore.Commands.endReplyPhrase]
         endPhrase.reset()
         standaloneWake.reset()
@@ -1309,7 +1341,8 @@ import SwiftUI
         }
         do {
             // A phrase listed for both is ignored for End, as before; at least one distinct phrase each.
-            guard !phraseConfiguration.phrases(for: .wakePhrase).isEmpty, !phraseConfiguration.phrases(for: .sleepPhrase).isEmpty else {
+            guard (!commandAvailability.isEnabled(.wakePhrase) || !phraseConfiguration.phrases(for: .wakePhrase).isEmpty),
+                  (!commandAvailability.isEnabled(.sleepPhrase) || !phraseConfiguration.phrases(for: .sleepPhrase).isEmpty) else {
                 throw BridgeError.message("Use different wake and end phrases.")
             }
             try await SpeechListener.authorize()

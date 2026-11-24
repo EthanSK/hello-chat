@@ -516,7 +516,6 @@ struct MainView: View {
     @Environment(\.openWindow) private var openWindow
     private var preparing: Bool { (model.busy && model.status == "Starting") || model.changingModel }
     private var connecting: Bool { model.status == "Connecting" }
-    @State private var showingSpeakerOutput = false
     var body: some View {
         GeometryReader { viewport in
             Form {
@@ -622,25 +621,11 @@ struct MainView: View {
                                   rewindSeconds: model.rewindVideoSeconds).equatable()
                     PhraseFields(model: model, configuration: model.phraseConfiguration, slots: PhraseSlot.musicSlots).equatable()
                     PhraseFields(model: model, configuration: model.phraseConfiguration, slots: PhraseSlot.desktopSlots).equatable()
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 6) {
-                                Text("Switch speakers")
-                                CommandInfoButton(title: "Switch speakers", detail: "Switches Mac audio to a speaker you’ve added. Say a phrase followed by its name. This keeps your microphone and alert output in place.")
-                            }
-                            let names = model.speakerOutputSettings.destinations.compactMap { SpeakerOutputSettings.lines($0.names).first }
-                            Text(names.isEmpty ? "No speakers added" : names.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        CommandSettingsButton(title: "Switch speakers") { showingSpeakerOutput = true }
-                            .accessibilityIdentifier("speakerOutputSettings")
+                    if model.isCommandListed(.speakerOutput, on: .home) {
+                        SpeakerOutputCommandRow(model: model, origin: .home)
                     }
-                        .sheet(isPresented: $showingSpeakerOutput) {
-                            SpeakerOutputEditor(initial: model.speakerOutputSettings, otherPatterns: model.speakerOutputConflictingPhrases, preview: model.previewSound, save: model.saveSpeakerOutputSettings)
-                        }
                     // A configuration error, not a command outcome, so it stays beside its command.
-                    if let phrase = model.speakerOutputConflict {
+                    if model.commandAvailability.isEnabled(.speakerOutput), let phrase = model.speakerOutputConflict {
                         Label("Switch speakers is off because another command already uses “\(phrase)”.", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red).accessibilityIdentifier("speakerOutputConflict")
                     }
@@ -653,6 +638,7 @@ struct MainView: View {
             .coordinateSpace(name: TranscriptPane.coordinateSpace)
         }
         .frame(minWidth: 380, minHeight: 380)
+        .modifier(CommandSettingsHost(model: model, origin: .home))
         .toolbar {
             ToolbarItemGroup {
                 Button { openWindow(id: "settings") } label: { Label("Settings", systemImage: "gearshape") }
@@ -753,7 +739,7 @@ private struct SpeakerOutputPreviewApp: App {
 
 // One saved editor for speaker command prefixes and destination names. Editing the draft does
 // not reset live recognition until Save, and choosing a device never changes the current route.
-private struct SpeakerOutputEditor: View {
+struct SpeakerOutputEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: SpeakerOutputSettings
     @State private var devices: [String] = []
@@ -761,6 +747,11 @@ private struct SpeakerOutputEditor: View {
     @State private var soundDraft = "default"
     // Saved with the speakers by Done, like the sound; Cancel leaves the stored choice alone.
     @State private var repeatDraft: Bool
+    @State private var enabledDraft: Bool
+    private let initial: SpeakerOutputSettings
+    private let initialRepeat: Bool
+    private let initialSound: String
+    let saveEnabled: (Bool) -> Void
     @State private var spellingPrefix: String?
     @AppStorage("similarPhrases") private var alternateSpellings = true
     @AppStorage(FeedbackSounds.preferenceKey("speakerOutput")) private var savedSound = "default"
@@ -777,10 +768,16 @@ private struct SpeakerOutputEditor: View {
     private var problem: String? { validation.problem }
     @State private var loadingDevices = true
     @State private var hasOutputHelper = true
-    init(initial: SpeakerOutputSettings, otherPatterns: [PhrasePattern], preview: ((FeedbackSounds.Cue) -> Void)? = nil, save: @escaping (SpeakerOutputSettings) -> Bool) {
+    init(initial: SpeakerOutputSettings, otherPatterns: [PhrasePattern], initialEnabled: Bool = true,
+         saveEnabled: @escaping (Bool) -> Void = { _ in },
+         preview: ((FeedbackSounds.Cue) -> Void)? = nil, save: @escaping (SpeakerOutputSettings) -> Bool) {
         _draft = State(initialValue: initial); self.otherPatterns = otherPatterns; self.preview = preview; self.save = save
+        self.initial = initial; self.saveEnabled = saveEnabled
+        initialRepeat = CommandRepetition.enabled(RepeatCountToggle.speakerOutput)
+        initialSound = UserDefaults.standard.string(forKey: FeedbackSounds.preferenceKey("speakerOutput")) ?? "default"
+        _enabledDraft = State(initialValue: initialEnabled)
         _validation = State(initialValue: Self.validate(initial, avoiding: otherPatterns))
-        _repeatDraft = State(initialValue: CommandRepetition.enabled(RepeatCountToggle.speakerOutput))
+        _repeatDraft = State(initialValue: initialRepeat)
     }
     private static func validate(_ settings: SpeakerOutputSettings, avoiding otherPatterns: [PhrasePattern]) -> Validation {
         // The same steps as GateModel.saveSpeakerOutputSettings, so Done is never on for a draft it rejects.
@@ -794,6 +791,10 @@ private struct SpeakerOutputEditor: View {
             $0.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || SpeakerOutputSettings.lines($0.names).isEmpty
         }
     }
+    // Turning off an invalid saved command must not require repairing its phrases first. — GPT-6.1 Sol
+    private var onlyDisabling: Bool {
+        !enabledDraft && draft == initial && repeatDraft == initialRepeat && soundDraft == initialSound
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
@@ -802,11 +803,12 @@ private struct SpeakerOutputEditor: View {
                     Spacer()
                     Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                     Button("Done") { finish() }
-                        .disabled(problem != nil)
+                        .disabled(problem != nil && !onlyDisabling)
                         .keyboardShortcut(.defaultAction).accessibilityIdentifier("speakerOutputSave")
                 }
                 Text("Say a phrase, then a speaker name, such as “Switch speakers to Kitchen”.")
                     .foregroundStyle(.secondary)
+                CommandEnabledToggle(command: .speakerOutput, isOn: $enabledDraft)
                 RepeatCountToggle(command: RepeatCountToggle.speakerOutput, example: "Switch speakers to Kitchen", draft: $repeatDraft)
                 if !alternateSpellings { AlternateSpellingsOffNote() }
                 if !loadingDevices && !hasOutputHelper {
@@ -917,11 +919,13 @@ private struct SpeakerOutputEditor: View {
         }
     }
     private func finish() {
+        if onlyDisabling { saveEnabled(false); dismiss(); return }
         if save(draft) {
             savedSound = soundDraft
             if repeatDraft != CommandRepetition.enabled(RepeatCountToggle.speakerOutput) {
                 CommandRepetition.setEnabled(repeatDraft, command: RepeatCountToggle.speakerOutput)
             }
+            saveEnabled(enabledDraft)
             dismiss()
         } else {
             // The model rechecks against the current commands, which can change while this is open.
@@ -980,7 +984,7 @@ private struct SpeakerPhraseRows<Accessory: View>: View {
 // every trigger and its spellings while retaining the existing saved rows. — GPT-6.1 Sol
 private enum PhraseFocus: Hashable { case main(PhraseSlot), row(UUID) }
 
-private struct CommandInfoButton: View {
+struct CommandInfoButton: View {
     let title: String
     let detail: String
     @State private var showing = false
@@ -1024,7 +1028,7 @@ private extension PhraseSlot {
     }
 }
 
-private struct CommandSettingsButton: View {
+struct CommandSettingsButton: View {
     let title: String
     let open: () -> Void
     var body: some View {
@@ -1038,7 +1042,7 @@ private struct CommandSettingsButton: View {
 // Switch speakers passes a draft that only its Done saves. One original for the in-app wording;
 // README's How It Works repeat row uses the same sentences, and the website derives from README.
 private struct RepeatCountToggle: View {
-    static let speakerOutput = "speakerOutput"
+    static let speakerOutput = HomeCommand.speakerOutput.id
     static let settingsHelp = "Say how many times after a command, such as “Zoom in three times”. Turn off Repeat count in a command’s gear on Home."
     static let guide: String = {
         guard let url = Bundle.main.url(forResource: "CommandRepetitionHelp", withExtension: "json"),
@@ -1111,17 +1115,24 @@ private struct CommandSoundPicker: View {
 // Home rows read value snapshots instead of observing the model. Live transcript updates still
 // re-render MainView, but these rows only re-render when their phrases or the rewind amount change.
 // Each gear sheet observes the model itself.
-private struct PhraseFields: View, Equatable {
+struct PhraseFields: View, Equatable {
     let model: GateModel
     let configuration: PhraseConfiguration
     let slots: [PhraseSlot]
     let rewindSeconds: Int
-    @State private var selected: PhraseSlot? = nil
-    init(model: GateModel, configuration: PhraseConfiguration, slots: [PhraseSlot] = PhraseSlot.voiceSlots, rewindSeconds: Int = 10) {
+    let origin: CommandEditorRequest.Origin
+    let visibleGroups: [HomeCommand]
+    let editor: CommandEditorRequest?
+    init(model: GateModel, configuration: PhraseConfiguration, slots: [PhraseSlot] = PhraseSlot.voiceSlots,
+         rewindSeconds: Int = 10, origin: CommandEditorRequest.Origin = .home) {
         self.model = model; self.configuration = configuration; self.slots = slots; self.rewindSeconds = rewindSeconds
+        self.origin = origin; self.editor = model.commandEditor
+        self.visibleGroups = PhraseSlot.settingsGroups(slots).compactMap { $0.first.flatMap(HomeCommand.containing) }
+            .filter { model.isCommandListed($0, on: origin) }
     }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.configuration == rhs.configuration && lhs.slots == rhs.slots && lhs.rewindSeconds == rhs.rewindSeconds
+            && lhs.origin == rhs.origin && lhs.visibleGroups == rhs.visibleGroups && lhs.editor == rhs.editor
     }
     // The rewind amount appears once, in this explanation, rather than as a second caption line.
     private func help(for slot: PhraseSlot) -> String {
@@ -1130,7 +1141,8 @@ private struct PhraseFields: View, Equatable {
         return "Jumps back \(amount) in the browser video through Agent Flow. Change the amount in the gear. Phrases that say 5 or 10 seconds always use that amount."
     }
     var body: some View {
-        ForEach(PhraseSlot.settingsGroups(slots), id: \.first) { group in
+        ForEach(visibleGroups) { command in
+            let group = command.slots
             if let slot = group.first {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -1147,20 +1159,18 @@ private struct PhraseFields: View, Equatable {
                         }
                     }
                     Spacer(minLength: 12)
-                    CommandSettingsButton(title: slot.settingsTitle) { selected = slot }
+                    CommandSettingsButton(title: slot.settingsTitle) { model.openCommandSettings(command, from: origin) }
+                        .disabled(editor != nil)
                         .accessibilityIdentifier(slot.identifier + "Settings")
                 }
             }
-        }
-        .sheet(item: $selected) { slot in
-            CommandPhrasesView(model: model, slots: PhraseSlot.settingsGroups(slots).first { $0.first == slot } ?? [slot])
         }
     }
 }
 
 // Refactor of the existing phrase-row editor. All changes still use GateModel’s
 // main keys, extra rows, validation and slash-entry commit path. — GPT-6.1 Sol
-private struct CommandPhrasesView: View {
+struct CommandPhrasesView: View {
     @ObservedObject var model: GateModel
     let slots: [PhraseSlot]
     @Environment(\.dismiss) private var dismiss
@@ -1188,6 +1198,11 @@ private struct CommandPhrasesView: View {
                 Spacer()
                 // Rows save as you type, so Done only closes. Escape does the same.
                 Button("Done") { commitFocused(); dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            if let first = slots.first, let command = HomeCommand.containing(first) {
+                CommandEnabledToggle(command: command, isOn: Binding(
+                    get: { model.commandAvailability.isEnabled(command) },
+                    set: { model.setCommandEnabled($0, command: command) }))
             }
             HStack {
                 if let first = slots.first, !first.isRewind {
@@ -1479,13 +1494,20 @@ private struct VideoControls: View, Equatable {
     @ObservedObject var bridge: VideoBridge
     let configuration: PhraseConfiguration
     let rewindSeconds: Int
+    let commandAvailability: CommandAvailability
+    let editor: CommandEditorRequest?
+    init(model: GateModel, bridge: VideoBridge, configuration: PhraseConfiguration, rewindSeconds: Int) {
+        self.model = model; self.bridge = bridge; self.configuration = configuration; self.rewindSeconds = rewindSeconds
+        self.commandAvailability = model.commandAvailability; self.editor = model.commandEditor
+    }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.configuration == rhs.configuration && lhs.rewindSeconds == rhs.rewindSeconds
+            && lhs.commandAvailability == rhs.commandAvailability && lhs.editor == rhs.editor
     }
     private var available: Bool { bridge.availability.isAvailable }
     var body: some View {
         PhraseFields(model: model, configuration: configuration, slots: PhraseSlot.videoSlots, rewindSeconds: rewindSeconds).equatable()
-        if !available {
+        if !available && PhraseSlot.videoSlots.contains(where: { commandAvailability.isEnabled($0) }) {
             HStack(spacing: 5) {
                 Image(systemName: "info.circle").foregroundStyle(.secondary).accessibilityHidden(true)
                 Link(bridge.availability == .unavailable(.incompatible) ? "Update Agent Flow for video commands" : "Connect Agent Flow for video commands",
@@ -1730,7 +1752,8 @@ struct SettingsView: View {
                     .accessibilityIdentifier("similarPhrases")
                 Text(model.similarPhrases ? "Also matches each phrase’s alternate spellings." : "Phrases must match exactly. Capitalization, spaces and punctuation can differ.")
                     .foregroundStyle(.secondary)
-                if !model.hasPhrase(.wakePhrase) || !model.hasPhrase(.sleepPhrase) {
+                if (model.commandAvailability.isEnabled(.wakePhrase) && !model.hasPhrase(.wakePhrase))
+                    || (model.commandAvailability.isEnabled(.sleepPhrase) && !model.hasPhrase(.sleepPhrase)) {
                     Label("Add a wake phrase and an end phrase on Home.", systemImage: "exclamationmark.triangle").foregroundStyle(.red)
                 }
                 HStack(alignment: .top) {
@@ -1756,6 +1779,7 @@ struct SettingsView: View {
                         .accessibilityIdentifier("speechCheckResult")
                 }
             }
+            DisabledCommandsSection(model: model)
             Section("Resources") {
                 ResourceStatus()
                 Text(model.computeText)
@@ -1831,6 +1855,7 @@ struct SettingsView: View {
         .controlSize(zoom.scale >= 1.3 ? .large : .regular)
         .frame(minWidth: 440, idealWidth: 560, maxWidth: .infinity,
                minHeight: 420, idealHeight: 660, maxHeight: .infinity)
+        .modifier(CommandSettingsHost(model: model, origin: .settings))
     }
     // Same action as the menu and Shortcuts; only the shown result differs. Result messages come
     // from GateModel and CodexChatSpeed, so Settings adds no second wording for them.

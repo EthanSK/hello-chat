@@ -58,6 +58,25 @@ import Foundation
         pending.finish(steps[0], .unknown); precondition(calls == 2, "Duplicate teardown cannot complete the next step")
         pending.cancelPending(); pending.finish(pendingID, .confirmed); precondition(calls == 2)
 
+        let scoped = RepeatedCommands(); var scopedCalls: [String] = []; var inFlight: UUID?
+        var scopedOutcomes: [RepeatedCommands.Outcome] = []
+        scoped.onProgress = { if let outcome = $0.outcome { scopedOutcomes.append(outcome) } }
+        scoped.update(["zoom", "in", "three"], timings: nil)
+        scoped.begin(id: UUID(), range: 0..<2, repeats: true, command: "zoomInPhrase") { step in
+            scopedCalls.append("zoom"); inFlight = step
+        }
+        scoped.update(["pause", "music", "two"], timings: nil)
+        scoped.begin(id: UUID(), range: 0..<2, repeats: true, command: "pauseMusicPhrase") { step in
+            scopedCalls.append("pause"); scoped.finish(step, .submitted)
+        }
+        scoped.cancelPending(command: "zoomInPhrase")
+        precondition(scopedCalls == ["zoom"], "Disabling a command cannot pretend its in-flight action was undone")
+        scoped.finish(inFlight!, .submitted)
+        precondition(scopedCalls == ["zoom", "pause", "pause"], "Only that command's remaining steps stop; another command keeps its order")
+        precondition(!scopedOutcomes.contains(.failedBeforeDispatch), "An action already sent never becomes fallback permission")
+        scoped.update(["zoom", "in", "ten"], timings: nil); scoped.poll()
+        precondition(scopedCalls == ["zoom", "pause", "pause"], "A revised transcript cannot revive cancelled repeats")
+
         let failed = RepeatedCommands(); calls = 0
         failed.update(["rewind", "5", "seconds", "three", "times"], timings: nil)
         failed.begin(id: UUID(), range: 0..<3, repeats: true) { id in calls += 1; failed.finish(id, .unknown) }

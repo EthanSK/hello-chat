@@ -67,6 +67,11 @@ extension HAgentControl {
         }
         let slots = HControlField.oneOf(PhraseSlot.allCases.map(\.rawValue))
         let repeats = repeatKeys
+        write("settings.commandEnabled", ["command": .oneOf(HomeCommand.all.map(\.id)), "enabled": .bool]) { [model] request in
+            guard let command = HomeCommand.all.first(where: { $0.id == request.string("command") }),
+                  let enabled = request.arguments["enabled"] as? Bool else { throw HControlFailure.invalid("Choose a command and whether it is enabled.") }
+            model.setCommandEnabled(enabled, command: command)
+        }
         write("settings.repeat", ["command": .oneOf(repeats), "enabled": .bool]) { request in
             if let enabled = request.arguments["enabled"] as? Bool { CommandRepetition.setEnabled(enabled, command: request.string("command")) }
         }
@@ -171,7 +176,7 @@ extension HAgentControl {
     }
 
     private var repeatKeys: [String] {
-        (PhraseSlot.settingsGroups(PhraseSlot.allCases).compactMap { $0.first?.rawValue } + ["speakerOutput"]).sorted()
+        HomeCommand.all.map(\.id).sorted()
     }
 
     private func settingsSnapshot() throws -> [String: Any] {
@@ -193,6 +198,7 @@ extension HAgentControl {
             "lowerSpotifyDuringChat": model.lowerSpotifyDuringChat, "spotifyVolumeLimit": model.spotifyVolumeLimit,
             "saveTranscripts": model.saveTranscripts, "automaticListening": model.automaticListening, "similarPhrases": model.similarPhrases,
             "bringHomeForward": model.bringHomeForward,
+            "commands": Dictionary(uniqueKeysWithValues: HomeCommand.all.map { ($0.id, model.commandAvailability.isEnabled($0)) }),
             "notificationRepliesEnabled": model.notificationReplies.settings.enabled,
             "notificationReplyIdleSeconds": model.notificationReplies.settings.idleSeconds,
             "notificationReplySeconds": model.notificationReplies.settings.replySeconds,

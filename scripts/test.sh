@@ -17,6 +17,8 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/Transcr
 "$build_dir/AgentControlTests"
 swiftc -swift-version 5 -parse-as-library Sources/CommandRepetition.swift Tests/CommandRepetitionTests.swift -o "$build_dir/CommandRepetitionTests"
 "$build_dir/CommandRepetitionTests"
+swiftc -swift-version 5 -parse-as-library Sources/GateCore.swift Sources/CommandRepetition.swift Tests/CommandAvailabilityTests.swift -o "$build_dir/CommandAvailabilityTests"
+"$build_dir/CommandAvailabilityTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpokenCommandJournal.swift Tests/SpokenCommandJournalTests.swift -o "$build_dir/SpokenCommandJournalTests"
 "$build_dir/SpokenCommandJournalTests"
 swiftc -swift-version 5 -parse-as-library $speed_sources -o "$build_dir/CodexChatSpeedTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
