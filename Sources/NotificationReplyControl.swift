@@ -35,6 +35,12 @@ extension HAgentControl {
             let ids = try request.notificationReplyIDs()
             return try replies.audioEnded(event: ids.event, instance: ids.instance, uptime: request.number("endedUptime"), wall: request.number("endedWall"), completed: request.flag("completed"))
         }
+        add("fallbackReady", fields: event.merging(["deliveredUptime": .number(0...1e12), "deliveredWall": .number(0...1e12), "skipReason": .text]) { $1 }) { request in
+            let ids = try request.notificationReplyIDs()
+            return try await replies.fallbackReady(event: ids.event, instance: ids.instance,
+                deliveredUptime: request.number("deliveredUptime"), deliveredWall: request.number("deliveredWall"),
+                skipReason: request.string("skipReason"), expiresAt: request.expires)
+        }
         add("cancel", fields: event.merging(["reason": .text]) { $1 }) { request in
             let ids = try request.notificationReplyIDs()
             return try replies.cancel(event: ids.event, instance: ids.instance, reason: request.string("reason"))

@@ -47,7 +47,7 @@ struct NotificationReplyCore {
     struct Limits: Equatable, Codable {
         var idleSeconds: Double = 60
         var replySeconds: Double = 120
-        var commandSeconds: Double { 2 }
+        var commandSeconds: Double { 5 }
         var confirmationSeconds: Double { 1.5 }
         // A finite allowance for the selected provider's native final decode.
         // Explicit notification End does not require whole-room quiet. — GPT-6.1 Sol
@@ -79,6 +79,8 @@ struct NotificationReplyCore {
     private(set) var reason = ""
     private(set) var body: String?
     private(set) var audioEndedAt: Double?
+    // Speech exit and visual fallback share one opportunity, without inventing an audio event. — GPT-6.1 Sol
+    private(set) var opportunityAt: Double?
     private(set) var acceptedAt: Double?
     private(set) var finalizeThrough: Double?
     private(set) var acceptedCount = 0
@@ -119,8 +121,15 @@ struct NotificationReplyCore {
         if let started = announcementStartedAt, time - started > Self.maxAnnouncementSeconds {
             cancel("announcement-limit"); return
         }
-        audioEndedAt = time; phase = .waiting
+        audioEndedAt = time; opportunityAt = time; phase = .waiting
         evaluate(now: now)
+    }
+
+    mutating func fallbackReady(at time: Double) {
+        guard phase == .preparing, announcementStartedAt == nil, opportunityAt == nil,
+              time.isFinite, time >= preparedAt, time - preparedAt <= Self.maxSetupSeconds else { return }
+        opportunityAt = time; phase = .waiting
+        evaluate(now: time)
     }
 
     /// Revisions replace their own batch; stable prefixes and timed controls are never counted twice. — GPT-6.1 Sol
@@ -149,7 +158,7 @@ struct NotificationReplyCore {
         }) {
             cancel("reply-prefix-revised"); return
         }
-        if activation == nil, let end = audioEndedAt {
+        if activation == nil, let end = opportunityAt {
             // TTS heard before the opportunity is only context for standalone-command admission.
             batches.removeAll { $0.words.last.map { $0.end < end - 3 } ?? true }
         }
@@ -168,7 +177,7 @@ struct NotificationReplyCore {
         if phase == .announcing, let started = announcementStartedAt, now - started > Self.maxAnnouncementSeconds {
             cancel("announcement-limit"); return
         }
-        if let ended = audioEndedAt, now - ended > limits.maxHoldSeconds { cancel("session-limit"); return }
+        if let ended = opportunityAt, now - ended > limits.maxHoldSeconds { cancel("session-limit"); return }
         evaluate(now: now)
         if phase == .waiting, let passed = windowProcessedAt,
            now - passed >= limits.confirmationSeconds { cancel("no-command") }
@@ -184,7 +193,7 @@ struct NotificationReplyCore {
     }
 
     mutating func processed(through time: Double, now: Double) {
-        if phase == .waiting, let ended = audioEndedAt, time >= ended + limits.commandSeconds + 0.6,
+        if phase == .waiting, let ended = opportunityAt, time >= ended + limits.commandSeconds + 0.6,
            windowProcessedAt == nil { windowProcessedAt = now }
     }
 
@@ -207,7 +216,7 @@ struct NotificationReplyCore {
 
     private mutating func evaluate(now: Double) {
         let all = flattened()
-        if phase == .waiting, let ended = audioEndedAt {
+        if phase == .waiting, let ended = opportunityAt {
             for (index, item) in all.enumerated() {
                 let word = item.word
                 guard word.start >= ended - 0.05, word.start <= ended + limits.commandSeconds else { continue }

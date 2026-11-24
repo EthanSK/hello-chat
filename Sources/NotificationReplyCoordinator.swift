@@ -33,9 +33,9 @@ import Foundation
 
 /// An active capture is separate from frozen deliveries, so FIFO unlock cannot let a newer prepare overwrite an older reply. — GPT-6.1 Sol
 @MainActor final class NotificationReplyCoordinator: ObservableObject {
-    enum Readiness: String { case ready, disabled, listeningOff, listenerUnavailable, voiceActive, voiceUnknown, agentFlow, desktopUnavailable, codexUnavailable }
+    enum Readiness: String { case ready, disabled, listeningOff, listenerUnavailable, voiceActive, voiceUnknown, desktopUnavailable, codexUnavailable }
     enum Failure: String, Error { case invalidEvent, busy, differentInstance, unavailable }
-    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = "" }
+    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = ""; var commandSeconds = NotificationReplyCore.Limits().commandSeconds }
     let settings: NotificationReplySettings
     let instance = UUID()
     @Published private(set) var lastPhase: NotificationReplyCore.Phase?
@@ -59,11 +59,9 @@ import Foundation
     private var originTasks: [UUID: Task<Void, Never>] = [:]
     private var originAgain: Set<UUID> = []
     private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
-    private let recording: AgentFlowRecordingMonitor?
     var queueCommand: ([String]) throws -> Int32 = NotificationReplyCoordinator.runQueue
     var clock: () -> Double = { Diagnostics.now }
     var wallClock: () -> Double = { Date().timeIntervalSince1970 }
-    var recordingBusy: (() -> Bool)?
     var captureOrigin: (UUID, UUID?, String) async throws -> NotificationReplyOrigin = { thread, turn, question in
         try await Task.detached(priority: .utility) { try NotificationReplyOrigin.capture(thread: thread, turn: turn, question: question) }.value
     }
@@ -72,18 +70,18 @@ import Foundation
     var interceptsSpeech: Bool { active.flatMap { sessions[$0]?.core.interceptsSpeech } ?? false }
     var isComposing: Bool { active.flatMap { sessions[$0]?.core.phase } == .composing }
     var hasOpenAttempt: Bool { sessions.values.contains { !$0.releaseAcknowledged } || !deliveryTasks.isEmpty }
-    var readiness: Readiness { !settings.enabled ? .disabled : (recordingBusy?() ?? recording?.recordingOrUnknown ?? true) ? .agentFlow : currentReadiness() }
+    // Ethan permits Reply while Agent Flow records. Speech suppression belongs to the speaker;
+    // this existing shared listener still respects Voice, desktop, settings and frame-loss guards. — GPT-6.1 Sol
+    var readiness: Readiness { !settings.enabled ? .disabled : currentReadiness() }
     var lifecycleCounts: (sessions: Int, watchers: Int, textBytes: Int, checkingBounds: Bool) {
         (sessions.count, sessions.values.reduce(0) { $0 + $1.observers.count },
          sessions.values.reduce(0) { $0 + $1.spokenText.utf8.count + ($1.core.body?.utf8.count ?? 0) }, timer != nil)
     }
 
-    init(settings: NotificationReplySettings? = nil, directory: URL = AppPaths.support.appendingPathComponent("notification-replies-v1"), observeRecording: Bool = true) {
+    init(settings: NotificationReplySettings? = nil, directory: URL = AppPaths.support.appendingPathComponent("notification-replies-v1")) {
         self.settings = settings ?? NotificationReplySettings()
         files = NotificationReplyFiles(directory: directory)
-        recording = observeRecording ? AgentFlowRecordingMonitor() : nil
         self.settings.changed = { [weak self] in self?.cancelAll("settings-changed") }
-        recording?.onChange = { [weak self] busy in if busy { self?.cancelAll("agentFlow") } }
     }
 
     func prepare(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String) async throws -> [String: Any] {
@@ -116,6 +114,7 @@ import Foundation
 
     func audioStarted(event: UUID, instance: UUID, uptime: Double, wall: Double) throws -> [String: Any] {
         let session = try selected(event, instance)
+        guard session.fallback == nil else { throw Failure.invalidEvent }
         if let started = session.started {
             guard started == uptime else { throw Failure.invalidEvent }; return snapshot(session)
         }
@@ -127,6 +126,7 @@ import Foundation
     }
     func audioEnded(event: UUID, instance: UUID, uptime: Double, wall: Double, completed: Bool) throws -> [String: Any] {
         let session = try selected(event, instance)
+        guard session.fallback == nil else { throw Failure.invalidEvent }
         if let ended = session.core.audioEndedAt {
             guard ended == uptime else { throw Failure.invalidEvent }; return snapshot(session)
         }
@@ -134,6 +134,33 @@ import Foundation
             session.core.cancel("audio-end-stale"); publish(session); return snapshot(session)
         }
         session.core.audioEnded(at: uptime, completed: completed, now: now)
+        publish(session); return snapshot(session)
+    }
+    func fallbackReady(event: UUID, instance: UUID, deliveredUptime: Double, deliveredWall: Double,
+                       skipReason: String, expiresAt: Double) async throws -> [String: Any] {
+        let session = try selected(event, instance)
+        if let fallback = session.fallback {
+            guard fallback.uptime == deliveredUptime, fallback.wall == deliveredWall, fallback.reason == skipReason else { throw Failure.invalidEvent }
+            return snapshot(session) // An identical callback never opens or extends a second window.
+        }
+        guard ["agent-flow-speech-denied", "audio-unavailable-before-start"].contains(skipReason), session.started == nil,
+              session.core.phase == .preparing, session.core.opportunityAt == nil,
+              validClock(deliveredUptime, deliveredWall, maxAge: NotificationReplyCore.maxSetupSeconds),
+              let origin = session.origin else { throw Failure.invalidEvent }
+        let validate = validateOrigin
+        do { try await Task.detached(priority: .utility) { try validate(origin) }.value }
+        catch { cancelSession(session, reason: Self.reason(error)); return snapshot(session) }
+        guard sessions[event] === session, session.core.phase == .preparing,
+              session.started == nil, session.fallback == nil, !session.presentationDismissed else { return snapshot(session) }
+        guard wallClock() < expiresAt else { cancelSession(session, reason: "fallback-request-expired"); return snapshot(session) }
+        guard now - session.core.preparedAt <= NotificationReplyCore.maxSetupSeconds else {
+            cancelSession(session, reason: "announcement-setup-limit"); return snapshot(session)
+        }
+        guard readiness == .ready else { cancelSession(session, reason: readiness.rawValue); return snapshot(session) }
+        session.fallback = .init(uptime: deliveredUptime, wall: deliveredWall, reason: skipReason)
+        // The old banner's time is retained separately. This FIRST opportunity begins
+        // when this actor synchronously presents Say Reply, after both facts are known. — GPT-6.1 Sol
+        session.core.fallbackReady(at: now)
         publish(session); return snapshot(session)
     }
     func cancel(event: UUID, instance: UUID, reason: String) throws -> [String: Any] {
@@ -219,6 +246,7 @@ import Foundation
     }
 
     private final class Session {
+        struct Fallback { let uptime: Double; let wall: Double; let reason: String }
         let event: UUID, thread: UUID, turn: UUID?
         let question: String
         var spokenText: String
@@ -226,6 +254,7 @@ import Foundation
         var core: NotificationReplyCore
         var origin: NotificationReplyOrigin?
         var started: Double?
+        var fallback: Fallback?
         var releaseAcknowledged = false
         var presentationDismissed = false
         var cuePlayed = false
@@ -255,6 +284,10 @@ import Foundation
         return ["protocolVersion": 1, "eventID": session.event.uuidString.lowercased(), "threadID": session.thread.uuidString.lowercased(),
                 "instance": instance.uuidString.lowercased(), "statusFile": files.path(session.event).path,
                 "phase": session.core.phase.rawValue, "reason": session.core.reason, "releaseRequested": session.core.releaseRequested,
+                "opportunityKind": session.fallback != nil ? "visual" : session.core.audioEndedAt != nil ? "audio" : "none",
+                "opportunityUptime": session.core.opportunityAt as Any? ?? NSNull(),
+                "visualDeliveredUptime": session.fallback?.uptime as Any? ?? NSNull(),
+                "visualDeliveredWall": session.fallback?.wall as Any? ?? NSNull(),
                 "maxSetupSeconds": NotificationReplyCore.maxSetupSeconds,
                 "maxAnnouncementSeconds": NotificationReplyCore.maxAnnouncementSeconds,
                 "maxHoldSeconds": limits.maxHoldSeconds,
@@ -288,7 +321,7 @@ import Foundation
         guard !session.releaseAcknowledged, !session.presentationDismissed, active == nil || active == session.event else { return }
         session.presentedTextRevision = session.core.textRevision; shown = session.event
         showPresentation?(.init(event: session.event, phase: session.core.phase, reason: session.core.reason,
-            spokenText: session.spokenText, replyText: session.core.phase == .composing ? session.core.draftText : ""))
+            spokenText: session.spokenText, replyText: session.core.phase == .composing ? session.core.draftText : "", commandSeconds: session.core.limits.commandSeconds))
     }
     private func startTimer() {
         guard timer == nil else { return }
@@ -299,12 +332,12 @@ import Foundation
         for session in sessions.values {
             if session.core.interceptsSpeech, readiness != .ready { cancelSession(session, reason: readiness.rawValue) }
             session.core.tick(now: now); publish(session)
-            if session.started == nil, session.core.releaseRequested, !session.releaseAcknowledged, now - session.core.preparedAt > 10 {
+            if session.started == nil, session.core.opportunityAt == nil, session.core.releaseRequested, !session.releaseAcknowledged, now - session.core.preparedAt > 10 {
                 session.releaseAcknowledged = true
                 if shown == session.event { shown = nil; showPresentation?(nil) }
             }
             if let queuedAt = session.queuedAt, now - queuedAt >= 60 { retireHeavyState(session) }
-            let audioBound = session.core.audioEndedAt ?? session.started.map { $0 + NotificationReplyCore.maxAnnouncementSeconds }
+            let audioBound = session.core.opportunityAt ?? session.started.map { $0 + NotificationReplyCore.maxAnnouncementSeconds }
                 ?? session.core.preparedAt + NotificationReplyCore.maxSetupSeconds
             if session.core.releaseRequested, !session.releaseAcknowledged,
                now - audioBound > session.core.limits.maxHoldSeconds {

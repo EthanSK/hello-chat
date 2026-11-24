@@ -37,8 +37,23 @@ Operations, all scoped to one notification UUID:
   verified physical speaker/DAC onset; command opportunity is anchored to actual child exit below.
 - `notificationReply.audioEnded`: `eventID`, `endedUptime`, `endedWall`, `completed` from that
   same audio child's exit. A failed, stale or discontinuous-clock exit cancels without sending.
-  The spoken command must start in the following two seconds. Recognition can arrive later;
+  The spoken command must start in the following five seconds. Recognition can arrive later;
   H Chat uses the captured audio/word timeline and bounded recognition confirmation.
+- `notificationReply.fallbackReady`: `eventID`, `instance`, `deliveredUptime`, `deliveredWall`,
+  `skipReason`. This optional capability opens a visual-only opportunity for intended speech that
+  definitively never started. The supported classifications are `agent-flow-speech-denied`: the
+  speaker's initial Agent Flow admission refused before any media coordination or audio child.
+  This classification includes unavailable recording admission; it is not proof of actual capture. `audio-unavailable-before-start` is the other eligible refusal: neither provider rendered audio, with no interruption, lease, media pause or child admission.
+  A forced kill, unknown outcome, Voice refusal, later refresh refusal or started/failed audio is
+  not eligible. The client must prove the exact native notification was delivered and bind its
+  native ID/origin/turn/question to this event. No latest-notification lookup or banner resend.
+  Both original delivery clocks must be finite, agree with the continuous app clock, and be no
+  older than the existing 180-second setup bound. The current exact session must still be
+  preparing, with a valid origin and no audio start or prior opportunity. After revalidation,
+  the app synchronously presents Say Reply and anchors its FIRST five-second window to that
+  readiness transition. An older banner timestamp is retained separately, never called fresh.
+  Audio exit and visual readiness are mutually exclusive; an identical duplicate returns the
+  original anchor, while conflicting facts are invalid. Cancelled/stale sessions never reopen.
 - `notificationReply.cancel`: `eventID`, `reason`. Idempotent cancellation never sends.
 - `notificationReply.mediaReleased`: `eventID`, `released`. Call only after the original speaker
   has actually completed its balanced media/FIFO cleanup. A false/unknown release cancels.
@@ -79,7 +94,7 @@ its existing deadline. A late valid setup/announcement cannot shorten the permit
 `commandDrainSeconds`, and `maxHoldSeconds`, plus `endConfirmationSeconds` for native End finalization.
 Initial confirmation stays 1.5 seconds and initial drain 2.1 seconds; only End has a 3.5-second
 confirmation allowance for the selected recognizer's actual native final result. Nemotron explicitly finishes its existing SDK stream between input frames; it does not wait for whole-room quiet. An unchanged timed End prefix completes before any later captured words, while changed or late results cannot send. The maximum
-hold is 191.6 seconds with a 180-second reply. These are read from the app, not settings imported
+hold is 194.6 seconds with a 180-second reply. These are read from the app, not settings imported
 from the temporarily disabled standalone pilot. The corresponding status result/file repeats the
 identity and phase/reason/releaseRequested fields. Status never returns captured text.
 
@@ -87,8 +102,7 @@ identity and phase/reason/releaseRequested fields. Status never returns captured
 
 H Chat's current SpeechListener supplies both commands and reply text. Existing model and input
 choices are unchanged. Disabled listening is unavailable, not silently enabled. Codex Voice and
-manual Agent Flow capture take priority; they cancel only the notification reply, leaving ordinary
-H Chat commands available. During an admitted finite attempt, its speech is consumed before ambient
+Agent Flow recording have separate policies. Active or unknown Codex Voice cancels only the notification reply. Agent Flow recording may continue while H Chat uses its existing selected listener for Reply; notification speech remains suppressed by the speaker’s existing guard. Ordinary H Chat commands remain available outside the bounded reply attempt. During an admitted finite attempt, its speech is consumed before ambient
 command matching, so a dictated reply cannot launch apps, switch audio or start/end a call.
 
 Reply starts composition; End reply is the only normal send. Pauses never submit. Defaults are
@@ -118,3 +132,26 @@ The earlier `speak-action-reminder/reply-companion/handsfree_core.py`, `reply_co
 `handsfree_reply.py` provide command-time, stale-origin and exact-target delivery behavior to preserve.
 The H Chat integration replaces their standalone capture/command recognizer and cloud transcription.
 Old tests and HUD screenshots are historical evidence, not verification of this new shared pipeline.
+
+## Visual fallback response and cleanup
+
+The existing six callback schemas and notification protocol integer remain 1. New clients discover
+`fallbackReady` before using this extension. Every event snapshot additionally exposes:
+
+```json
+{"opportunityKind":"visual","opportunityUptime":120.0,
+ "visualDeliveredUptime":100.0,"visualDeliveredWall":1795500100.0}
+```
+
+The example numbers are synthetic. Before a window opens, kind is `none` and the three clocks are
+null. Successful speech uses kind `audio`, its real exit as opportunityUptime, and null visual clocks.
+Metadata contains no notification or reply body. The two-second wording in old receipts is historical;
+current app-owned `limits.commandSeconds` is 5, with unchanged initial confirmation/drain and End-only
+allowance. Settings and the visible prompt compose that same bound. Maximum hold is 194.6 seconds.
+
+A visual-only session owns no audio child or media pause. Its explicit initial refusal receipt and
+balanced `no-media` cleanup preserve the ordinary speech failure result; they do not fabricate spoken
+success. The metadata client retains its original FIFO turn through the app decision, then acknowledges
+`mediaReleased` only from actual FIFO finalization. All normal origin, instance, final native End,
+expiry, real recognition-frame-loss, durable once-only claim and exact-chat delivery checks still apply.
+No client may relax private status reads, replay a skipped notice, or launch a second listener.

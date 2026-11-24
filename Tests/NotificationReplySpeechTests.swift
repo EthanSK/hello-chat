@@ -73,7 +73,7 @@ import Foundation
         late.audioEnded(at: 100, completed: true, now: 100)
         late.tick(now: 105)
         check(late.phase == .waiting, "wall time cannot close an unprocessed opportunity")
-        late.processed(through: 103, now: 106); late.tick(now: 107)
+        late.processed(through: 106, now: 106); late.tick(now: 107)
         check(late.phase == .waiting, "bounded late-result confirmation follows decoded progress")
         late.tick(now: 107.6)
         check(late.reason == "no-command", "processed empty opportunity eventually cancels")

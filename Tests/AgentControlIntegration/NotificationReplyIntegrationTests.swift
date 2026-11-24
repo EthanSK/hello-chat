@@ -35,11 +35,11 @@ import SwiftUI
         let name = "HChatNotificationTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let settings = NotificationReplySettings(defaults: defaults); settings.enabled = true
-        let coordinator = supplied ?? NotificationReplyCoordinator(settings: settings, directory: root.appendingPathComponent("status"), observeRecording: false)
+        let coordinator = supplied ?? NotificationReplyCoordinator(settings: settings, directory: root.appendingPathComponent("status"))
         coordinator.settings.enabled = true
         let clock = Clock(), calls = Calls()
         coordinator.clock = { clock.time }; coordinator.wallClock = { clock.wallBase + clock.time }
-        coordinator.recordingBusy = { false }; coordinator.currentReadiness = { .ready }
+        coordinator.currentReadiness = { .ready }
         coordinator.captureOrigin = { _, _, _ in origin }
         coordinator.currentDesktop = { (URL(fileURLWithPath: "/fixture/codex"), getpid()) }
         coordinator.queueCommand = { calls.append($0); return 0 }
@@ -60,6 +60,123 @@ import SwiftUI
         model.recognized(.init(batch: UUID(), text: "Reply yes End reply", words: [
             .init(text: "reply", start: start + 1, end: start + 1.1), .init(text: "yes", start: start + 1.2, end: start + 1.3),
             .init(text: "end", start: start + 1.5, end: start + 1.6), .init(text: "reply", start: start + 1.7, end: start + 1.8)], stableWords: 4))
+    }
+    private func fallback(_ f: Fixture, event: UUID, delivery: Double = 90) async throws -> [String: Any] {
+        try await f.coordinator.fallbackReady(event: event, instance: f.coordinator.instance,
+            deliveredUptime: delivery, deliveredWall: f.clock.wallBase + delivery,
+            skipReason: "agent-flow-speech-denied", expiresAt: f.clock.wallBase + f.clock.time + 3)
+    }
+    func testVisualFallbackStartsAtNewHUDAndFinalizesOnce() async throws {
+        let f = try fixture(), event = UUID()
+        var panels: [NotificationReplyCoordinator.Presentation] = []
+        f.coordinator.showPresentation = { if let value = $0 { panels.append(value) } }
+        _ = try await prepare(f, event: event)
+        let first = try await fallback(f, event: event)
+        XCTAssertEqual(first["opportunityKind"] as? String, "visual")
+        XCTAssertEqual(first["visualDeliveredUptime"] as? Double, 90)
+        XCTAssertEqual(first["opportunityUptime"] as? Double, 100, "An old delivered notice does not consume the new first HUD opportunity")
+        XCTAssertEqual(panels.last?.phase, .waiting)
+        XCTAssertEqual(panels.last?.commandSeconds, 5)
+        f.clock.time = 104.5
+        let duplicate = try await fallback(f, event: event)
+        XCTAssertEqual(duplicate["opportunityUptime"] as? Double, 100)
+        XCTAssertThrowsError(try f.coordinator.audioStarted(event: event, instance: f.coordinator.instance, uptime: 104.5, wall: f.clock.wallBase + 104.5))
+        XCTAssertThrowsError(try f.coordinator.audioEnded(event: event, instance: f.coordinator.instance, uptime: 104.5, wall: f.clock.wallBase + 104.5, completed: true))
+        f.coordinator.recognized(.init(batch: UUID(), text: "Reply yes End reply", words: [
+            .init(text: "reply", start: 104.5, end: 104.6), .init(text: "yes", start: 104.7, end: 104.8),
+            .init(text: "end", start: 105, end: 105.1), .init(text: "reply", start: 105.2, end: 105.3)], stableWords: 4))
+        XCTAssertEqual(f.calls.count, 0, "Capture cannot submit before actual no-media/FIFO cleanup")
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        await f.coordinator.waitForPendingDelivery()
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        XCTAssertEqual(f.calls.count, 1)
+        await f.coordinator.shutdown()
+    }
+    func testVisualFallbackNeverRevivesSpeechStalenessOrLostFrames() async throws {
+        let f = try fixture(), event = UUID()
+        _ = try await prepare(f, event: event)
+        _ = try f.coordinator.audioStarted(event: event, instance: f.coordinator.instance, uptime: 100, wall: f.clock.wallBase + 100)
+        do { _ = try await fallback(f, event: event); XCTFail("Started audio cannot become visual fallback") } catch {}
+        _ = try f.coordinator.cancel(event: event, instance: f.coordinator.instance, reason: "done")
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: false)
+        let stale = UUID(); _ = try await prepare(f, event: stale)
+        let handle = try FileHandle(forWritingTo: f.origin.rollout)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"<send_user_message_question_reply>Yes</send_user_message_question_reply>\"}}\n".utf8))
+        try handle.close()
+        let result = try await fallback(f, event: stale)
+        XCTAssertEqual(result["reason"] as? String, "originStale")
+        XCTAssertNotEqual(result["phase"] as? String, "waiting")
+        XCTAssertEqual(f.calls.count, 0)
+        await f.coordinator.shutdown()
+        let fresh = try fixture(), gap = UUID()
+        _ = try await prepare(fresh, event: gap); _ = try await fallback(fresh, event: gap)
+        fresh.coordinator.interrupted("recognition-audio-gap")
+        XCTAssertEqual(try fresh.coordinator.status(event: gap, instance: fresh.coordinator.instance)["reason"] as? String, "recognition-audio-gap")
+        XCTAssertThrowsError(try fresh.coordinator.audioStarted(event: gap, instance: fresh.coordinator.instance, uptime: 100, wall: fresh.clock.wallBase + 100))
+        XCTAssertEqual(fresh.calls.count, 0)
+        await fresh.coordinator.shutdown()
+    }
+    func testVisualFallbackKeepsReadinessInstanceClockAndExpiryGuards() async throws {
+        for readiness: NotificationReplyCoordinator.Readiness in [.disabled, .listeningOff, .listenerUnavailable, .voiceActive, .voiceUnknown, .desktopUnavailable] {
+            let f = try fixture(), event = UUID()
+            f.coordinator.currentReadiness = { readiness }
+            _ = try await prepare(f, event: event)
+            do { _ = try await fallback(f, event: event); XCTFail("Unavailable reply cannot fall back") } catch {}
+            XCTAssertEqual(f.calls.count, 0)
+            await f.coordinator.shutdown()
+        }
+        let f = try fixture(), event = UUID()
+        _ = try await prepare(f, event: event)
+        do {
+            _ = try await f.coordinator.fallbackReady(event: event, instance: UUID(), deliveredUptime: 90,
+                deliveredWall: f.clock.wallBase + 90, skipReason: "agent-flow-speech-denied", expiresAt: .infinity)
+            XCTFail("Different app instance must fail")
+        } catch {}
+        for (stamp, reason) in [(101.0, "agent-flow-speech-denied"), (90.0, "unknown")] {
+            do {
+                _ = try await f.coordinator.fallbackReady(event: event, instance: f.coordinator.instance, deliveredUptime: stamp,
+                    deliveredWall: f.clock.wallBase + stamp, skipReason: reason, expiresAt: .infinity)
+                XCTFail("Unknown skip or future clock must fail")
+            } catch {}
+        }
+        let expired = try await f.coordinator.fallbackReady(event: event, instance: f.coordinator.instance, deliveredUptime: 90,
+            deliveredWall: f.clock.wallBase + 90, skipReason: "agent-flow-speech-denied", expiresAt: f.clock.wallBase + 99)
+        XCTAssertEqual(expired["reason"] as? String, "fallback-request-expired")
+        XCTAssertEqual(f.calls.count, 0)
+        await f.coordinator.shutdown()
+    }
+    func testProviderFailureFallbackAndExpiredAsyncValidation() async throws {
+        let f = try fixture(), event = UUID()
+        _ = try await prepare(f, event: event)
+        let result = try await f.coordinator.fallbackReady(event: event, instance: f.coordinator.instance,
+            deliveredUptime: 90, deliveredWall: f.clock.wallBase + 90,
+            skipReason: "audio-unavailable-before-start", expiresAt: f.clock.wallBase + 103)
+        XCTAssertEqual(result["opportunityKind"] as? String, "visual")
+        f.clock.time = 105.2
+        f.coordinator.recognized(.init(batch: UUID(), text: "Reply yes", words: [
+            .init(text: "reply", start: 105.2, end: 105.3), .init(text: "yes", start: 105.4, end: 105.5)], stableWords: 2))
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "waiting", "Speech beyond five seconds cannot activate")
+        f.coordinator.processed(through: 106); f.clock.time = 107.6; f.coordinator.checkBounds()
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["reason"] as? String, "no-command")
+        XCTAssertEqual(f.calls.count, 0)
+        await f.coordinator.shutdown()
+        let g = try fixture(), pending = UUID()
+        _ = try await prepare(g, event: pending)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        g.coordinator.validateOrigin = { origin in
+            try origin.validate(); entered.signal()
+            guard release.wait(timeout: .now() + 3) == .success else { throw NotificationReplyOrigin.Failure.originUnavailable }
+        }
+        let task = Task { try await self.fallback(g, event: pending) }
+        let validating = await Task.detached { entered.wait(timeout: .now() + 2) == .success }.value
+        XCTAssertTrue(validating)
+        g.clock.time += 4; release.signal()
+        let expired = try await task.value
+        XCTAssertEqual(expired["reason"] as? String, "fallback-request-expired")
+        XCTAssertTrue(expired["opportunityUptime"] is NSNull)
+        XCTAssertEqual(g.calls.count, 0)
+        await g.coordinator.shutdown()
     }
     func testExactReleaseAndNextPrepareAreIndependent() async throws {
         let f = try fixture(), first = UUID(), second = UUID()
@@ -270,6 +387,9 @@ import SwiftUI
         XCTAssertLessThanOrEqual(panel.frame.height, 208)
         XCTAssertEqual(panel.frame.maxY, moved.maxY, accuracy: 0.1)
         try captureInertPanel(panel, name: "short-reply")
+        hud.show(.init(event: event, phase: .waiting, reason: "", spokenText: "Ready."))
+        XCTAssertLessThanOrEqual(panel.host.fittingSize.height, panel.frame.height + 1)
+        try captureInertPanel(panel, name: "waiting-five-seconds")
         XCTAssertFalse(panel.isVisible)
         hud.dismissCurrent()
         XCTAssertTrue(hud.panels.isEmpty)
@@ -374,7 +494,7 @@ import SwiftUI
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
         let running = await Task.detached { entered.wait(timeout: .now() + 3) == .success }.value
         XCTAssertTrue(running)
-        f.coordinator.interrupted("agentFlow")
+        f.coordinator.interrupted("voiceActive")
         XCTAssertNotEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "cancelled")
         release.signal()
         await f.coordinator.waitForPendingDelivery()

@@ -11,7 +11,6 @@ extension NotificationReplyCoordinator.Readiness {
         case .listenerUnavailable: return "Waiting for H Chat listening."
         case .voiceActive: return "Available after Codex Voice ends."
         case .voiceUnknown: return "Checking Codex Voice…"
-        case .agentFlow: return "Available after Agent Flow recording ends."
         case .desktopUnavailable: return "Available on your unlocked desktop."
         case .codexUnavailable: return "Open Codex to reply."
         }
@@ -28,7 +27,7 @@ struct NotificationReplySettingsSection: View {
     var body: some View {
         Section("Notification Replies") {
             Toggle("Enabled", isOn: $settings.enabled).accessibilityIdentifier("notificationRepliesEnabled")
-            Text("Say Reply within 2 seconds after a notification finishes. Say End reply to send. Pauses keep listening.")
+            Text("Say Reply within \(Int(settings.limits.commandSeconds)) seconds after a notification finishes, or when Say Reply appears if speech was skipped. Say End reply to send. Pauses keep listening.")
                 .foregroundStyle(.secondary)
             spellingRow(reply: true)
             spellingRow(reply: false)
@@ -236,9 +235,9 @@ struct NotificationReplyHUDContent: View {
         switch presentation.phase {
         case .preparing: return "Getting the original chat ready."
         case .announcing: return "Wait for the notification to finish."
-        case .waiting: return "Start within 2 seconds."
+        case .waiting: return "Start within \(Int(presentation.commandSeconds)) seconds."
         case .composing: return "Say End reply to send."
-        case .releasing: return "Waiting for notification audio to finish."
+        case .releasing: return "Finishing notification cleanup."
         case .queued: return "Waiting for your reply to appear in the original chat."
         case .delivered: return "Saved in the original chat."
         case .cancelled, .unavailable:
