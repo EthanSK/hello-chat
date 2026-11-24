@@ -6,6 +6,23 @@ import Darwin
 import Foundation
 
 enum DotCallCommand {
+    // Bound the whole AX traversal, rather than restarting a limit for each
+    // descendant search. Uptime keeps clock adjustments from extending it.
+    struct ReadBudget {
+        let deadline: TimeInterval
+        let maximumNodes: Int
+        let maximumDepth: Int
+        private(set) var visited = 0
+        init(now: TimeInterval, seconds: TimeInterval = 2, maximumNodes: Int = 12000, maximumDepth: Int = 70) {
+            deadline = now + seconds; self.maximumNodes = maximumNodes; self.maximumDepth = maximumDepth
+        }
+        func permitsRead(now: TimeInterval, cancelled: Bool) -> Bool { !cancelled && now < deadline }
+        mutating func visit(depth: Int, now: TimeInterval, cancelled: Bool) -> Bool {
+            guard permitsRead(now: now, cancelled: cancelled), depth <= maximumDepth, visited < maximumNodes else { return false }
+            visited += 1
+            return true
+        }
+    }
     enum Action: String, CaseIterable { case start, hangUp }
     enum Press { case notSent, sent, uncertain }
     enum Block: String { case accessibility, desktop, voice, disabled }
@@ -120,9 +137,11 @@ enum DotCallCommand {
         private var region: AXUIElement?
         private var observed: Snapshot?
         private var app: AXUIElement?
+        private var budget = ReadBudget(now: 0)
         private enum Failure: Error { case incomplete }
 
         func read() -> Snapshot {
+            budget = ReadBudget(now: ProcessInfo.processInfo.systemUptime)
             guard !isCancelled else { return Snapshot(state: .unavailable, pid: pid) }
             guard AXIsProcessTrusted() else { return Snapshot(state: .unavailable, pid: pid, block: .accessibility) }
             guard DesktopSessionState.current == .interactive else { return Snapshot(state: .unavailable, pid: pid, block: .desktop) }
@@ -131,46 +150,51 @@ enum DotCallCommand {
             pid = running.processIdentifier
             let app = AXUIElementCreateApplication(running.processIdentifier)
             self.app = app
-            AXUIElementSetMessagingTimeout(app, 0.3)
             start = nil; hangUp = nil; profile = nil; region = nil
             do {
                 let windows = try children(app, key: kAXWindowsAttribute)
                 var profiles: [(AXUIElement, AXUIElement)] = [], calls: [(AXUIElement, AXUIElement, Bool)] = []
                 for window in windows {
                     for group in try search(window, matching: { element in
-                        let title = Self.label(element)
-                        return (Self.string(kAXSubroleAttribute, element) == "AXApplicationDialog" && ["Your dot’s profile", "Your dot's profile"].contains(title))
-                            || CodexCallControlScope.isDotContainer(role: Self.string(kAXRoleAttribute, element), label: title)
+                        let title = try self.label(element)
+                        return try (self.string(kAXSubroleAttribute, element) == "AXApplicationDialog" && ["Your dot’s profile", "Your dot's profile"].contains(title))
+                            || CodexCallControlScope.isDotContainer(role: self.string(kAXRoleAttribute, element), label: title)
                     }) {
                         let members = try search(group, matching: { _ in true })
-                        if ["Your dot’s profile", "Your dot's profile"].contains(Self.label(group)) {
-                            for item in members where Self.label(item) == "Start call" && Self.string(kAXSubroleAttribute, item) == "AXToggleButton" {
+                        if try ["Your dot’s profile", "Your dot's profile"].contains(label(group)) {
+                            for item in members where try label(item) == "Start call" && string(kAXSubroleAttribute, item) == "AXToggleButton" {
                                 profiles.append((group, item))
                             }
                         } else {
-                            let ends = members.filter { Self.string(kAXRoleAttribute, $0) == kAXButtonRole && Self.label($0) == "Hang up" }
-                            let microphones = members.filter { ["Mute microphone", "Unmute microphone"].contains(Self.label($0)) }
+                            let ends = try members.filter { try self.string(kAXRoleAttribute, $0) == kAXButtonRole && self.label($0) == "Hang up" }
+                            let microphones = try members.filter { try ["Mute microphone", "Unmute microphone"].contains(self.label($0)) }
                             guard ends.count <= 1 else { return Snapshot(state: .ambiguous, pid: pid) }
                             if let end = ends.first, !microphones.isEmpty {
-                                let connected = members.contains { Self.label($0).range(of: #"^\d+:\d{2}$"#, options: .regularExpression) != nil }
+                                let connected = try members.contains { try self.label($0).range(of: #"^\d+:\d{2}$"#, options: .regularExpression) != nil }
                                 calls.append((group, end, connected))
                             }
                         }
                     }
                 }
                 guard profiles.count <= 1, calls.count <= 1 else { return Snapshot(state: .ambiguous, pid: pid) }
-                let voice = VoicePeerControl.localStatus()
-                let mayStart = voice.status == .inactive
                 let snapshot: Snapshot
                 if let call = calls.first {
                     region = call.0; hangUp = call.1
                     snapshot = Snapshot(state: call.2 ? .active : .starting, pid: pid, mayStart: false)
-                } else if let match = profiles.first, let value = VoiceBridge.attribute(kAXValueAttribute, match.1) as? NSNumber {
+                } else if let match = profiles.first, let value = try attribute(kAXValueAttribute, match.1) as? NSNumber {
                     profile = match.0; start = match.1
+                    let enabled = try attribute(kAXEnabledAttribute, match.1) as? Bool == true
+                    // Voice's existing scan has its own two-second bound. Do
+                    // not run it for an already active/starting Dot call.
+                    let mayStart = value.boolValue ? false : VoicePeerControl.localStatus().status == .inactive
                     snapshot = Snapshot(state: value.boolValue ? .starting : .inactive, pid: pid,
-                        mayStart: mayStart && (VoiceBridge.attribute(kAXEnabledAttribute, match.1) as? Bool == true),
+                        mayStart: mayStart && enabled,
                         block: mayStart ? .disabled : .voice)
-                } else { snapshot = Snapshot(state: .unknown, pid: pid, mayStart: mayStart, block: mayStart ? nil : .voice) }
+                } else {
+                    let mayStart = VoicePeerControl.localStatus().status == .inactive
+                    snapshot = Snapshot(state: .unknown, pid: pid, mayStart: mayStart, block: mayStart ? nil : .voice)
+                }
+                guard !isCancelled, !Task.isCancelled else { return Snapshot(state: .unknown, pid: pid) }
                 observed = snapshot
                 return snapshot
             } catch { return Snapshot(state: .unknown, pid: pid) }
@@ -208,7 +232,7 @@ enum DotCallCommand {
         private func wait(seconds: TimeInterval = 3, until complete: (Snapshot) -> Bool) -> Snapshot {
             // Wait only for actual native readiness/state notifications, never a
             // settling delay and never a second press if confirmation is absent.
-            let deadline = Date().addingTimeInterval(seconds)
+            let deadline = ProcessInfo.processInfo.systemUptime + seconds
             var state = read()
             guard !complete(state), !isCancelled, let app, let pid else { return state }
             var observer: AXObserver?
@@ -229,33 +253,41 @@ enum DotCallCommand {
             }
             // Close the registration race before sleeping on the run loop.
             state = read()
-            while registered, !isCancelled, !Task.isCancelled, Date() < deadline, !complete(state) {
-                CFRunLoopRunInMode(.defaultMode, max(0, deadline.timeIntervalSinceNow), true)
+            while registered, !isCancelled, !Task.isCancelled, ProcessInfo.processInfo.systemUptime < deadline, !complete(state) {
+                CFRunLoopRunInMode(.defaultMode, max(0, deadline - ProcessInfo.processInfo.systemUptime), true)
                 state = read()
             }
             return state
         }
 
-        private func children(_ element: AXUIElement, key: String = kAXChildrenAttribute) throws -> [AXUIElement] {
+        private func attribute(_ key: String, _ element: AXUIElement) throws -> CFTypeRef? {
+            guard budget.permitsRead(now: ProcessInfo.processInfo.systemUptime, cancelled: isCancelled || Task.isCancelled) else { throw Failure.incomplete }
+            // AX timeouts belong to each object, not just its application.
+            AXUIElementSetMessagingTimeout(element, 0.04)
             var value: CFTypeRef?
             let status = AXUIElementCopyAttributeValue(element, key as CFString, &value)
             guard status == .success || status == .noValue || status == .attributeUnsupported else { throw Failure.incomplete }
-            return value as? [AXUIElement] ?? []
+            guard budget.permitsRead(now: ProcessInfo.processInfo.systemUptime, cancelled: isCancelled || Task.isCancelled) else { throw Failure.incomplete }
+            return value
         }
-        private func search(_ root: AXUIElement, matching predicate: (AXUIElement) -> Bool) throws -> [AXUIElement] {
-            var pending = [(root, 0)], seen = 0, result: [AXUIElement] = []
+        private func children(_ element: AXUIElement, key: String = kAXChildrenAttribute) throws -> [AXUIElement] {
+            try attribute(key, element) as? [AXUIElement] ?? []
+        }
+        private func search(_ root: AXUIElement, matching predicate: (AXUIElement) throws -> Bool) throws -> [AXUIElement] {
+            var pending = [(root, 0)], result: [AXUIElement] = []
             while let (node, depth) = pending.popLast() {
-                seen += 1
-                guard seen <= 24000, depth <= 70 else { throw Failure.incomplete }
-                if predicate(node) { result.append(node) }
-                pending.append(contentsOf: try children(node).map { ($0, depth + 1) })
+                guard budget.visit(depth: depth, now: ProcessInfo.processInfo.systemUptime, cancelled: isCancelled || Task.isCancelled) else { throw Failure.incomplete }
+                if try predicate(node) { result.append(node) }
+                let descendants = try children(node)
+                guard descendants.count <= budget.maximumNodes - budget.visited - pending.count else { throw Failure.incomplete }
+                pending.append(contentsOf: descendants.map { ($0, depth + 1) })
             }
             return result
         }
-        private static func string(_ key: String, _ node: AXUIElement) -> String { VoiceBridge.attribute(key, node) as? String ?? "" }
-        private static func label(_ node: AXUIElement) -> String {
-            let title = string(kAXTitleAttribute, node)
-            return title.isEmpty ? string(kAXDescriptionAttribute, node) : title
+        private func string(_ key: String, _ node: AXUIElement) throws -> String { try attribute(key, node) as? String ?? "" }
+        private func label(_ node: AXUIElement) throws -> String {
+            let title = try string(kAXTitleAttribute, node)
+            return try title.isEmpty ? string(kAXDescriptionAttribute, node) : title
         }
     }
 }

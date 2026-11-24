@@ -6,6 +6,18 @@ import Foundation
         typealias S = DotCallCommand.Snapshot
         var checks = 0
         func check(_ ok: Bool, _ message: String) { precondition(ok, message); checks += 1 }
+        var budget = DotCallCommand.ReadBudget(now: 10, seconds: 2, maximumNodes: 2, maximumDepth: 1)
+        check(budget.permitsRead(now: 10, cancelled: false), "A fresh lookup can read immediately")
+        check(!budget.permitsRead(now: 12, cancelled: false), "The complete scan expires at its monotonic deadline")
+        check(!budget.permitsRead(now: 10, cancelled: true), "Cancellation stops attribute reads")
+        check(budget.visit(depth: 0, now: 10, cancelled: false), "Root consumes one shared node")
+        check(budget.visit(depth: 1, now: 11, cancelled: false), "Inclusive supported depth remains readable")
+        check(!budget.visit(depth: 0, now: 11, cancelled: false), "A second search cannot reset the shared node budget")
+        budget = .init(now: 10, maximumNodes: 2, maximumDepth: 1)
+        check(!budget.visit(depth: 2, now: 10, cancelled: false), "Excessive depth returns incomplete")
+        check(!budget.visit(depth: 0, now: 12, cancelled: false), "Expired traversal stops before visiting")
+        check(!budget.visit(depth: 0, now: 10, cancelled: true), "Cancelled traversal stops before visiting")
+        check(budget.visited == 0, "Rejected visits do not consume or renew the budget")
         func probe(_ action: DotCallCommand.Action, before: S, opened: S? = nil, after: S? = nil, press: DotCallCommand.Press = .sent) async -> (DotCallCommand.Result, Int, Int, Int) {
             var state = before, opens = 0, presses = 0, confirms = 0
             let result = await DotCallCommand.perform(action, using: .init(

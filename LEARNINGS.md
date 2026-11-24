@@ -317,3 +317,8 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 - An absolute spoken value shares one receipt while recognition completes the number. Do not reclassify the operand as a repeat count. Spotify value repetitions require explicit times; current-call manual ownership is persisted before writing so End or Quit cannot restore over that deliberate choice. Invalid later words stop pending work but cannot safely undo an already-sent value.
 - Your dot has a separate native call region and no verified call keyboard command. Its Call controls microphone labels must be excluded from Codex Voice reads, including native button-search results. Hang up never launches or navigates to find a call. A successful AX press is dispatch, not connected-call evidence; uncertain effects never permit a blind replay.
 - App Intents declarations and automatic Siri suggestions are distinct lists. Derive packaging expectations from their one Swift source so a new discoverable action does not require a second hand-maintained list or an overlapping automatic phrase.
+
+
+## 2026-11-24 - Bound complete native control scans
+
+Accessibility messaging timeouts belong to each AX element. Set the timeout before each attribute read, share one monotonic time/node budget across descendant searches, and check cancellation before and after native reads. A truncated or timed-out scan is unknown, never proof that a call is inactive or permission to replay. Dot lookup follows the pre-existing bounded Voice scan and speed-picker wait; deadline, cancellation, depth and shared-node fixtures pass without real call actions.
