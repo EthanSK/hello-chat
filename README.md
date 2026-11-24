@@ -17,7 +17,7 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
 | **Mute Chat**, **Mute mic** / **Unmute Chat** | Mutes or unmutes the active Voice microphone. Repeating a command keeps that state. |
-| **Silent Chat**, **Mute speakers**, **Silent speaker(s)** / **Unsilence Chat**, **Unsilent speaker(s)** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
+| **Silence Chat**, **Silent Chat**, **Mute speakers**, **Silent speaker(s)** / **Unsilence Chat**, **Unsilent speaker(s)**, **Unmute speaker(s)**, standalone **Unsilence** or **Unmute** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 | **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key. |
 | **Call Dot** / **Hang up** | Starts or ends a call with Your dot in ChatGPT. These commands are separate from Codex Voice and meetings. Both have native Shortcuts actions and their own phrase, spelling, repeat and sound settings. |

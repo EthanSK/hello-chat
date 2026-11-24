@@ -10,7 +10,7 @@ import CoreAudio
     var onSession: (() -> Void)?
     var onWaiting: (() -> Void)?
     var onAudioActivity: ((Double, Double, Double) -> Void)?
-    var onFrame: (() -> Void)?
+    var onFrame: ((Bool) -> Void)?
     var onUtteranceEnd: (() -> Void)?
     var onComputePlan: ((Double) -> Void)?
     var model: SpeechModel = .defaultModel
@@ -224,12 +224,12 @@ import CoreAudio
                         textUpdates += 1
                         self.onText?(text, timing.update(text, at: modelAudioTime, supplied: result.wordTimings))
                     }
-                    if result.utteranceEnded {
+                    if result.utteranceEnded && selectedModel != .appleLocal {
                         self.diagnostics?.record("speech.utterance.ended", info: ["source": "model_eou"])
                         self.onUtteranceEnd?()
                     }
                     self.progress.processed(at: Diagnostics.now)
-                    self.onFrame?()
+                    self.onFrame?(result.utteranceEnded)
                     if Diagnostics.now - summaryAt >= 5 {
                         self.diagnostics?.record("speech.performance", numbers: ["frames": Double(frames), "text_updates": Double(textUpdates), "gaps": Double(gaps), "queue_max_ms": queueMax, "inference_max_ms": processMax, "inference_total_ms": processTotal, "audio_seconds": audioTotal])
                         summaryAt = Diagnostics.now; frames = 0; textUpdates = 0; gaps = 0; queueMax = 0; processMax = 0; processTotal = 0; audioTotal = 0

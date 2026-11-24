@@ -304,6 +304,10 @@ enum PhraseList {
                 (.silentPhrase, ["Silent speakers", "Silent speaker"]),
                 (.silencePhrase, ["Silence speakers", "Silence speaker"]),
                 (.unsilencePhrase, ["Unsilent speakers", "Unsilent speaker", "Unsilence speakers", "Unsilence speaker"])]),
+            // Ethan's "un-silence" and "unmute" restore Codex Voice speaker audio.
+            // "Unmute Chat" still belongs to the microphone. — GPT-6.2 Sol
+            ("codexVoiceSpeakerRestorePhrases20261124", [
+                (.unsilencePhrase, ["Unmute speakers", "Unmute speaker", "Unsilence", "Unmute"])]),
             // Ethan, 20 November 2026: "Show app Codex", "Show Codex", "Show me Codex". Keep each prefix editable.
             // The short forms require an exact app name or spelling. Show voice has its own slot.
             ("appShowPrefixDefaults20261121", [(.openAppPhrase, ["Show app", "Show me", "Show", "Open"])])
@@ -538,6 +542,11 @@ struct PhrasePattern: Equatable {
     func needsStandaloneUnsilence(_ words: ArraySlice<String>) -> Bool {
         slot == .unsilencePhrase && words.elementsEqual(["unsilenced", "shot"])
             && !words.elementsEqual(PhraseMatcher.words(text))
+    }
+    func isBareSpeakerRestore(_ words: ArraySlice<String>) -> Bool {
+        guard slot == .unsilencePhrase else { return false }
+        let spoken = words.joined()
+        return spoken == "unmute" || spoken == "unsilence"
     }
     func matches(in tokens: [String], timings: [(word: String, start: Double, end: Double)]? = nil, forReservation: Bool = false) -> [(start: Int, end: Int)] {
         let blockSplitUn = slot.map { [.muteMicrophone, .silenceSpeakers, .pauseVideo].contains($0.action) } ?? false

@@ -157,7 +157,7 @@ struct StandaloneWake {
         }
         context = words; sentenceStarts = starts; desktopBoundaries = boundaries; changedAt = time; revision += 1
     }
-    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil, directOnly: Bool = false, embeddedCommand: Bool = false, collectOccurrences: Bool = false,
+    mutating func poll(at time: Double, phrase: String, similar: Bool, alternatives: [String] = [], rejectNegated: Bool = false, ending: Bool = false, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil, directOnly: Bool = false, embeddedCommand: Bool = false, collectOccurrences: Bool = false, utteranceEnded: Bool = false,
                        onDecision: ((String, Double, Double) -> Void)? = nil) -> Bool {
         let patterns = patterns ?? ([phrase] + alternatives).map { PhrasePattern(text: $0, similar: similar, ending: ending, dictionaries: dictionaries) }
         if configuration != patterns || rejectsNegated != rejectNegated {
@@ -211,10 +211,11 @@ struct StandaloneWake {
                 && PhraseMatcher.isWeakWakeVariant(context[match.start..<match.end].joined())
                 && sentenceStarts.contains { $0 > match.start && $0 < match.end }
             let range = match.start..<match.end
-            let standaloneUnsilence = patternByRange[range].map { patterns[$0.index].needsStandaloneUnsilence(context[range]) } ?? false
-            if standaloneUnsilence {
+            let pattern = patternByRange[range].map { patterns[$0.index] }
+            let bareSpeakerRestore = pattern?.isBareSpeakerRestore(context[range]) ?? false
+            if bareSpeakerRestore || pattern?.needsStandaloneUnsilence(context[range]) == true {
                 let (_, end) = contextBounds(start: match.start, end: match.end, directOnly: true)
-                let trailing = context[match.end..<end]
+                let trailing = context[match.end..<(bareSpeakerRestore ? context.count : end)]
                 if !isDirectCommand(start: match.start, end: match.end, allowEmbedded: embeddedCommand) || !trailing.allSatisfy({ $0 == "please" || $0 == "now" }) {
                     consumed = index + 1
                     rememberConsumed(audioRanges[index])
@@ -226,6 +227,12 @@ struct StandaloneWake {
                 consumed = index + 1
                 rememberConsumed(audioRanges[index])
                 continue
+            }
+            // A bare "unmute" may still become "unmute chat" in the next recognition update.
+            // Use the existing utterance boundary only for these short speaker commands. — GPT-6.2 Sol
+            if bareSpeakerRestore && !utteranceEnded {
+                waitingForPause = true
+                break
             }
             if isMention(start: match.start, end: match.end, rejectNegated: rejectNegated, directOnly: directOnly) || weakSplit {
                 rejection = "rejected_mention"

@@ -14,6 +14,7 @@ actor AppleLocalSpeech: SpeechBackend {
     private var targetFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var latest = "", emitted = "", finalized = ""
+    private var finalizedFramePending = false
     private var latestTimings: [(word: String, start: Double, end: Double)] = []
     private var finalizedTimings: [(word: String, start: Double, end: Double)] = []
     private var failure: Error?
@@ -66,6 +67,7 @@ actor AppleLocalSpeech: SpeechBackend {
         guard token == generation else { return }
         latest = [finalized, text].filter { !$0.isEmpty }.joined(separator: " ")
         latestTimings = finalizedTimings + timings
+        finalizedFramePending = final && !text.isEmpty
         if final { finalized = latest; finalizedTimings = latestTimings }
     }
     private func failed(_ error: Error, token: UUID) { if token == generation { failure = error } }
@@ -104,9 +106,12 @@ actor AppleLocalSpeech: SpeechBackend {
             processedSeconds += Double(buffer.frameLength) / buffer.format.sampleRate
         }
         await Task.yield()
-        guard latest != emitted, !latest.isEmpty else { return SpeechUpdate(text: nil, audioTime: processedSeconds, reset: reset) }
-        emitted = latest
-        return SpeechUpdate(text: latest, audioTime: processedSeconds, reset: reset, wordTimings: latestTimings)
+        let changed = latest != emitted && !latest.isEmpty
+        let utteranceEnded = finalizedFramePending
+        finalizedFramePending = false
+        if changed { emitted = latest }
+        return SpeechUpdate(text: changed ? latest : nil, audioTime: processedSeconds, reset: reset,
+                            utteranceEnded: utteranceEnded, wordTimings: changed ? latestTimings : nil)
     }
     func finish() async throws -> String {
         continuation?.finish()
@@ -127,6 +132,7 @@ actor AppleLocalSpeech: SpeechBackend {
         results?.cancel(); await results?.value; results = nil
         analyzer = nil; targetFormat = nil; converter = nil
         latest = ""; emitted = ""; finalized = ""; failure = nil; duration = 0; quiet = 0
+        finalizedFramePending = false
         processedSeconds = 0
         latestTimings = []; finalizedTimings = []
     }

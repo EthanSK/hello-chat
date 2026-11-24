@@ -738,13 +738,13 @@ import SwiftUI
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
             self?.startupSpeech?.audioProcessed(seconds: seconds)
         }
-        listener.onFrame = { [weak self] in
+        listener.onFrame = { [weak self] utteranceEnded in
             self?.speechRecovery.processed(at: Diagnostics.now)
             // After this frame's text; before a new wake can replace the capture.
             if let boundary = self?.startupSpeech?.boundaryReached {
                 self?.finishStartupSpeech(preserveRequested: true, boundary: boundary)
             }
-            self?.checkStandaloneWake()
+            self?.checkStandaloneWake(utteranceEnded: utteranceEnded)
         }
         listener.onLevel = { [weak self] in self?.meter.level = $0 }
         listener.onError = { [weak self] error in
@@ -1653,7 +1653,7 @@ import SwiftUI
             }
         }
     }
-    private func checkStandaloneWake() {
+    private func checkStandaloneWake(utteranceEnded: Bool) {
         guard enabled, detectionRunning else { return }
         defer {
             if finalValueFrame { spotifyVolumeDetector.endUtterance(); finalValueFrame = false }
@@ -1796,7 +1796,9 @@ import SwiftUI
         let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int, slot: PhraseSlot)? in
             let entries = patterns(for: action)
             guard let first = entries.first,
-                  audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first.pattern.text, similar: similarPhrases, rejectNegated: true, patterns: entries.map(\.pattern)),
+                  audioPhraseDetectors[action, default: StandaloneWake()].poll(
+                      at: Diagnostics.now, phrase: first.pattern.text, similar: similarPhrases,
+                      rejectNegated: true, patterns: entries.map(\.pattern), utteranceEnded: utteranceEnded),
                   let detector = audioPhraseDetectors[action], let position = detector.acceptedRange?.lowerBound,
                   let patternIndex = detector.acceptedPatternIndex, entries.indices.contains(patternIndex) else { return nil }
             return (action, position, entries[patternIndex].slot)

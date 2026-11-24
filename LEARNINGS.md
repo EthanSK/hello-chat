@@ -188,6 +188,10 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 - Ethan corrected the earlier toggle interpretation: Mute/Unmute control microphone input; Silent/Silence and Unsilence control Voice speaker output. Every action is directional and repeated requests must be no-ops. Unknown state must not send a toggle. This supersedes earlier microphone-toggle notes, including the interpretation that all three original phrases control the microphone.
 - The installed native output control labels are `Mute speakers` and `Unmute speakers`; they map to outputMuted false/true. Read output specifically without slowing ordinary microphone/Start scans. Keep both channels separate through the command, observed state, highlighting, settings and feedback sounds. Preserve existing microphone and output keyboard bindings.
 
+## 2026-11-24 — Speaker restore phrases
+
+- `Unmute speaker` and `Unmute speakers` were dictionary-only in 1.5.4, so exact-only matching missed them. Seed exact speaker rows alongside the existing spellings and preserve prior phrase ownership. Bare `Unmute` and `Unsilence` use the recognizer's utterance boundary so a partial `Unmute Chat` cannot also restore speaker audio. No command timer or shortcut changed.
+
 ## 2026-11-08 — Audio confirmation and scrollback follow-up
 
 - The local recognizer archive recorded `unsilenced chat`; default audio verbs now accept one spelling edit while preserving their first three letters and the narrow Chat/Chad/Chatt address dictionary. Keep mute and unmute in separate directions, and retain exact-only mode, mention/negation checks, the 600 ms pause and occurrence consumption.

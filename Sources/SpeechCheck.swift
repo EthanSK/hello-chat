@@ -63,7 +63,7 @@ struct SpeechCheckResult {
                 if startupReady { startupBoundary = StartupSpeechFile.Boundary.utterance.rawValue }
             }
         }
-        listener.onFrame = { [weak listener] in
+        listener.onFrame = { [weak listener] _ in
             if !startupReady, let boundary = startup?.boundaryReached {
                 startupReady = true; startupBoundary = boundary.rawValue
             }
