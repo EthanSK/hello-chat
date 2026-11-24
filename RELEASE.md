@@ -8,6 +8,8 @@ Runtime changes pushed to `main` start the Release workflow on a GitHub-hosted A
 
 The Release workflow uses a disposable GitHub-hosted Apple Silicon Mac. It builds and tests the selected source, imports signing material into a temporary Keychain, requests Apple notarization, and publishes through the job's scoped GitHub token.
 
+The hosted builder uses `macos-26` with Xcode 26.6. App Intents packaging needs that toolchain's `SwiftConstantValues/AppIntents.json` descriptor; the workflow checks its presence before running the release. This builder choice does not change the app's macOS 15 minimum.
+
 Provision these repository Actions secrets before enabling the hosted workflow:
 
 - APPLE_CERTIFICATE_P12_BASE64 — the encoded Developer ID Application certificate with its matching private key.

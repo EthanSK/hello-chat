@@ -349,3 +349,11 @@ Accessibility messaging timeouts belong to each AX element. Set the timeout befo
 ## App Intents packaging across Swift toolchains
 
 The Swift 6.3.3 frontend in Xcode 26.6 accepts `-const-gather-protocols-file`. Its driver rejects `-const-gather-protocols-list`. Swift 6.4.2 in Xcode 27.2 also accepts the frontend `-file` spelling. Forward the flag and its protocol-array path separately with `-Xfrontend`. On both toolchains the packaging check extracted ten discoverable intents, eight automatic shortcuts and the English Siri phrase assets from `AppShortcuts.swift`.
+
+## 2026-11-24 — Fully hosted signing and fresh-run qualification
+
+Public Release now builds, tests, signs and notarizes on a disposable GitHub Mac, using encrypted Actions inputs and an explicit temporary Keychain. It preserves the existing Developer ID and Sparkle identities; publication uses the scoped job token, and recovery uses a verified GitHub Actions artifact. Do not restore the personal runner, saved CLI login, persistent local Sparkle tools or a personal Keychain profile as a workaround. The earlier `AgentFlowRelease` profile lookup failed in its runner context; the underlying reason that personal profile became unavailable remains unknown.
+
+Fresh qualification exposed two separate compatibility assumptions. The feedback fingerprint's compact tuple-filter expression exceeded the hosted Swift compiler's type-checking limit; an explicit sample-pair loop preserved the thresholds and all 559 sound checks. Selecting a newer compiler alone did not resolve that expression. App compilation then succeeded on Xcode 26.3, but App Intents packaging required a descriptor absent from that toolchain. The verified builder is `macos-26` with Xcode 26.6; check the required descriptor before the expensive build. The app still targets macOS 15.
+
+[Hosted Release 45434014607](https://github.com/EthanSK/hello-chat/actions/runs/45434014607) completed every gate. Its notarization/signing step succeeded at 16:24:58 UTC, publication succeeded and downloaded bytes passed verification at 16:26:33 UTC. Public [v1.5.7](https://github.com/EthanSK/hello-chat/releases/tag/v1.5.7) is bound to the selected source and immutable release receipt. A successful credential setup or unrelated green workflow is not equivalent to this full result.
