@@ -30,6 +30,8 @@ enum SpeechModel: String, CaseIterable, Identifiable, Sendable {
         }
     }
     var encoderPath: String {
+        // SpeechModels.json remaps the compatible v2 graph here; this guard and
+        // the pinned SDK load the same single encoder, with unchanged weights.
         self == .nemotron560 ? "encoder/encoder_int8.mlmodelc" : "streaming_encoder.mlmodelc"
     }
 }
@@ -52,10 +54,13 @@ protocol SpeechBackend: Actor {
     func finish() async throws -> String
     func resetForDiscontinuity() async throws
     func finalizeRecognition(through time: Double) async throws
+    func finalizeNotificationEnd(through time: Double) async throws -> SpeechUpdate?
     func close() async
 }
 
 extension SpeechBackend {
-    // Neural backends already report their native utterance end; this never fabricates final words. — GPT-6.1 Sol
+    // Optional analyzer-prefix request. Neural Reply activation uses agreeing
+    // real inference revisions; explicit notification End has its own hook.
     func finalizeRecognition(through time: Double) async throws { }
+    func finalizeNotificationEnd(through time: Double) async throws -> SpeechUpdate? { nil }
 }

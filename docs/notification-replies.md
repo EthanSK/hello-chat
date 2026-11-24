@@ -78,7 +78,7 @@ its existing deadline. A late valid setup/announcement cannot shorten the permit
 `limits` contains `commandSeconds`, `idleSeconds`, `replySeconds`, `confirmationSeconds`,
 `commandDrainSeconds`, and `maxHoldSeconds`, plus `endConfirmationSeconds` for native End finalization.
 Initial confirmation stays 1.5 seconds and initial drain 2.1 seconds; only End has a 3.5-second
-confirmation allowance for Nemotron's existing two-second quiet boundary plus decoding. The maximum
+confirmation allowance for the selected recognizer's actual native final result. Nemotron explicitly finishes its existing SDK stream between input frames; it does not wait for whole-room quiet. An unchanged timed End prefix completes before any later captured words, while changed or late results cannot send. The maximum
 hold is 191.6 seconds with a 180-second reply. These are read from the app, not settings imported
 from the temporarily disabled standalone pilot. The corresponding status result/file repeats the
 identity and phase/reason/releaseRequested fields. Status never returns captured text.
@@ -97,9 +97,9 @@ Reply starts composition; End reply is the only normal send. Pauses never submit
 limit sends nothing. Remove only the timed control words, preserving a genuine body-leading reply.
 
 Native nonactivating feedback is visible throughout preparation, announcement, waiting and
-composition on every display/Space. The exact original spoken text remains visible while composing.
+composition on every display/Space. The live reply words derive from the same capture state and appear while composing. The exact original spoken text remains available beneath them; neither is added to metadata status files.
 The native header can be dragged without taking keyboard focus. Each display remembers its own
-position; phase/text updates preserve that placement. Original text scrolls inside a compact panel
+position; phase/text updates preserve that placement. Short content fits its actual size; longer reply and original text scroll inside a compact panel
 instead of growing across the working screen. The visible close control cancels an unsent attempt
 and releases its hold, hiding every panel for that event; it cannot retract a queued message.
 Cancelled/unavailable feedback clears after three seconds, with its outcome retained in Last command.

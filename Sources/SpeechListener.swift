@@ -43,14 +43,21 @@ import CoreAudio
     private var replyFinalize: ((Double) async throws -> Void)?
     private var replyFinalizeTask: Task<Void, Never>?
     private var replyFinalizeRequested: Double?
+    private var replyFinalizeIsEnd = false
+    private var replyEndFinalize: ((Double) async throws -> SpeechUpdate?)?
+    private var replyUsesAnalyzer = false
     private var replyFinalizedThrough = -Double.infinity
     func discardPendingRecognition() { contextBoundary.invalidate(at: Diagnostics.now) }
-    func finalizeReplyRecognition(through hostTime: Double) {
+    func finalizeReplyRecognition(through hostTime: Double, ending: Bool = false) {
         guard hostTime.isFinite, hostTime > replyFinalizedThrough else { return }
         replyFinalizeRequested = max(replyFinalizeRequested ?? -.infinity, hostTime)
+        replyFinalizeIsEnd = ending
         flushReplyFinalization()
     }
     private func flushReplyFinalization() {
+        // Neural End is finalized serially below, between actual input frames.
+        // Keep Apple's already-working analyzer callback path asynchronous.
+        guard !replyFinalizeIsEnd || replyUsesAnalyzer else { return }
         guard replyFinalizeTask == nil, let requested = replyFinalizeRequested,
               let modelTime = replySpeech.modelTime(for: requested), let finalize = replyFinalize else { return }
         let token = session, batch = replySpeech.batch
@@ -71,7 +78,7 @@ import CoreAudio
     }
     private func recognitionBoundary() {
         replyFinalizeTask?.cancel(); replyFinalizeTask = nil; replyFinalizeRequested = nil
-        replyFinalizedThrough = -.infinity; replySpeech.boundary()
+        replyFinalizedThrough = -.infinity; replyFinalizeIsEnd = false; replySpeech.boundary()
         onSession?()
     }
     private struct Frame {
@@ -210,6 +217,8 @@ import CoreAudio
         }
         resultAudioSeconds = 0; resultWasFlushed = false; recordingError = nil
         replyFinalize = { try await worker.finalizeRecognition(through: $0) }
+        replyEndFinalize = { try await worker.finalizeNotificationEnd(through: $0) }
+        replyUsesAnalyzer = selectedModel == .appleLocal
         diagnostics?.record("speech.capture.started", numbers: ["sample_rate": format.sampleRate, "channels": Double(format.channelCount)])
         if let capture { diagnostics?.record("speech.capture.route", numbers: ["current_device": Double(capture.currentDevice ?? 0)], info: ["engine_running": String(capture.isRunning)]) }
         processing = Task(priority: capture == nil ? .utility : .userInitiated) { [weak self] in
@@ -260,6 +269,7 @@ import CoreAudio
                     if result.reset { self.diagnostics?.record("speech.context.reset"); self.recognitionBoundary(); timing = SpeechTimingTracker() }
                     if result.lostAudio { self.onReplyInterruption?("recognition-audio-gap") }
                     modelAudioTime = result.audioTime
+                    var publishedNativeFinal = false
                     self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate, modelAudioTime)
                     if self.needsReplyRecognition?() == true {
                         let recognition = self.replySpeech.observe(text: result.text, timings: result.wordTimings,
@@ -267,9 +277,40 @@ import CoreAudio
                         if let through = self.replySpeech.hostTime(forDecodedTime: result.audioTime) { self.onReplyProgress?(through) }
                         if let recognition { self.onReplyRecognition?(recognition) }
                         self.flushReplyFinalization()
+                        if self.replyFinalizeIsEnd, selectedModel != .appleLocal,
+                           let requested = self.replyFinalizeRequested,
+                           let modelTime = self.replySpeech.modelTime(for: requested),
+                           let finalize = self.replyEndFinalize {
+                            let replyBatch = self.replySpeech.batch
+                            self.replyFinalizedThrough = requested; self.replyFinalizeRequested = nil
+                            do {
+                                if let final = try await finalize(modelTime), self.session == token,
+                                   self.replySpeech.batch == replyBatch, self.needsReplyRecognition?() == true,
+                                   self.contextBoundary.accepts(capturedAt: frame.capturedAt) {
+                                    // Archive/display the same native final before consuming its
+                                    // End command. Terminal cancellation may invalidate this frame.
+                                    if let text = final.text {
+                                        self.onText?(text, timing.update(text, at: final.audioTime, supplied: final.wordTimings))
+                                        publishedNativeFinal = true
+                                    }
+                                    if let recognition = self.replySpeech.observe(text: final.text, timings: final.wordTimings,
+                                        inputTime: final.inputAudioTime, capturedAt: frame.capturedAt,
+                                        finalWords: final.finalizedWordCount, ended: final.utteranceEnded) {
+                                        self.onReplyRecognition?(recognition)
+                                    }
+                                    self.diagnostics?.record("notification.reply.native_finalized", numbers: ["words": Double(final.finalizedWordCount ?? 0)])
+                                }
+                            } catch {
+                                if self.session == token, self.replySpeech.batch == replyBatch,
+                                   self.needsReplyRecognition?() == true {
+                                    self.onReplyInterruption?("recognition-finalization-failed")
+                                    self.diagnostics?.failure("notification.reply.finalization_failed", error)
+                                }
+                            }
+                        }
                     }
                     guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
-                    if let text = result.text {
+                    if let text = result.text, !publishedNativeFinal {
                         textUpdates += 1
                         self.onText?(text, timing.update(text, at: modelAudioTime, supplied: result.wordTimings))
                     }
@@ -372,7 +413,7 @@ import CoreAudio
     }
     func stop() {
         onReplyInterruption?("listening-stopped")
-        replyFinalizeTask?.cancel(); replyFinalizeTask = nil; replyFinalizeRequested = nil; replyFinalize = nil
+        replyFinalizeTask?.cancel(); replyFinalizeTask = nil; replyFinalizeRequested = nil; replyFinalize = nil; replyEndFinalize = nil
         watchdog?.cancel(); watchdog = nil
         onWaiting?()
         session = UUID()

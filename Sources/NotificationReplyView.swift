@@ -112,10 +112,18 @@ struct NotificationReplySettingsSection: View {
             guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { continue }
             present.insert(id)
             let area = screen.visibleFrame, width = min(480, area.width - 32)
-            let cap = min(260, area.height * 0.35), key = WindowDisplay.identifier(screen)
+            let cap = min(208, area.height * 0.3), key = WindowDisplay.identifier(screen)
+            let textBudget = max(36, cap - 112)
+            let referenceLimit = min(44, textBudget * 0.45)
+            func textHeight(_ text: String, size: CGFloat, limit: CGFloat) -> CGFloat {
+                let bounds = (text as NSString).boundingRect(with: NSSize(width: width - 36, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: NSFont.systemFont(ofSize: size)])
+                return min(limit, max(18, ceil(bounds.height)))
+            }
             let view = AnyView(NotificationReplyHUDContent(presentation: presentation, isPreview: isPreview,
-                referenceHeight: max(28, cap - 112), dismiss: { [weak self] in self?.dismissCurrent() })
-                .padding(16).frame(width: width, height: presentation.phase == .composing ? cap : nil, alignment: .topLeading))
+                referenceHeight: textHeight(presentation.spokenText, size: 13, limit: referenceLimit),
+                replyHeight: textHeight(presentation.replyText, size: 14, limit: textBudget - referenceLimit), dismiss: { [weak self] in self?.dismissCurrent() })
+                .padding(12).frame(width: width, alignment: .topLeading))
             let existing = panels[id]
             let panel = existing ?? Panel(content: view)
             panel.host.rootView = view
@@ -160,6 +168,7 @@ struct NotificationReplyHUDContent: View {
     let presentation: NotificationReplyCoordinator.Presentation
     var isPreview = false
     var referenceHeight: CGFloat = 148
+    var replyHeight: CGFloat = 60
     var dismiss: (() -> Void)?
     private var title: String {
         Self.statusTitle(presentation.phase, reason: presentation.reason)
@@ -185,11 +194,12 @@ struct NotificationReplyHUDContent: View {
         case .preparing: return "Getting the original chat ready."
         case .announcing: return "Wait for the notification to finish."
         case .waiting: return "Start within 2 seconds."
-        case .composing: return "Say End reply to send. Pauses keep listening."
+        case .composing: return "Say End reply to send."
         case .releasing: return "Waiting for notification audio to finish."
         case .queued: return "Waiting for your reply to appear in the original chat."
         case .delivered: return "Saved in the original chat."
         case .cancelled, .unavailable:
+            if presentation.reason == "end-command-unconfirmed" { return "End reply wasn't confirmed. Nothing sent." }
             if presentation.reason == NotificationReplyOrigin.Failure.submissionUnknown.rawValue {
                 return "Delivery is unconfirmed. It won't be sent again."
             }
@@ -201,12 +211,12 @@ struct NotificationReplyHUDContent: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 HStack(spacing: 10) {
                     if [.preparing, .announcing, .releasing].contains(presentation.phase) { ProgressView().controlSize(.small) }
                     else { Image(systemName: presentation.phase == .composing ? "waveform" : "bubble.left") }
-                    Text((isPreview ? "Preview · " : "") + title).font(.system(size: 17, weight: .semibold))
+                    Text((isPreview ? "Preview · " : "") + title).font(.system(size: 15, weight: .semibold))
                     Spacer(minLength: 0)
                 }.overlay(NotificationReplyDragArea())
                 if let dismiss {
@@ -216,13 +226,26 @@ struct NotificationReplyHUDContent: View {
                         .accessibilityIdentifier("dismissNotificationReply")
                 }
             }
-            Text(detail).font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if presentation.phase == .composing, !presentation.replyText.isEmpty {
+                ScrollViewReader { reader in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(presentation.replyText).font(.system(size: 14))
+                                .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                            Color.clear.frame(height: 1).id("reply-end")
+                        }
+                    }.frame(height: replyHeight).scrollIndicators(.visible)
+                        .onChange(of: presentation.replyText) { _, _ in reader.scrollTo("reply-end", anchor: .bottom) }
+                }.accessibilityIdentifier("notificationReplyLiveText")
+            }
             if presentation.phase == .composing, !presentation.spokenText.isEmpty {
-                Divider().padding(.vertical, 2)
+                Divider()
+                Text("Notification").font(.system(size: 11)).foregroundStyle(.secondary)
                 ScrollView {
-                    Text(presentation.spokenText).font(.system(size: 14)).frame(maxWidth: .infinity, alignment: .leading)
+                    Text(presentation.spokenText).font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true).padding(.trailing, 6)
-                }.frame(maxHeight: referenceHeight).scrollIndicators(.visible)
+                }.frame(height: referenceHeight).scrollIndicators(.visible)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityIdentifier("notificationReplyHUD")

@@ -83,6 +83,30 @@ import XCTest
         XCTAssertEqual(f.calls.count, 1)
         await f.coordinator.shutdown()
     }
+    func testLiveDraftUsesCoreWithoutWritingSpeechToMetadata() async throws {
+        let f = try fixture(), event = UUID(), batch = UUID()
+        var presentations: [NotificationReplyCoordinator.Presentation] = []
+        f.coordinator.showPresentation = { if let value = $0 { presentations.append(value) } }
+        let response = try await prepare(f, event: event)
+        f.clock.time += 0.1
+        _ = try f.coordinator.audioStarted(event: event, instance: f.coordinator.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time)
+        f.clock.time += 0.1
+        _ = try f.coordinator.audioEnded(event: event, instance: f.coordinator.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time, completed: true)
+        f.clock.time += 1
+        let first = NotificationReplyCore.Recognition(batch: batch, text: "Reply private answer", words: [
+            .init(text: "reply", start: 100.5, end: 100.6), .init(text: "private", start: 100.7, end: 100.8),
+            .init(text: "answer", start: 100.9, end: 101)], stableWords: 1)
+        f.coordinator.recognized(first)
+        XCTAssertEqual(presentations.last?.replyText, "private answer")
+        let count = presentations.count
+        f.coordinator.recognized(first)
+        XCTAssertEqual(presentations.count, count, "No-text frames do not rebuild native panels.")
+        let path = try XCTUnwrap(response["statusFile"] as? String)
+        await f.coordinator.waitForPendingDelivery()
+        XCTAssertFalse(try String(contentsOfFile: path).contains("private answer"))
+        XCTAssertEqual(presentations.last?.spokenText, "Fixture notification ready.")
+        await f.coordinator.shutdown()
+    }
     func testLastQueuedAttemptRetiresItsObserverWithoutAnotherNotification() async throws {
         let f = try fixture(), event = UUID()
         _ = try await prepare(f, event: event); try finish(f, event: event)
@@ -146,10 +170,18 @@ import XCTest
         let moved = panel.frame.offsetBy(dx: 12, dy: -12)
         panel.setFrame(moved, display: false)
         panel.windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
-        hud.show(.init(event: event, phase: .composing, reason: "", spokenText: String(repeating: "Original notification stays complete. ", count: 55)))
+        hud.show(.init(event: event, phase: .composing, reason: "", spokenText: String(repeating: "Original notification stays complete. ", count: 55), replyText: String(repeating: "These are the live reply words. ", count: 30)))
         XCTAssertEqual(panel.frame.minX, moved.minX, accuracy: 0.1)
         XCTAssertEqual(panel.frame.maxY, moved.maxY, accuracy: 0.1)
         XCTAssertLessThanOrEqual(panel.frame.height, 260)
+        let longHeight = panel.frame.height
+        XCTAssertLessThanOrEqual(panel.host.fittingSize.height, panel.frame.height + 1, "Both scroll areas must fit without cropping the controls")
+        try captureInertPanel(panel, name: "long-reply")
+        hud.show(.init(event: event, phase: .composing, reason: "", spokenText: "Ready.", replyText: "Yes."))
+        XCTAssertLessThan(panel.frame.height, longHeight, "Short content must fit instead of forcing the height cap")
+        XCTAssertLessThanOrEqual(panel.frame.height, 208)
+        XCTAssertEqual(panel.frame.maxY, moved.maxY, accuracy: 0.1)
+        try captureInertPanel(panel, name: "short-reply")
         XCTAssertFalse(panel.isVisible)
         hud.dismissCurrent()
         XCTAssertTrue(hud.panels.isEmpty)
@@ -163,6 +195,19 @@ import XCTest
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, front)
         XCTAssertEqual(NSApplication.shared.isActive, active)
         await f.coordinator.shutdown()
+    }
+    private func captureInertPanel(_ panel: NotificationReplyHUD.Panel, name: String) throws {
+        guard let directory = ProcessInfo.processInfo.environment["HCHAT_NOTIFICATION_HUD_CAPTURE_DIR"] else { return }
+        XCTAssertFalse(panel.isVisible)
+        let view = try XCTUnwrap(panel.contentView)
+        view.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let root = URL(fileURLWithPath: directory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try data.write(to: root.appendingPathComponent(name + ".png"))
+        XCTAssertFalse(panel.isVisible, "An offscreen visual check must never show a working-screen panel")
     }
     func testEarlyMediaReleaseAndStaleOriginNeverSend() async throws {
         let f = try fixture(), early = UUID()

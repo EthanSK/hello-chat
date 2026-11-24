@@ -786,7 +786,7 @@ import SwiftUI
             self.repetitions.cancelPending(); self.endPhrase.reset(); self.standaloneWake.reset(); self.resetAudioPhrases()
             self.listener.discardPendingRecognition()
         }
-        notificationReplies.finalizeRecognition = { [weak self] in self?.listener.finalizeReplyRecognition(through: $0) }
+        notificationReplies.finalizeRecognition = { [weak self] time, ending in self?.listener.finalizeReplyRecognition(through: time, ending: ending) }
         notificationReplies.showPresentation = { [weak self] in self?.notificationHUD.show($0) }
         notificationHUD.onDismiss = { [weak self] in self?.notificationReplies.dismiss(event: $0) }
         notificationReplies.acceptedReply = { [weak self] in self?.feedback.play(.notificationReplyAccepted) }

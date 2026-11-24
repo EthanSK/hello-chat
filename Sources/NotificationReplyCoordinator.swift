@@ -35,14 +35,14 @@ import Foundation
 @MainActor final class NotificationReplyCoordinator: ObservableObject {
     enum Readiness: String { case ready, disabled, listeningOff, listenerUnavailable, voiceActive, voiceUnknown, agentFlow, desktopUnavailable, codexUnavailable }
     enum Failure: String, Error { case invalidEvent, busy, differentInstance, unavailable }
-    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String }
+    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = "" }
     let settings: NotificationReplySettings
     let instance = UUID()
     @Published private(set) var lastPhase: NotificationReplyCore.Phase?
     @Published private(set) var lastReason = ""
     var currentReadiness: () -> Readiness = { .listenerUnavailable }
     var resetRecognition: (() -> Void)?
-    var finalizeRecognition: ((Double) -> Void)?
+    var finalizeRecognition: ((Double, Bool) -> Void)?
     var acceptedReply: (() -> Void)?
     var showPresentation: ((Presentation?) -> Void)?
     var outcome: ((UUID, NotificationReplyCore.Phase, String, Bool) -> Void)?
@@ -183,7 +183,7 @@ import Foundation
         guard let id = active, let session = sessions[id] else { return }
         guard readiness == .ready else { cancelAll(readiness.rawValue); return }
         session.core.observe(recognition, now: now)
-        if let requested = session.core.finalizeThrough { finalizeRecognition?(requested) }
+        if let requested = session.core.finalizeThrough { finalizeRecognition?(requested, session.core.phase == .composing) }
         publish(session)
     }
     func processed(through time: Double) {
@@ -230,6 +230,7 @@ import Foundation
         var cuePlayed = false
         var queuedAt: Double?
         var revision = 0, signature = ""
+        var presentedTextRevision = -1
         var observers: [DispatchSourceFileSystemObject] = []
         let lease = NotificationReplyLease()
         init(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, at: Double, limits: NotificationReplyCore.Limits) {
@@ -266,19 +267,27 @@ import Foundation
             active = nil; resetRecognition?()
         }
         let signature = session.core.phase.rawValue + ":" + session.core.reason
-        guard session.signature != signature else { return }
+        guard session.signature != signature else {
+            if session.core.phase == .composing, session.presentedTextRevision != session.core.textRevision {
+                present(session)
+            }
+            return
+        }
         let first = session.signature.isEmpty
         session.signature = signature; session.revision += 1
         lastPhase = session.core.phase; lastReason = session.core.reason
         files.write(snapshot(session), event: session.event, revision: session.revision)
         Diagnostics.shared.record("notification.reply.phase", info: ["event": session.event.uuidString, "phase": session.core.phase.rawValue, "reason": session.core.reason])
         outcome?(session.event, session.core.phase, session.core.reason, first)
-        if !session.releaseAcknowledged, !session.presentationDismissed, active == nil || active == session.event {
-            shown = session.event
-            showPresentation?(.init(event: session.event, phase: session.core.phase, reason: session.core.reason, spokenText: session.spokenText))
-        }
+        present(session)
         if session.core.phase == .queued { session.queuedAt = now; session.spokenText = "" }
         if [.cancelled, .unavailable, .delivered].contains(session.core.phase) { retireHeavyState(session) }
+    }
+    private func present(_ session: Session) {
+        guard !session.releaseAcknowledged, !session.presentationDismissed, active == nil || active == session.event else { return }
+        session.presentedTextRevision = session.core.textRevision; shown = session.event
+        showPresentation?(.init(event: session.event, phase: session.core.phase, reason: session.core.reason,
+            spokenText: session.spokenText, replyText: session.core.phase == .composing ? session.core.draftText : ""))
     }
     private func startTimer() {
         guard timer == nil else { return }

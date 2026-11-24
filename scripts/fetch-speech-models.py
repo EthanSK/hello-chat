@@ -10,6 +10,7 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
+import urllib.parse
 
 MAX_DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_CHUNK_BYTES = 64 * 1024 * 1024
@@ -110,13 +111,20 @@ def download(url, target, digest, label):
 
 
 def fetch(manifest, destination):
-    base = f"https://huggingface.co/{manifest['repository']}/resolve/{manifest['revision']}/{manifest['subdirectory']}"
+    base = f"https://huggingface.co/{manifest['repository']}/resolve/{manifest['revision']}/"
+    sources = manifest.get('sourcePaths', {})
+    if set(sources) - set(manifest['files']):
+        raise ValueError('Model source remap must name a pinned destination.')
     for relative, digest in manifest['files'].items():
+        source = sources.get(relative, manifest['subdirectory'] + '/' + relative)
+        path = pathlib.PurePosixPath(source)
+        if path.is_absolute() or '..' in path.parts:
+            raise ValueError('Model source must stay inside the pinned repository.')
         target = destination / relative
         if target.exists() and checksum(target) == digest:
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        download(base + '/' + relative, target, digest, f"{manifest['repository']}/{manifest['subdirectory']}/{relative}")
+        download(base + urllib.parse.quote(source, safe='/'), target, digest, f"{manifest['repository']}/{source}")
 
 
 if __name__ == '__main__':

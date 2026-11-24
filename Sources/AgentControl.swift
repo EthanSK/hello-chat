@@ -66,6 +66,7 @@ import Foundation
         }
         add("status") { [model] _ in
             .init(.confirmed, ["version": AppVersion.display, "status": model.status, "busy": model.busy, "listening": model.enabled,
+                "notificationReplyActive": model.notificationReplies.hasOpenAttempt,
                 "recognitionRunning": model.detectionRunning, "dockedDisplays": model.dock.externalDisplays, "onPower": model.dock.onPower,
                 "cachedVoice": model.voiceText, "archiveError": model.archiveError as Any? ?? NSNull(),
                 "lastCommand": model.lastCommandMessage as Any? ?? NSNull(), "lastCommandDetail": model.lastCommandDetail as Any? ?? NSNull(), "lastEvent": model.lastEvent,

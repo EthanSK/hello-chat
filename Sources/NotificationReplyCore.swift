@@ -21,8 +21,8 @@ struct NotificationReplyCore {
         var replySeconds: Double = 120
         var commandSeconds: Double { 2 }
         var confirmationSeconds: Double { 1.5 }
-        // Nemotron's existing native EOU needs 2s of quiet plus its 560ms chunk.
-        // Only End uses this longer allowance; the initial opportunity/drain stay unchanged. — GPT-6.1 Sol
+        // A finite allowance for the selected provider's native final decode.
+        // Explicit notification End does not require whole-room quiet. — GPT-6.1 Sol
         var endConfirmationSeconds: Double { 3.5 }
         var commandDrainSeconds: Double { 0.6 + confirmationSeconds }
         var maxHoldSeconds: Double { commandSeconds + commandDrainSeconds + replySeconds + endConfirmationSeconds + 4 }
@@ -52,10 +52,12 @@ struct NotificationReplyCore {
     private(set) var acceptedAt: Double?
     private(set) var finalizeThrough: Double?
     private(set) var acceptedCount = 0
+    private(set) var textRevision = 0
     private var batches: [Recognition] = []
     private var activation: Position?
     private var endCandidateSeenAt: Double?
     private var endCandidate: Position?
+    private var endCandidatePrefix: [String] = []
     private var windowProcessedAt: Double?
     private var ownerSeenAt: Double?
     private var announcementStartedAt: Double?
@@ -106,8 +108,9 @@ struct NotificationReplyCore {
                   Array(value.words.prefix(stable).map(\.text)) == Array(previous.words.prefix(stable).map(\.text)) else {
                 cancel("finalized-recognition-changed"); return
             }
+            if previous.text != value.text { textRevision += 1 }
             batches[index] = value
-        } else { batches.append(value) }
+        } else { batches.append(value); textRevision += 1 }
         if let activation, activation.batch == value.batch,
            (value.words.count <= activation.index || value.words[activation.index].text != "reply") {
             cancel("reply-prefix-revised"); return
@@ -155,10 +158,11 @@ struct NotificationReplyCore {
         guard phase != .queued && phase != .delivered else { return }
         phase = unavailable ? .unavailable : .cancelled
         reason = value; body = nil; batches.removeAll(); finalizeThrough = nil
+        endCandidatePrefix.removeAll(); endCandidate = nil; endCandidateSeenAt = nil
     }
     mutating func queued() {
         guard canDispatch else { return }
-        phase = .queued; body = nil; batches.removeAll()
+        phase = .queued; body = nil; batches.removeAll(); endCandidatePrefix.removeAll()
     }
     mutating func delivered() { if phase == .queued { phase = .delivered } }
 
@@ -182,6 +186,23 @@ struct NotificationReplyCore {
         }
         guard phase == .composing, let accepted = acceptedAt else { return }
         let content = all.filter { isAfterActivation($0.position) }
+        // The user has already requested End at this timed boundary. A real
+        // native final may include later room speech; validate the unchanged
+        // prefix and finish HERE rather than swallowing End into later words.
+        if let candidate = endCandidate,
+           let batch = batches.first(where: { $0.batch == candidate.batch }) {
+            let count = candidate.index + 2
+            if batch.words.count >= count,
+               Array(batch.words.prefix(count).map(\.text)) == endCandidatePrefix {
+                if batch.stableWords >= count, let through = finalizeThrough,
+                   batch.words[candidate.index + 1].end <= through {
+                    finishReply(at: candidate)
+                }
+                return
+            }
+            endCandidate = nil; endCandidateSeenAt = nil; endCandidatePrefix = []; finalizeThrough = nil
+            textRevision += 1
+        }
         for pair in zip(content, content.dropFirst()) {
             let first = pair.0, second = pair.1
             guard first.word.text == "end", second.word.text == "reply",
@@ -194,18 +215,28 @@ struct NotificationReplyCore {
                       Array(preceding) != ["don", "t"] else { continue }
             }
             if first.stable && second.stable {
-                let text = renderBody(endingAt: first.position)
-                guard Self.tokens(text).contains(where: { !Self.hesitations.contains($0.word) }) else {
-                    cancel("no-reply-content"); return
-                }
-                body = text; phase = .releasing; reason = "end-reply"; finalizeThrough = nil
+                finishReply(at: first.position)
                 return
             }
-            if endCandidate != first.position { endCandidate = first.position; endCandidateSeenAt = now }
+            if endCandidate != first.position {
+                endCandidate = first.position; endCandidateSeenAt = now
+                endCandidatePrefix = batches.first(where: { $0.batch == first.position.batch })
+                    .map { Array($0.words.prefix(first.position.index + 2).map(\.text)) } ?? []
+                textRevision += 1
+            }
             finalizeThrough = second.word.end + 0.15
             return
         }
-        endCandidate = nil; endCandidateSeenAt = nil
+        endCandidate = nil; endCandidateSeenAt = nil; endCandidatePrefix.removeAll()
+    }
+
+    private mutating func finishReply(at end: Position) {
+        let text = renderBody(endingAt: end)
+        guard Self.tokens(text).contains(where: { !Self.hesitations.contains($0.word) }) else {
+            cancel("no-reply-content"); return
+        }
+        body = text; phase = .releasing; reason = "end-reply"; finalizeThrough = nil
+        endCandidatePrefix.removeAll()
     }
 
     private struct Position: Equatable { let batch: UUID; let index: Int }
@@ -229,7 +260,10 @@ struct NotificationReplyCore {
               let current = batches.firstIndex(where: { $0.batch == value.batch }) else { return false }
         return current > first || (current == first && value.index > activation.index)
     }
-    private func renderBody(endingAt end: Position) -> String {
+    // Ethan's "same text from H Chat" is a read-only rendering of this shared
+    // recognition state, not another editable transcript or recognizer.
+    var draftText: String { body ?? renderBody(endingAt: endCandidate) }
+    private func renderBody(endingAt end: Position?) -> String {
         guard let activation else { return "" }
         var parts: [String] = [], started = false
         for batch in batches {
@@ -237,13 +271,13 @@ struct NotificationReplyCore {
             guard started else { continue }
             let tokens = Self.tokens(batch.text)
             let first = batch.batch == activation.batch ? activation.index + 1 : 0
-            let last = batch.batch == end.batch ? end.index : tokens.count
+            let last = batch.batch == end?.batch ? end!.index : tokens.count
             if first < last, first < tokens.count {
                 let upper = last < tokens.count ? tokens[last].range.lowerBound : batch.text.endIndex
                 let part = String(batch.text[tokens[first].range.lowerBound..<upper]).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !part.isEmpty { parts.append(part) }
             }
-            if batch.batch == end.batch { break }
+            if batch.batch == end?.batch { break }
         }
         return parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }

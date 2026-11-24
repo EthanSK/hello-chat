@@ -47,8 +47,11 @@
     },
     "nemotron560": {
       "repository": "FluidInference/nemotron-speech-streaming-en-0.6b-coreml",
-      "revision": "e673531caa6d25ab7baf5a8c14c9b99ba1551838",
+      "revision": "717b9cfba354996f51e82f59c11e1a4d827784ac",
       "subdirectory": "nemotron_coreml_560ms",
+      "sourcePaths": {
+        "encoder/encoder_int8.mlmodelc/model.mil": "encoder-v2/560ms/encoder_int8_v2.mlmodelc/model.mil"
+      },
       "files": {
         "decoder.mlmodelc/analytics/coremldata.bin": "bca0e343fa0d698de8bdb22c66fd377b79104f606b1bfffc90931fe2161029b8",
         "decoder.mlmodelc/coremldata.bin": "4d0549ac72a38abdcbe7927f2b7d488386d6b96f1f5e837d93ba9e379de04f4e",
@@ -60,7 +63,7 @@
         "decoder_joint.mlmodelc/weights/weight.bin": "96cac67a1352e45a2418284779dbd5efe5865159b7b92f328247e5ed31485f52",
         "encoder/encoder_int8.mlmodelc/analytics/coremldata.bin": "ef51dbab5c6ce310ce1a537538a4df6b88f13ad5c45c0acaddca055503896daa",
         "encoder/encoder_int8.mlmodelc/coremldata.bin": "864a357ae2eb7d6b38ced73d5f23c908096a256516afa498c6730778767ec404",
-        "encoder/encoder_int8.mlmodelc/model.mil": "4b903ee4f401d81add07d1252192a486bd07154174818902f03bca38b2f293f6",
+        "encoder/encoder_int8.mlmodelc/model.mil": "a41de82c2bf695dfe83c63a87eb6892c52f09321c8bbca7838f23dfcae861b17",
         "encoder/encoder_int8.mlmodelc/weights/weight.bin": "8ced31411f7903eaec52de85e94c7847228f3e44028d8f0040800e5603943a40",
         "joint.mlmodelc/analytics/coremldata.bin": "478804308534c7f9cab1030aa9ce19ddf672fcd15deba633fe3ed5da8f53b103",
         "joint.mlmodelc/coremldata.bin": "46363626fd89730ade6e6461e8be808c7fade198fb0df63db83fb00ed033abb2",

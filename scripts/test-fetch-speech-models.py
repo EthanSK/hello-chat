@@ -35,6 +35,22 @@ class InterruptedResponse(Response):
 
 
 class Downloads(unittest.TestCase):
+    def test_fixed_graph_remap_keeps_the_sdk_destination_and_exact_pin(self):
+        manifest = dict(MANIFEST, sourcePaths={'encoder/weight.bin': 'encoder-v2/560ms/graph.bin'})
+        with tempfile.TemporaryDirectory() as temp, patch.object(models.urllib.request, 'urlopen', return_value=Response()) as request:
+            root = Path(temp)
+            models.fetch(manifest, root)
+            self.assertEqual((root / 'encoder/weight.bin').read_bytes(), GOOD)
+            self.assertEqual(request.call_args.args[0].full_url,
+                             'https://huggingface.co/owner/model/resolve/' + 'a' * 40 + '/encoder-v2/560ms/graph.bin')
+
+    def test_unpinned_or_traversing_remap_cannot_download(self):
+        for source in ({'unknown.bin': 'graph.bin'}, {'encoder/weight.bin': '../graph.bin'}):
+            with tempfile.TemporaryDirectory() as temp, patch.object(models.urllib.request, 'urlopen') as request:
+                with self.assertRaises(ValueError):
+                    models.fetch(dict(MANIFEST, sourcePaths=source), Path(temp))
+                request.assert_not_called()
+
     def run_fetch(self, root, responses):
         with patch.object(models.urllib.request, 'urlopen', side_effect=responses) as request, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             models.fetch(MANIFEST, root)

@@ -21,6 +21,7 @@ import Foundation
         guard let second = adapter.observe(text: nil, timings: nil, inputTime: 4, capturedAt: 102, finalWords: nil, ended: false, revision: 3) else { fatalError("second frame") }
         core.observe(second, now: 102)
         check(core.phase == .composing, "continuous neural Reply plus answer starts without an utterance pause")
+        check(core.draftText == "yes", "the live preview derives reply words from the same core, excluding the start control")
         check(second.stableWords == 0, "prefix confirmation is not native finalization")
         core.tick(now: 104)
         check(core.phase == .composing, "continuous answer outlives the initial opportunity")
@@ -36,7 +37,20 @@ import Foundation
         // Keep the same recognition batch as the admitted capture.
         guard let partialEnd = adapter.observe(text: "Reply yes End reply", timings: finishWords, inputTime: 6.5, capturedAt: 104.5, finalWords: nil, ended: false) else { fatalError("partial End") }
         core.observe(partialEnd, now: 104.5)
+        check(core.draftText == "yes", "the candidate End control is excluded from the draft")
         check(core.phase == .composing, "agreeing partial End is still not a send boundary")
+        var trailing = core
+        let laterFinal = NotificationReplyCore.Recognition(batch: partialEnd.batch,
+            text: "Reply yes End reply background speech", words: partialEnd.words + [
+                .init(text: "background", start: 104.5, end: 104.6), .init(text: "speech", start: 104.7, end: 104.8)], stableWords: 6)
+        trailing.observe(laterFinal, now: 105)
+        check(trailing.canDispatch && trailing.body == "yes", "a real final confirms the requested prefix before later background words")
+        var changedEnd = core
+        let changedWords = partialEnd.words.enumerated().map { index, word in
+            NotificationReplyCore.Word(text: index == 2 ? "and" : word.text, start: word.start, end: word.end)
+        }
+        changedEnd.observe(.init(batch: partialEnd.batch, text: "Reply yes and reply", words: changedWords, stableWords: 4), now: 105)
+        check(!changedEnd.canDispatch, "a changed-away native End prefix cannot send")
         core.tick(now: 106.4)
         check(core.phase == .composing, "native Nemotron's two-second quiet period doesn't expire an End candidate")
         guard let finalEnd = adapter.observe(text: nil, timings: nil, inputTime: 9, capturedAt: 107, finalWords: nil, ended: true) else { fatalError("final End") }
