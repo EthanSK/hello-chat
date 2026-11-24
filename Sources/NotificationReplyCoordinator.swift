@@ -41,6 +41,7 @@ import Foundation
     @Published private(set) var lastPhase: NotificationReplyCore.Phase?
     @Published private(set) var lastReason = ""
     var currentReadiness: () -> Readiness = { .listenerUnavailable }
+    var commandForms: () -> NotificationReplyCore.Commands = { .init() }
     var resetRecognition: (() -> Void)?
     var finalizeRecognition: ((Double, Bool) -> Void)?
     var acceptedReply: (() -> Void)?
@@ -94,7 +95,7 @@ import Foundation
         }
         guard !interceptsSpeech else { throw Failure.busy }
         prune()
-        let session = Session(event: event, thread: thread, turn: turn, question: question, spokenText: spokenText, at: now, limits: settings.limits)
+        let session = Session(event: event, thread: thread, turn: turn, question: question, spokenText: spokenText, at: now, limits: settings.limits, commands: commandForms())
         let admitted = readiness
         sessions[event] = session; startTimer()
         if admitted == .ready { active = event; resetRecognition?() }
@@ -233,10 +234,10 @@ import Foundation
         var presentedTextRevision = -1
         var observers: [DispatchSourceFileSystemObject] = []
         let lease = NotificationReplyLease()
-        init(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, at: Double, limits: NotificationReplyCore.Limits) {
+        init(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, at: Double, limits: NotificationReplyCore.Limits, commands: NotificationReplyCore.Commands) {
             self.event = event; self.thread = thread; self.turn = turn; self.question = question; self.spokenText = spokenText
             spokenFingerprint = Data(SHA256.hash(data: Data(spokenText.utf8)))
-            core = .init(at: at, limits: limits)
+            core = .init(at: at, limits: limits, commands: commands)
         }
         deinit { observers.forEach { $0.cancel() } }
     }

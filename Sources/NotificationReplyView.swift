@@ -20,16 +20,59 @@ extension NotificationReplyCoordinator.Readiness {
 
 struct NotificationReplySettingsSection: View {
     @ObservedObject var settings: NotificationReplySettings
+    @Binding var replySpellings: [String]?
+    @Binding var endReplySpellings: [String]?
+    let similar: Bool
     let readiness: () -> NotificationReplyCoordinator.Readiness
+    @State private var editingReply: Bool?
     var body: some View {
         Section("Notification Replies") {
             Toggle("Enabled", isOn: $settings.enabled).accessibilityIdentifier("notificationRepliesEnabled")
             Text("Say Reply within 2 seconds after a notification finishes. Say End reply to send. Pauses keep listening.")
                 .foregroundStyle(.secondary)
+            spellingRow(reply: true)
+            spellingRow(reply: false)
             number("Cancel after silence (seconds)", value: $settings.idleSeconds, id: "notificationReplyIdleSeconds")
             number("Maximum reply (seconds)", value: $settings.replySeconds, id: "notificationReplySeconds")
             Text(readiness().message).foregroundStyle(.secondary).accessibilityIdentifier("notificationReplyReadiness")
         }
+        .sheet(isPresented: Binding(get: { editingReply != nil }, set: { if !$0 { editingReply = nil } })) {
+            if let reply = editingReply {
+                PhraseDictionaryEditor(slot: nil, phrase: reply ? NotificationReplyCore.Commands.replyPhrase : NotificationReplyCore.Commands.endReplyPhrase,
+                    dictionary: reply ? $replySpellings : $endReplySpellings,
+                    builtIn: reply ? NotificationReplyCore.Commands.defaultReplySpellings : NotificationReplyCore.Commands.defaultEndReplySpellings,
+                    similar: similar, validate: { spellingConflict($0, reply: reply) })
+            }
+        }
+    }
+    private func spellingRow(reply: Bool) -> some View {
+        let phrase = reply ? NotificationReplyCore.Commands.replyPhrase : NotificationReplyCore.Commands.endReplyPhrase
+        let listed = reply ? replySpellings ?? NotificationReplyCore.Commands.defaultReplySpellings
+            : endReplySpellings ?? NotificationReplyCore.Commands.defaultEndReplySpellings
+        let forms = NotificationReplyCore.Commands(replySpellings: replySpellings, endReplySpellings: endReplySpellings, alternateSpellings: similar)
+        let main = PhraseMatcher.words(phrase).joined(separator: " ")
+        let recognized = Set((reply ? forms.replyForms : forms.endReplyForms).map { $0.joined(separator: " ") }).subtracting([main])
+        let unused = similar ? listed.filter { !recognized.contains(PhraseMatcher.words($0).joined(separator: " ")) }.count : 0
+        return HStack {
+            Text(phrase)
+            Spacer()
+            SpellingCountButton(count: listed.count, unused: unused, identifier: reply ? "notificationReplySpellings" : "notificationEndReplySpellings") {
+                editingReply = reply
+            }
+        }
+    }
+    private func spellingConflict(_ entries: [String], reply: Bool) -> String? {
+        let forms = NotificationReplyCore.Commands(replySpellings: reply ? entries : replySpellings,
+            endReplySpellings: reply ? endReplySpellings : entries)
+        let starts = Set(forms.replyForms.map { $0.joined(separator: " ") })
+        if forms.endReplyForms.contains(where: { starts.contains($0.joined(separator: " ")) }) {
+            return "Reply and End reply need different spellings."
+        }
+        let sorted = forms.replyForms.sorted { $0.lexicographicallyPrecedes($1) }
+        if zip(sorted, sorted.dropFirst()).contains(where: { $1.starts(with: $0) }) {
+            return "One Reply spelling can’t start with another."
+        }
+        return nil
     }
     private func number(_ title: String, value: Binding<Int>, id: String) -> some View {
         let binding = value.changes(in: 10...180)

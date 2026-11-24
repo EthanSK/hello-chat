@@ -144,7 +144,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 | Section | Contents |
 | --- | --- |
-| Notification Replies | Optional spoken replies after Codex notifications. **Enabled**, **Cancel after silence (seconds)** and **Maximum reply (seconds)** use the existing speech model and microphone. |
+| Notification Replies | Optional spoken replies after Codex notifications. Edit the **Reply** and **End reply** spellings here. **Enabled**, **Cancel after silence (seconds)** and **Maximum reply (seconds)** use the existing speech model and microphone. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
 | Recognition | **Alternate spellings for default phrases** and **Check speech recognition**. Phrase and microphone editors are on Home. |
 | Resources | Hello Chat's own CPU and memory, and Core ML's estimated encoder placement. |
@@ -158,6 +158,8 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 ## Notification replies
 
 Enable **Settings → Notification Replies** with the shared Codex notification-speech integration installed. After a notification finishes, say **Reply** within two seconds, then speak your answer. Say **End reply** to send it to the exact chat that produced the notification. Pauses keep listening; the safety limits cancel without sending. The compact floating display streams the reply words and keeps the complete original notification in a scroll area. Short content fits without filling the maximum height. Drag its header to move it, or use its close button to cancel an unsent reply. Last command keeps the outcome. Queue acceptance is separate from a reply appearing in that chat.
+
+Edit the notification controls’ alternate spellings in the same Settings section. **And reply** is a built-in alternate for **End reply**. An empty spelling list keeps only the main phrase; **Recognize alternate spellings** applies to these controls too. A send spelling must finish the command: ordinary wording such as “read that and reply tomorrow” stays in the answer.
 
 This uses H Chat's existing microphone and selected local speech model. It adds no second recognizer and saves no audio. Codex Voice, manual Agent Flow recording, disabled listening and newer input in the original chat cancel an unsent reply. The reply body cannot execute ambient H Chat commands. The ordinary Save transcripts preference still applies to the shared listener.
 

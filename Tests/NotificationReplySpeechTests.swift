@@ -47,9 +47,9 @@ import Foundation
         check(trailing.canDispatch && trailing.body == "yes", "a real final confirms the requested prefix before later background words")
         var changedEnd = core
         let changedWords = partialEnd.words.enumerated().map { index, word in
-            NotificationReplyCore.Word(text: index == 2 ? "and" : word.text, start: word.start, end: word.end)
+            NotificationReplyCore.Word(text: index == 2 ? "another" : word.text, start: word.start, end: word.end)
         }
-        changedEnd.observe(.init(batch: partialEnd.batch, text: "Reply yes and reply", words: changedWords, stableWords: 4), now: 105)
+        changedEnd.observe(.init(batch: partialEnd.batch, text: "Reply yes another reply", words: changedWords, stableWords: 4), now: 105)
         check(!changedEnd.canDispatch, "a changed-away native End prefix cannot send")
         core.tick(now: 106.4)
         check(core.phase == .composing, "native Nemotron's two-second quiet period doesn't expire an End candidate")

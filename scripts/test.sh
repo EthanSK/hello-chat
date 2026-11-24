@@ -7,6 +7,8 @@ build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplyCoreTests.swift -o "$build_dir/NotificationReplyCoreTests"
 "$build_dir/NotificationReplyCoreTests"
+swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplySpellingTests.swift -o "$build_dir/NotificationReplySpellingTests"
+"$build_dir/NotificationReplySpellingTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Sources/NotificationReplySpeech.swift Tests/NotificationReplySpeechTests.swift -o "$build_dir/NotificationReplySpeechTests"
 "$build_dir/NotificationReplySpeechTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyOrigin.swift Tests/NotificationReplyOriginTests.swift -o "$build_dir/NotificationReplyOriginTests" -lsqlite3

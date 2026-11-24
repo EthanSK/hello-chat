@@ -196,6 +196,8 @@ extension HAgentControl {
             "notificationRepliesEnabled": model.notificationReplies.settings.enabled,
             "notificationReplyIdleSeconds": model.notificationReplies.settings.idleSeconds,
             "notificationReplySeconds": model.notificationReplies.settings.replySeconds,
+            "notificationReplySpellings": model.phraseDictionaries[NotificationReplyCore.Commands.replySpellingKey] ?? NotificationReplyCore.Commands.defaultReplySpellings,
+            "notificationEndReplySpellings": model.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey] ?? NotificationReplyCore.Commands.defaultEndReplySpellings,
             "ultrafastForNewVoiceChats": UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true,
             "speechModel": model.speechModel.rawValue, "microphone": model.inputs.selectedUID,
             "display": UserDefaults.standard.string(forKey: WindowDisplay.preferenceKey) ?? "", "rewindVideoSeconds": model.rewindVideoSeconds,

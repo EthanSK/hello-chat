@@ -3,6 +3,7 @@ import Foundation
 import AppKit
 import SQLite3
 import XCTest
+import SwiftUI
 @testable import HelloChat
 
 @MainActor final class NotificationReplyIntegrationTests: XCTestCase {
@@ -19,7 +20,7 @@ import XCTest
         let calls: Calls
         let root: URL
     }
-    private func fixture() throws -> Fixture {
+    private func fixture(coordinator supplied: NotificationReplyCoordinator? = nil) throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("HChatNotificationIntegration-" + UUID().uuidString)
         let home = root.appendingPathComponent("home"), codex = home.appendingPathComponent(".codex")
         let sessions = codex.appendingPathComponent("sessions")
@@ -34,7 +35,8 @@ import XCTest
         let name = "HChatNotificationTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let settings = NotificationReplySettings(defaults: defaults); settings.enabled = true
-        let coordinator = NotificationReplyCoordinator(settings: settings, directory: root.appendingPathComponent("status"), observeRecording: false)
+        let coordinator = supplied ?? NotificationReplyCoordinator(settings: settings, directory: root.appendingPathComponent("status"), observeRecording: false)
+        coordinator.settings.enabled = true
         let clock = Clock(), calls = Calls()
         coordinator.clock = { clock.time }; coordinator.wallClock = { clock.wallBase + clock.time }
         coordinator.recordingBusy = { false }; coordinator.currentReadiness = { .ready }
@@ -132,6 +134,34 @@ import XCTest
         XCTAssertFalse(f.coordinator.interceptsSpeech)
         f.clock.time += 11; f.coordinator.checkBounds()
         XCTAssertFalse(f.coordinator.hasOpenAttempt)
+        await f.coordinator.shutdown()
+    }
+    func testSharedSpellingEditsCancelOnlyAffectedUnsentAttempt() async throws {
+        guard let expected = ProcessInfo.processInfo.environment["HCHAT_CONTROL_FIXTURE_HOME"],
+              expected == ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"],
+              FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path == URL(fileURLWithPath: expected).resolvingSymlinksInPath().path,
+              FileManager.default.fileExists(atPath: URL(fileURLWithPath: expected).appendingPathComponent("control-fixture-owner").path)
+        else { throw XCTSkip("Run scripts/test-control-integration.sh to supply an isolated home.") }
+        let saved = UserDefaults.standard.object(forKey: "phraseDictionaries")
+        let similar = UserDefaults.standard.object(forKey: "similarPhrases")
+        defer {
+            UserDefaults.standard.set(saved, forKey: "phraseDictionaries")
+            UserDefaults.standard.set(similar, forKey: "similarPhrases")
+        }
+        let model = GateModel(enableSpotifyControl: false)
+        let f = try fixture(coordinator: model.notificationReplies), first = UUID(), second = UUID()
+        model.similarPhrases = true
+        _ = try await prepare(f, event: first)
+        model.phraseDictionaries["unrelated-fixture-key"] = ["fixture spelling"]
+        XCTAssertEqual(try f.coordinator.status(event: first, instance: f.coordinator.instance)["phase"] as? String, "preparing")
+        model.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey] = ["Finish response"]
+        XCTAssertEqual(try f.coordinator.status(event: first, instance: f.coordinator.instance)["reason"] as? String, "settings-changed")
+        _ = try f.coordinator.mediaReleased(event: first, instance: f.coordinator.instance, released: true)
+        _ = try await prepare(f, event: second)
+        model.similarPhrases = false
+        XCTAssertEqual(try f.coordinator.status(event: second, instance: f.coordinator.instance)["reason"] as? String, "settings-changed")
+        XCTAssertEqual(f.calls.count, 0)
+        _ = try f.coordinator.mediaReleased(event: second, instance: f.coordinator.instance, released: true)
         await f.coordinator.shutdown()
     }
     func testIntentionalCaptureCutKeepsReplyHUDUntilGenuinePostCutLoss() async throws {
@@ -254,10 +284,37 @@ import XCTest
         XCTAssertEqual(NSApplication.shared.isActive, active)
         await f.coordinator.shutdown()
     }
+    func testNotificationSpellingSettingsRenderWithoutShowingWindows() throws {
+        let name = "HChatSpellingSettingsTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let settings = NotificationReplySettings(defaults: defaults); settings.enabled = true
+        var reply: [String]?, end: [String]?
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 720, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let view = NSHostingView(rootView: Form {
+            NotificationReplySettingsSection(settings: settings,
+                replySpellings: Binding(get: { reply }, set: { reply = $0 }),
+                endReplySpellings: Binding(get: { end }, set: { end = $0 }),
+                similar: true, readiness: { .ready })
+        }.formStyle(.grouped))
+        window.contentView = view
+        view.layoutSubtreeIfNeeded()
+        XCTAssertFalse(window.isVisible)
+        try captureInertView(view, name: "notification-spellings-settings")
+        XCTAssertFalse(window.isVisible, "Settings visual QC must not cover a working screen")
+        XCTAssertNil(reply); XCTAssertNil(end, "Rendering must not save a default over the user's spelling choice")
+    }
     private func captureInertPanel(_ panel: NotificationReplyHUD.Panel, name: String) throws {
-        guard let directory = ProcessInfo.processInfo.environment["HCHAT_NOTIFICATION_HUD_CAPTURE_DIR"] else { return }
         XCTAssertFalse(panel.isVisible)
         let view = try XCTUnwrap(panel.contentView)
+        try captureInertView(view, name: name)
+        XCTAssertFalse(panel.isVisible, "An offscreen visual check must never show a working-screen panel")
+    }
+    // The existing offscreen panel renderer also captures the actual Settings view. — GPT-6.1 Sol
+    private func captureInertView(_ view: NSView, name: String) throws {
+        guard let directory = ProcessInfo.processInfo.environment["HCHAT_NOTIFICATION_HUD_CAPTURE_DIR"] else { return }
         view.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -265,7 +322,6 @@ import XCTest
         let root = URL(fileURLWithPath: directory)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try data.write(to: root.appendingPathComponent(name + ".png"))
-        XCTAssertFalse(panel.isVisible, "An offscreen visual check must never show a working-screen panel")
     }
     func testEarlyMediaReleaseAndStaleOriginNeverSend() async throws {
         let f = try fixture(), early = UUID()

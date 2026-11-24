@@ -485,7 +485,11 @@ import SwiftUI
         Dictionary(uniqueKeysWithValues: VideoCommand.allCases.map { ($0, patterns(for: $0.slot)) })
     }
     @Published var phraseDictionaries = UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]] ?? [:] {
-        didSet { UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); updatePhrases() }
+        didSet {
+            UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); updatePhrases()
+            let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey]
+            if keys.contains(where: { oldValue[$0] != phraseDictionaries[$0] }) { notificationReplies.interrupted("settings-changed") }
+        }
     }
     private(set) var matchingDictionaries = PhraseDictionaries(savedByTrigger:
         UserDefaults.standard.dictionary(forKey: "phraseDictionaries") as? [String: [String]] ?? [:])
@@ -615,7 +619,10 @@ import SwiftUI
     }
     var controlPhrases: [String] { VoiceAudioAction.allCases.flatMap { $0.slots.flatMap { phraseConfiguration.phrases(for: $0) } } }
     @Published var similarPhrases = UserDefaults.standard.object(forKey: "similarPhrases") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); updatePhrases() }
+        didSet {
+            UserDefaults.standard.set(similarPhrases, forKey: "similarPhrases"); updatePhrases()
+            if oldValue != similarPhrases { notificationReplies.interrupted("settings-changed") }
+        }
     }
     @Published private(set) var error: String?
     // Shortcut activation is independent of microphone/model preparation, which
@@ -792,6 +799,14 @@ import SwiftUI
             guard self.observedVoicePresence == .inactive else { return .voiceUnknown }
             guard VoiceBridge.currentApplication() != nil else { return .codexUnavailable }
             return .ready
+        }
+        // Notification controls share the existing spelling store without becoming
+        // ambient commands. Each admitted attempt freezes these exact forms. — GPT-6.1 Sol
+        notificationReplies.commandForms = { [weak self] in
+            guard let self else { return .init() }
+            return .init(replySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.replySpellingKey],
+                         endReplySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey],
+                         alternateSpellings: self.similarPhrases)
         }
         notificationReplies.resetRecognition = { [weak self] in
             guard let self else { return }
@@ -1189,7 +1204,8 @@ import SwiftUI
         })
         rebuildSpeakerCommands()
         cancelAppCommands()
-        listener.contextualPhrases = phraseConfiguration.allPhrases + activeSpeakerCommands.map { $0.pattern.text } + ["Reply", "End reply"]
+        listener.contextualPhrases = phraseConfiguration.allPhrases + activeSpeakerCommands.map { $0.pattern.text }
+            + [NotificationReplyCore.Commands.replyPhrase, NotificationReplyCore.Commands.endReplyPhrase]
         endPhrase.reset()
         standaloneWake.reset()
         resetAudioPhrases()

@@ -5,6 +5,48 @@ import XCTest
 @testable import HelloChat
 
 final class AgentControlIntegrationTests: XCTestCase {
+    @MainActor func testNotificationSpellingsUseSharedStoreAndRevision() async throws {
+        try requireIsolatedHome()
+        let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey]
+        let saved = UserDefaults.standard.object(forKey: "phraseDictionaries")
+        let similar = UserDefaults.standard.object(forKey: "similarPhrases")
+        defer {
+            UserDefaults.standard.set(saved, forKey: "phraseDictionaries")
+            UserDefaults.standard.set(similar, forKey: "similarPhrases")
+        }
+        let model = GateModel(enableSpotifyControl: false)
+        model.similarPhrases = true
+        for key in keys { model.phraseDictionaries[key] = nil }
+        XCTAssertTrue(model.notificationReplies.commandForms().endReplyForms.contains(["and", "reply"]))
+        let control = HAgentControl(model, zoom: InterfaceZoom(), updater: AppUpdater())
+        func read() async throws -> [String: Any] {
+            let request = try HControlRequest(JSONSerialization.data(withJSONObject: ["version": 1, "id": UUID().uuidString,
+                "expiresAt": Date().timeIntervalSince1970 + 20, "operation": "settings.read", "arguments": [:]]))
+            let outcome = try await control.handle(request)
+            return try XCTUnwrap(outcome.result as? [String: Any])
+        }
+        let before = try await read()
+        model.phraseDictionaries[keys[1]] = []
+        XCTAssertEqual(model.notificationReplies.commandForms().endReplyForms, [["end", "reply"]])
+        let restarted = GateModel(enableSpotifyControl: false)
+        XCTAssertEqual(restarted.phraseDictionaries[keys[1]], [], "An empty override stays canonical-only after restart")
+        XCTAssertEqual(restarted.notificationReplies.commandForms().endReplyForms, [["end", "reply"]])
+        model.phraseDictionaries[keys[0]] = ["Respond"]
+        model.phraseDictionaries[keys[1]] = ["Finish response"]
+        XCTAssertTrue(model.notificationReplies.commandForms().replyForms.contains(["respond"]))
+        XCTAssertTrue(model.notificationReplies.commandForms().endReplyForms.contains(["finish", "response"]))
+        let after = try await read()
+        XCTAssertNotEqual(before["revision"] as? String, after["revision"] as? String)
+        let settings = try XCTUnwrap(after["settings"] as? [String: Any])
+        XCTAssertEqual(settings["notificationEndReplySpellings"] as? [String], ["Finish response"])
+        model.similarPhrases = false
+        XCTAssertEqual(model.notificationReplies.commandForms().replyForms, [["reply"]])
+        XCTAssertEqual(model.notificationReplies.commandForms().endReplyForms, [["end", "reply"]])
+        XCTAssertEqual(model.phraseDictionaries[keys[1]], ["Finish response"], "Disabling alternatives preserves the editable list")
+        model.similarPhrases = true
+        model.phraseDictionaries[keys[1]] = nil
+        XCTAssertTrue(model.notificationReplies.commandForms().endReplyForms.contains(["and", "reply"]))
+    }
     @MainActor func testPhraseWindowUsesSharedDefaultAndPreservesOffChoice() async throws {
         try requireIsolatedHome()
         _ = NSApplication.shared

@@ -1506,7 +1506,7 @@ private struct VideoControls: View, Equatable {
     }
 }
 
-private struct SpellingCountButton: View {
+struct SpellingCountButton: View {
     let count: Int
     let unused: Int
     var identifier: String? = nil
@@ -1608,7 +1608,7 @@ private struct TriggerPhraseEditor: View, Equatable {
 
 // Refactor of PhraseSpellings’ existing dictionary editor. The owning command panel
 // now displays the recognized forms; this sheet only edits that trigger’s dictionary. — GPT-6.1 Sol
-private struct PhraseDictionaryEditor: View {
+struct PhraseDictionaryEditor: View {
     let slot: PhraseSlot?
     let phrase: String
     @Binding var dictionary: [String]?
@@ -1710,7 +1710,12 @@ struct SettingsView: View {
                 Text("H Chat restores your previous defaults after Voice opens. If Codex is already running, it can use the choices saved in its window.")
                     .foregroundStyle(.secondary)
             }
-            NotificationReplySettingsSection(settings: model.notificationReplies.settings, readiness: { model.notificationReplies.readiness })
+            NotificationReplySettingsSection(settings: model.notificationReplies.settings,
+                replySpellings: Binding(get: { model.phraseDictionaries[NotificationReplyCore.Commands.replySpellingKey] },
+                    set: { model.phraseDictionaries[NotificationReplyCore.Commands.replySpellingKey] = $0 }),
+                endReplySpellings: Binding(get: { model.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey] },
+                    set: { model.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey] = $0 }),
+                similar: model.similarPhrases, readiness: { model.notificationReplies.readiness })
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
                     .accessibilityIdentifier("automaticListening")
@@ -1723,7 +1728,7 @@ struct SettingsView: View {
             Section("Recognition") {
                 Toggle("Recognize alternate spellings", isOn: $model.similarPhrases)
                     .accessibilityIdentifier("similarPhrases")
-                Text(model.similarPhrases ? "Also matches each phrase’s alternate spellings, edited from its gear on Home." : "Phrases must match exactly. Capitalization, spaces and punctuation can differ.")
+                Text(model.similarPhrases ? "Also matches each phrase’s alternate spellings." : "Phrases must match exactly. Capitalization, spaces and punctuation can differ.")
                     .foregroundStyle(.secondary)
                 if !model.hasPhrase(.wakePhrase) || !model.hasPhrase(.sleepPhrase) {
                     Label("Add a wake phrase and an end phrase on Home.", systemImage: "exclamationmark.triangle").foregroundStyle(.red)
