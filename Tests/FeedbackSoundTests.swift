@@ -41,7 +41,11 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
     for slice in 0..<windows {
         let window = (slice * size..<(slice + 1) * size).map { $0 < samples.count ? samples[$0] : 0 }
         envelope.append((window.reduce(0) { $0 + $1 * $1 } / Double(size)).squareRoot())
-        let count = zip(window, window.dropFirst()).filter { ($0 < 0) != ($1 < 0) && abs($0) + abs($1) > 1e-3 }.count
+        // Explicit sample pairs keep the same fingerprint without exhausting Swift's type checker. — GPT-6.1 Sol
+        var count = 0
+        for (left, right) in zip(window, window.dropFirst()) {
+            if (left < 0) != (right < 0) && abs(left) + abs(right) > 1e-3 { count += 1 }
+        }
         crossings.append(Double(count) / (Double(size) / Double(rate)) / 2000)
     }
     let peak = envelope.max() ?? 0

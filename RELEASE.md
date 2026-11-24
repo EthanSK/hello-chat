@@ -2,30 +2,27 @@
 
 Ethan’s authorized local updates follow the local-first rule in `.agents/skills/hello-chat/SKILL.md`. Review, build and install a viable locally signed batch promptly; full tests, public notarisation and publication below follow afterward unless a demonstrated local platform requirement prevents it. Preserve the signing identity, permissions, updater trust and safe detach/flush behavior. User-corrected — 2026-11-14.
 
-Runtime changes pushed to `main` start the Release workflow on a dedicated Apple Silicon signing runner. Website/reference-only changes to the explicitly excluded paths do not ship an unchanged app; Pages still publishes the website. A manual dispatch remains available. Bundled resources, scripts, tests and workflow changes still trigger a release. The job tests, builds, verifies the Developer ID signature and microphone entitlement, notarises and staples the app, and signs the final ZIP for Sparkle. GitHub Actions transfers that package as an artifact, then a GitHub-hosted runner publishes the immutable release and verifies its downloadable bytes. The artifact contains only the signed public package and its release metadata. No signing private key is exported to GitHub.
+Runtime changes pushed to `main` start the Release workflow on a GitHub-hosted Apple Silicon runner. Website/reference-only changes to the explicitly excluded paths do not ship an unchanged app; Pages still publishes the website. A manual dispatch remains available. Bundled resources, scripts, tests and workflow changes still trigger a release. The job tests, builds, verifies the Developer ID signature and microphone entitlement, notarises and staples the app, and signs the final ZIP for Sparkle. GitHub Actions transfers that package as an artifact, then a GitHub-hosted runner publishes the immutable release and verifies its downloadable bytes. The artifact contains only the signed public package and its release metadata. Signing private keys are provisioned separately as encrypted Actions secrets and never included in that artifact.
 
-## One-time signing runner setup
+## Hosted signing setup
 
-Use the GitHub repository’s Actions → Runners setup for an official macOS ARM64 runner. Add the `hello-chat-release` label and run it in the signing user’s logged-in macOS session. Keep its work/temp directories on suitable scratch storage. This workflow runs only for trusted main pushes and manual dispatches, never pull requests from forks.
+The Release workflow uses a disposable GitHub-hosted Apple Silicon Mac. It builds and tests the selected source, imports signing material into a temporary Keychain, requests Apple notarization, and publishes through the job's scoped GitHub token.
 
-Keep the runner's work-folder path free of spaces; a space-free symlink to scratch storage also works. The runner can otherwise split its generated shell-script path before the script runs. Verify the resolved storage destination before a release.
+The hosted builder uses `macos-26` with Xcode 26.6. App Intents packaging needs that toolchain's `SwiftConstantValues/AppIntents.json` descriptor; the workflow checks its presence before running the release. This builder choice does not change the app's macOS 15 minimum.
 
-For a LaunchAgent signing runner, set `SessionCreate` to `false` so it shares the logged-in user's security session, then reload only that idle runner. If `notarytool history` succeeds interactively but reports `keychainLocked` in the job, check this session setting before asking for another unlock. Do not copy signing credentials or store the login password in a workflow to work around that difference. Require the workflow's signing-access check to pass.
+Provision these repository Actions secrets before enabling the hosted workflow:
 
-The signing user must have:
+- APPLE_CERTIFICATE_P12_BASE64 — the encoded Developer ID Application certificate with its matching private key.
+- APPLE_CERTIFICATE_PASSWORD — the password protecting that exported identity.
+- APPLE_ID and APPLE_TEAM_ID — the Apple account and signing team.
+- APPLE_APP_SPECIFIC_PASSWORD — the labelled app-specific credential for notarization.
+- SPARKLE_ED25519_PRIVATE_KEY — the existing update-signing private key matching SUPublicEDKey in Info.plist.
 
-- Developer ID Application identity from team `T34G959ZG8`, accessible to `codesign`.
-- An existing working `notarytool` profile. Set repository variable `HELLOCHAT_NOTARY_PROFILE` to its name; the default is `HelloChatRelease`.
-- A Sparkle signing key in Keychain account `com.ethansk.HelloChat`.
-- The existing EthanSK GitHub CLI login in Keychain, with `repo` and `workflow` scopes. Only publication removes the job-token overrides and verifies this account; it never prints or exports the credential. This preserves the exact verified source if workflow files on main change during the build.
+An Apple app-specific password authorizes notarization; the Developer ID identity signs the executable. Both are required. The workflow preserves the existing Sparkle trust identity, uses checksum-verified tools from its own temporary directory, and removes its signing material even after failure. The GitHub-hosted Mac is discarded at job completion.
 
-The signing host also needs the shared Sparkle 2.10.1 tools at `~/.local/share/sparkle-tools/2.10.1/bin`. During host setup, copy `bin` from the checksum-verified archive pinned in `.github/workflows/release.yml` to that location, preserving its executable permissions and signatures. Every release still verifies a fresh archive and compares all tool bytes before using this persistent copy. Apps keep separate Keychain accounts and public-key checks; this reuses a tool location, not private keys or permissions. Provision a new version separately when upgrading Sparkle; changed tool identities may require fresh macOS consent.
+A missing secret blocks the release. A successful setup step alone does not qualify the release: require successful tests, signing, notarization, publication and download verification. Recovery downloads an already-uploaded signed-release artifact from the selected run. Older packages retained only on a personal Mac are not available to hosted recovery.
 
-Use the verified Sparkle distribution’s `generate_keys --account com.ethansk.HelloChat` once. It saves the private key in Keychain and prints the public key. Add only that public value as `SUPublicEDKey` in `Info.plist`. Never use its private-key export option. The workflow checks that the stored key matches the app before building.
-
-An offline runner, locked keychain, missing public key or rejected notarisation blocks publication. A configured workflow alone is not an operational release pipeline. The signing Mac must remain awake and connected while a release runs; locking the screen and putting the Mac to sleep are different states.
-
-If Apple returns HTTP 403 for a missing or expired agreement, open Agreements for the signing team in the developer account and check the acceptance date. Once the account shows acceptance, wait for `notarytool history` with the configured profile to succeed before starting another GitHub run.
+[GitHub signing setup](https://docs.github.com/en/actions/how-tos/deploy/deploy-to-third-party-platforms/sign-xcode-applications) describes the temporary Keychain pattern. Keep credentials out of source, logs and artifacts.
 
 ## Version ownership
 
@@ -37,7 +34,7 @@ Do not bump a second version file or commit generated release metadata back to m
 
 ## Verify a public release
 
-1. Require a successful Release workflow and an online runner with the required label.
+1. Require a successful Release workflow, including its signing, notarization, publication and download-verification steps on GitHub-hosted runners.
 2. Download the exact release’s ZIP, appcast and checksums. Run `shasum -a 256 -c SHA256SUMS`.
 3. Extract and verify `codesign --verify --deep --strict HelloChat.app`, `xcrun stapler validate HelloChat.app`, and `spctl --assess --type execute --verbose=2 HelloChat.app`.
 4. From an older installed build, check that Sparkle finds the newer version, downloads it, validates its signature and relaunches into that exact build. Verify preferences, startup configuration, microphone permission and Accessibility permission remain intact.
@@ -49,9 +46,11 @@ The public download is `https://github.com/EthanSK/hello-chat/releases/latest`. 
 
 ## Recover an interrupted upload
 
-When GitHub interrupts publication after successful notarization, preserve the original ZIP, `SHA256SUMS`, `appcast.xml` and `release-manifest.json` before the runner clears its temporary directory. On the signing Mac, stage them under `${RUNNER_TEMP%/*}/release-recovery.noindex/<failed-run-id>/`. Dispatch the Release workflow from `main` with `recover_run_id=<failed-run-id>`. It checks the original run and source, rechecks the package and resumes the matching draft. Recovery accepts workflow and release-guide edits since the original build. Clear the staged copy after the public download is verified.
+When publication is interrupted after the signed-release artifact has uploaded, dispatch the Release workflow from `main` with `recover_run_id=<failed-run-id>` before its three-day artifact retention expires. Recovery downloads that run's original ZIP, `SHA256SUMS`, `appcast.xml` and `release-manifest.json` from GitHub, checks the original run and source, rechecks the package and resumes the matching draft. It accepts only workflow and release-guide edits since the original build. A run that never uploaded its artifact cannot be recovered this way and needs a new normal release. No package is recovered from a personal Mac.
 
-## Package on the signing Mac
+## Manual packaging
+
+These commands are available for explicitly requested local packaging. Automated public releases use the hosted workflow above.
 
 ```sh
 zsh scripts/test.sh
