@@ -27,6 +27,9 @@ enum VoiceAudioAction: String, CaseIterable, Hashable {
         case .silenceSpeakers, .unsilenceSpeakers: return true
         }
     }
+    var shortcutSentMessage: String {
+        controlsSpeakers ? "Speaker shortcut sent." : "Microphone shortcut sent."
+    }
     // The phrase fields that request this action, in detection order.
     var slots: [PhraseSlot] {
         switch self {

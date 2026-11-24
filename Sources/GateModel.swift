@@ -162,7 +162,7 @@ import SwiftUI
             case .silenceSpeakers: shortcut = .silenceSpeakers
             case .unsilenceSpeakers: shortcut = .unsilenceSpeakers
             }
-            do { _ = try await performShortcut(shortcut, playFeedback: false); finishCommand(receipt, .confirmed) }
+            do { _ = try await performShortcut(shortcut, playFeedback: false); finishCommand(receipt, .submitted) }
             catch { finishCommand(receipt, .unknown, detail: error.localizedDescription) }
         }
     }
@@ -375,13 +375,13 @@ import SwiftUI
     private var dotPatterns: [DotCallCommand.Action: [PhrasePattern]] {
         [.start: patterns(for: .callDotPhrase), .hangUp: patterns(for: .hangUpDotPhrase)]
     }
-    private func runDot(_ action: DotCallCommand.Action) async -> DotCallCommand.Result {
+    private func runDot(_ action: DotCallCommand.Action, valid: @escaping () -> Bool = { true }) async -> DotCallCommand.Result {
         let previous = dotTail
         let token = UUID()
         let operation = Task { @MainActor [weak self] in
             _ = await previous?.value
             guard let self, !self.quitting, !Task.isCancelled else { return DotCallCommand.Result(status: "unavailable", state: .unknown) }
-            return await DotCallCommand.perform(action)
+            return await DotCallCommand.perform(action, valid: valid)
         }
         dotTasks[token] = operation; dotTail = operation
         let result = await operation.value
@@ -443,7 +443,7 @@ import SwiftUI
         updatePhrases()
         return true
     }
-    private let desktopCommands = DesktopCommands()
+    let desktopCommands = DesktopCommands()
     func appSpellingChoices() async -> [AppCandidate] { await desktopCommands.spellingChoices() }
     private var zoomPhraseDetectors = CommandPhraseDetectors<ZoomDirection>()
     // Both music phrases are one hardware action. Sharing the detector prevents a revised
@@ -612,7 +612,7 @@ import SwiftUI
     @Published private(set) var micAllowed = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     @Published private(set) var micPermissionDenied = [.denied, .restricted].contains(AVCaptureDevice.authorizationStatus(for: .audio))
     @Published private(set) var accessibilityAllowed = AXIsProcessTrusted()
-    let voice = NativeVoice(diagnostics: .shared)
+    let voice: NativeVoice
     // Ethan calls this conversation "Chat" in the UI. It is still the same
     // native Codex Voice session; both menu and window use one action/state.
     var chatActionTitle: String {
@@ -644,7 +644,7 @@ import SwiftUI
     // At most one later revision is logged per capture, never its words.
     private var finishedStartupObservation: (id: UUID, at: Double)?
     private var listeningTask: Task<Void, Never>?
-    private var quitting = false
+    private(set) var quitting = false
     private var listeningInitialized = false
     private var policy = ListeningPolicy()
     private var dockDelay = DockListeningDelay()
@@ -658,7 +658,8 @@ import SwiftUI
 
     // The meter diagnostic constructs this model before normal app ownership;
     // it must not start the optional Spotify side effect.
-    init(enableSpotifyControl: Bool = true) {
+    init(enableSpotifyControl: Bool = true, voice: NativeVoice? = nil) {
+        self.voice = voice ?? NativeVoice(diagnostics: .shared)
         spotifyVolume = SpotifyVoiceVolume(monitor: voiceCalls)
         repetitions.onProgress = { [weak self] progress in
             guard let self else { return }
@@ -1218,10 +1219,10 @@ import SwiftUI
             else { applyAutomaticListening() }
         }
     }
-    func toggle() {
+    func toggle(preservingCall: Bool = false) {
         if listeningToggleOn {
             manualListeningEnabled = false
-            policy.pause(); turnOff()
+            policy.pause(); turnOff(preservingCall: preservingCall)
         } else if !busy {
             manualListeningEnabled = true
             policy.resume(); listeningTask = Task { await turnOn() }
@@ -1287,13 +1288,14 @@ import SwiftUI
         voiceTask?.cancel()
         listener.stop(); enabled = false; detectionRunning = false; changingModel = false; meter.level = 0
     }
-    func turnOff() {
+    func turnOff(preservingCall: Bool = false) {
         let previous = voiceTask
-        stopLocal(); busy = true; error = nil
+        stopLocal(preservingCall: preservingCall); busy = true; error = nil
         status = "Off"; detail = "Start listening for \(spokenWakePhrase)."; lastEvent = "Listening stopped"
         let token = generation
         Task {
-            await voice.stop(); await previous?.value
+            if !preservingCall { await voice.stop() }
+            await previous?.value
             guard generation == token else { return }
             if !voice.connected { microphone = .muted }
             voiceText = voice.connected ? "Check chat" : "Chat is off"
@@ -1328,12 +1330,35 @@ import SwiftUI
     // Siri and personally trained Vocal Shortcuts use the same native actions
     // and task ownership as the window/phrases. A native shortcut can start a
     // call while local transcription is off, without turning that listener on.
-    func performShortcut(_ action: HChatShortcutAction, playFeedback: Bool = true) async throws -> String {
+    func performDotShortcut(_ action: DotCallCommand.Action, playFeedback: Bool = true, valid: @escaping () -> Bool = { true }) async -> DotCallCommand.Result {
+        guard !quitting else { return .init(status: "unavailable", state: .unknown) }
+        let result = await runDot(action, valid: valid)
+        if playFeedback, result.confirmed || result.submitted, result.status != "unchanged" {
+            feedback.play(action == .start ? PhraseSlot.callDotPhrase.cue : PhraseSlot.hangUpDotPhrase.cue)
+        }
+        return result
+    }
+
+    func cancelRemoteStart(request: UUID) throws {
+        guard !quitting, busy, let context = voiceStartContext, let task = voiceTask,
+              context.matches(request: request, generation: generation),
+              !context.remoteCancelled, !task.isCancelled else {
+            throw HControlFailure.conflict("This Start request is no longer opening.")
+        }
+        // The native shortcut returns no session identity. After dispatch begins, only an explicitly
+        // selected current call may receive End. A reused call belongs to its existing owner.
+        guard context.sentAt == nil, !context.resolvedCall else {
+            throw HControlFailure.unavailable("Native Voice has taken over this opening. After Start finishes, read voice.identity to select a call for End.")
+        }
+        context.withdrawBeforeNativeStart()
+        task.cancel()
+    }
+
+    func performShortcut(_ action: HChatShortcutAction, playFeedback: Bool = true, remoteGuard: HControlCall? = nil, remoteStartRequest: UUID? = nil, beforeRemoteDispatch: (() throws -> Void)? = nil) async throws -> String {
         if action == .callDot || action == .hangUpDot {
             guard !quitting else { throw CancellationError() }
-            let result = await runDot(action == .callDot ? .start : .hangUp)
+            let result = await performDotShortcut(action == .callDot ? .start : .hangUp, playFeedback: playFeedback)
             guard result.confirmed || result.submitted else { throw BridgeError.message(result.message) }
-            if playFeedback, result.status != "unchanged" { feedback.play(action == .callDot ? PhraseSlot.callDotPhrase.cue : PhraseSlot.hangUpDotPhrase.cue) }
             return result.message
         }
         if action == .status {
@@ -1353,16 +1378,19 @@ import SwiftUI
             throw BridgeError.message("Hello Chat is busy. Try again when the current action finishes.")
         }
         let token = generation
+        var shortcutOpening: VoiceStartContext?
         error = nil
         Diagnostics.shared.record("shortcut.requested", info: ["action": action.rawValue])
         switch action {
         case .start:
+            let context = VoiceStartContext(remoteOwner: remoteStartRequest.map { ($0, token) })
+            context.beforeRemoteDispatch = beforeRemoteDispatch
+            shortcutOpening = context
             if enabled && detectionRunning {
-                beginVoice(trigger: "Voice started with shortcut")
+                beginVoice(trigger: "Voice started with shortcut", opening: context)
             } else {
                 busy = true
                 if playFeedback { feedback.play(PhraseSlot.wakePhrase.cue) }
-                let context = VoiceStartContext()
                 voiceStartContext = context
                 voiceTask = Task {
                     await openVoice(trigger: "Voice started with shortcut", context: context, requiresListening: false)
@@ -1374,7 +1402,14 @@ import SwiftUI
             busy = true
             voiceTask = Task {
                 defer { if generation == token { busy = false; voiceTask = nil } }
-                let result = await CodexChatSpeed.currentVoice()
+                let result: CodexChatSpeed.Result
+                if let target = remoteGuard {
+                    do { try target.check() } catch { self.error = error.localizedDescription; return }
+                    result = await CodexChatSpeed.currentVoice(resolve: {
+                        do { try target.check(); return .init(status: .active, call: target.call) }
+                        catch { return .init(status: .changed) }
+                    })
+                } else { result = await CodexChatSpeed.currentVoice() }
                 guard generation == token, !quitting else { return }
                 if result.succeeded { lastEvent = result.message }
                 else { error = result.message }
@@ -1393,17 +1428,13 @@ import SwiftUI
                 defer { if generation == token { busy = false; voiceTask = nil; shortcutNotice = VoiceBridge.shortcutSetupMessage() } }
                 do {
                     let call = spotifyVolume.callEpoch
-                    let active = try await voice.setAudio(audio, onRecognized: { if playFeedback { self.feedback.play(.microphoneDetected) } })
+                    let sent = try await voice.setAudio(audio, beforeShortcut: remoteGuard.map { target in { try target.check() } }, onRecognized: { if playFeedback { self.feedback.play(.microphoneDetected) } })
                     guard generation == token else { return }
-                    guard active else { throw BridgeError.message("Codex Voice is off.") }
-                    confirmedVoiceStatusRead()
-                    if !audio.controlsSpeakers {
-                        microphone = audio.targetMuted ? .muted : .listening
-                        spotifyVolume.confirmMicrophoneMute(audio.targetMuted, in: call)
-                    }
+                    guard sent else { throw BridgeError.message("Open Codex, then try again.") }
+                    if !audio.controlsSpeakers { spotifyVolume.microphonePhraseSent(audio.targetMuted, in: call) }
                     if playFeedback, let slot = audio.slots.first { feedback.play(slot.cue) }
                     showListening()
-                    lastEvent = audio.controlsSpeakers ? "Chat audio is \(audio.targetMuted ? "muted" : "on")" : "Chat is \(audio.targetMuted ? "muted" : "listening")"
+                    lastEvent = audio.shortcutSentMessage
                 } catch {
                     guard generation == token, !(error is CancellationError) else { return }
                     self.error = error.localizedDescription
@@ -1415,6 +1446,9 @@ import SwiftUI
         let operation = voiceTask
         await operation?.value
         try Task.checkCancellation()
+        if shortcutOpening?.remoteCancelled == true {
+            throw HControlFailure.unavailable("This Start was cancelled before H Chat sent a native Voice shortcut.")
+        }
         guard generation == completionGeneration, !quitting else { throw CancellationError() }
         if let error { throw BridgeError.message(error) }
         if action == .start, !voice.connected { throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.") }
@@ -1423,10 +1457,8 @@ import SwiftUI
         switch action {
         case .start: return "Chat is on."
         case .end: return "Chat is off."
-        case .muteMicrophone: return "Chat microphone is muted."
-        case .unmuteMicrophone: return "Chat microphone is on."
-        case .silenceSpeakers: return "Chat speakers are muted."
-        case .unsilenceSpeakers: return "Chat speakers are on."
+        case .muteMicrophone, .unmuteMicrophone: return VoiceAudioAction.muteMicrophone.shortcutSentMessage
+        case .silenceSpeakers, .unsilenceSpeakers: return VoiceAudioAction.silenceSpeakers.shortcutSentMessage
         case .ultrafast: return "Ultrafast selected for the next turn."
         case .status: return "Chat status is unknown."
         case .callDot, .hangUpDot: preconditionFailure("Dot commands returned above")
@@ -1506,7 +1538,7 @@ import SwiftUI
             Diagnostics.shared.record("voice.status.observed_end")
         }
     }
-    private func beginVoice(trigger: String, wakeRange: Range<Int>? = nil, receipt: UUID? = nil) {
+    private func beginVoice(trigger: String, wakeRange: Range<Int>? = nil, receipt: UUID? = nil, opening: VoiceStartContext? = nil) {
         guard enabled, detectionRunning, !busy, !quitting else { finishCommand(receipt, .failedBeforeDispatch); return }
         // Reserve synchronously so an end phrase arriving before this Task's
         // first turn cancels the queued opening instead of starting a second action.
@@ -1518,7 +1550,7 @@ import SwiftUI
         // opening first; an unpublished reuse buffer must not strand that file.
         finishStartupSpeech(preserveRequested: true)
         finishedStartupObservation = nil
-        let context = VoiceStartContext()
+        let context = opening ?? VoiceStartContext()
         voiceStartContext = context
         startupSpeech = StartupSpeechBuffer(id: context.id, text: transcript, wakeRange: wakeRange, patterns: patterns(for: .wakePhrase), repeatCounts: CommandRepetition.enabled("wakePhrase"))
         context.prepareNewCall = { [weak self, weak context] in
@@ -1534,7 +1566,14 @@ import SwiftUI
     }
     private func openVoice(trigger: String, context: VoiceStartContext, requiresListening: Bool = true, receipt: UUID? = nil) async {
         defer { finishCommand(receipt, .unknown) }
-        guard enabled || !requiresListening, !quitting, !Task.isCancelled else { busy = false; return }
+        guard enabled || !requiresListening, !quitting, !Task.isCancelled else {
+            if voiceStartContext === context {
+                if startupSpeech?.id == context.id { finishStartupSpeech(preserveRequested: false) }
+                voiceStartContext = nil
+                if !endingVoice { busy = false }
+            }
+            return
+        }
         shortcutNotice = VoiceBridge.shortcutSetupMessage()
         let token = generation
         busy = true; error = nil; status = "Connecting"; detail = "Opening chat…"; lastEvent = trigger
@@ -1831,20 +1870,15 @@ import SwiftUI
                     for (action, slot, id) in reservedActions { // A delayed transcript can contain both channels or opposite commands; apply them in spoken order.
                         Diagnostics.shared.record("voice.audio.requested", info: ["action": action.rawValue, "phrase_slot": slot.rawValue])
                         let spotifyCall = spotifyVolume.callEpoch
-                        let active = try await voice.setAudio(action, onRecognized: { self.feedback.play(.microphoneDetected) }) // Inactive Voice gets no sound or key.
+                        let sent = try await voice.setAudio(action, onRecognized: { self.feedback.play(.microphoneDetected) })
                         guard generation == token else { return }
-                        guard active else { finishCommand(id, .failedBeforeDispatch); continue }
-                        finishCommand(id, .confirmed)
-                        confirmedVoiceStatusRead()
+                        guard sent else { finishCommand(id, .failedBeforeDispatch); continue }
+                        finishCommand(id, .submitted)
                         error = nil
-                        if !action.controlsSpeakers {
-                            microphone = action.targetMuted ? .muted : .listening
-                            spotifyVolume.confirmMicrophoneMute(action.targetMuted, in: spotifyCall)
-                        }
-                        feedback.play(slot.cue) // Only after the requested state is confirmed.
+                        if !action.controlsSpeakers { spotifyVolume.microphonePhraseSent(action.targetMuted, in: spotifyCall) }
+                        feedback.play(slot.cue) // Acknowledge dispatch; the native mute state remains unknown.
                         showListening()
-                        lastEvent = action.controlsSpeakers ? "Chat audio is \(action.targetMuted ? "muted" : "on")" : "Chat is \(action.targetMuted ? "muted" : "listening")"
-                        Diagnostics.shared.record("voice.audio.confirmed", info: ["action": action.rawValue])
+                        lastEvent = action.shortcutSentMessage
                     }
                 } catch is CancellationError {
                     return

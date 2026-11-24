@@ -6,11 +6,24 @@ import Foundation
 // overwrite an environmental pause's instruction to preserve the current call.
 @MainActor final class VoiceStartContext {
     let id = UUID()
+    private let remoteOwner: (request: UUID, generation: UUID)?
+    private(set) var remoteCancelled = false
+    private(set) var resolvedCall = false
     var preserveCallOnCancellation = false
+    var beforeRemoteDispatch: (() throws -> Void)?
     var prepareNewCall: (() async -> Void)?
     var sentAt: Date?
     var defaultsExecutable: URL?
     private(set) var requestedNewCall = false
+    init(remoteOwner: (request: UUID, generation: UUID)? = nil) { self.remoteOwner = remoteOwner }
+    func matches(request: UUID, generation: UUID) -> Bool {
+        remoteOwner?.request == request && remoteOwner?.generation == generation
+    }
+    func didResolveCall() { resolvedCall = true }
+    func withdrawBeforeNativeStart() {
+        preserveCallOnCancellation = true
+        remoteCancelled = true
+    }
     func didRequestNewCall() { requestedNewCall = true }
 }
 
@@ -29,9 +42,8 @@ import Foundation
         var startSession: () -> DesktopSessionState = { .interactive }
         var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
         var wait: (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
-        var outputSnapshot: (() async -> VoiceSnapshot)? = nil
-        var frontmostPID: (() -> Int32?)? = nil
-        var restoreFocus: (Int32) -> Void = { _ in }
+        var guardedShortcut: ((String, Int32, @escaping () throws -> Void) async throws -> Void)? = nil
+        var audioTargetPID: () -> Int32? = { nil }
         var prepareNewVoiceSpeed: (@MainActor (Int32?, VoiceStartContext) async throws -> Void)? = nil
         var finishLaunchDefaults: (@MainActor (VoiceStartContext, Date?) async throws -> Void)? = nil
         static var live: Self {
@@ -82,12 +94,11 @@ import Foundation
                             Diagnostics.shared.record(event, numbers: numbers, info: info)
                         })
                     }.value
-                 }, startSession: { .current }, outputSnapshot: {
-                    await Task.detached(priority: .utility) { VoiceBridge.snapshot(readOutput: true) }.value
-                 }, frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
-                 restoreFocus: { pid in
-                    _ = NSRunningApplication(processIdentifier: pid)?.activate(options: [])
-                 }, prepareNewVoiceSpeed: { pid, opening in
+                 }, startSession: { .current },
+                 guardedShortcut: { command, pid, check in
+                    try await Task.detached(priority: .userInitiated) { try VoiceBridge.post(command: command, pid: pid, beforePost: check) }.value
+                 }, audioTargetPID: { VoiceBridge.currentApplication()?.processIdentifier },
+                 prepareNewVoiceSpeed: { pid, opening in
                     guard UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true else { return }
                     let exe = try CodexVoiceSpeed.executable(pid: pid)
                     opening.defaultsExecutable = exe
@@ -137,6 +148,7 @@ import Foundation
 
     private func open(_ opening: VoiceStartContext, onRequestAccepted: () -> Void) async throws -> MicrophoneState? {
         try checkStartAllowed()
+        try opening.beforeRemoteDispatch?()
         let starting = Diagnostics.now
         diagnostics?.record("voice.open.requested")
         // Ethan wants the start sound to acknowledge each accepted wake, even
@@ -167,6 +179,7 @@ import Foundation
         // A newly launched desktop can read its saved speed as soon as its renderer starts.
         let prepareBeforeLaunch = state.pid == nil && transport.launch != nil
         if prepareBeforeLaunch {
+            try opening.beforeRemoteDispatch?()
             try await transport.prepareNewVoiceSpeed?(nil, opening)
             try checkStartAllowed()
         }
@@ -177,6 +190,7 @@ import Foundation
         if waitForApplication, let launch = transport.launch {
             try checkStartAllowed()
             diagnostics?.record("voice.application.launch_requested")
+            try opening.beforeRemoteDispatch?()
             try await launch()
             try checkStartAllowed()
             state = await snapshot()
@@ -205,6 +219,7 @@ import Foundation
                 // five-second settling time must fit inside that window.
                 launchDeadline = launchedAt + launchTimeout
                 diagnostics?.record("voice.application.relaunch_after_exit")
+                try opening.beforeRemoteDispatch?()
                 try await launch()
                 try checkStartAllowed()
                 state = await snapshot()
@@ -222,7 +237,7 @@ import Foundation
         guard state.accessibilityAllowed else {
             throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
         }
-        if confirmOpening(state, startedAt: starting) { return state.microphone }
+        if confirmOpening(state, context: opening, startedAt: starting) { return state.microphone }
         // Ethan's "Codex is using the microphone" false block: process audio
         // input can remain active after Voice closes, or belong to dictation.
         // Fresh positive Voice controls reuse the call; audio activity alone
@@ -244,6 +259,7 @@ import Foundation
             // Ethan's file handoff removes the need to make Codex frontmost or
             // navigate a composer. Start is already a global native action.
             // Keep the fresh reuse check, without the old activation delay.
+            try opening.beforeRemoteDispatch?()
             if !prepareBeforeLaunch { try await transport.prepareNewVoiceSpeed?(pid, opening) }
             try checkStartAllowed()
             let activated = await snapshot()
@@ -252,7 +268,7 @@ import Foundation
             guard activated.accessibilityAllowed else {
                 throw BridgeError.message("Allow Accessibility for Hello Chat in System Settings.")
             }
-            if confirmOpening(activated, startedAt: starting) { return activated.microphone }
+            if confirmOpening(activated, context: opening, startedAt: starting) { return activated.microphone }
             if waitForApplication, !activated.applicationReady || !activated.applicationHasWindow || activated.applicationLaunching {
                 throw BridgeError.message("Codex didn't open. Try again.")
             }
@@ -268,7 +284,12 @@ import Foundation
                     await opening.prepareNewCall?()
                     try checkStartAllowed()
                     opening.sentAt = Date()
-                    try await transport.send(VoiceBridge.startCommand, pid)
+                    if let check = opening.beforeRemoteDispatch, let guarded = transport.guardedShortcut {
+                        try await guarded(VoiceBridge.startCommand, pid, check)
+                    } else {
+                        try opening.beforeRemoteDispatch?()
+                        try await transport.send(VoiceBridge.startCommand, pid)
+                    }
                     lastVoicePID = pid
                     opening.didRequestNewCall()
                 }
@@ -287,13 +308,14 @@ import Foundation
             // Keep waiting for this start without resending its toggle.
             if fresh.pid == nil { continue }
             guard fresh.pid == pid else { throw BridgeError.message("Codex closed while opening Voice.") }
-            if confirmOpening(fresh, startedAt: starting) { return fresh.microphone }
+            if confirmOpening(fresh, context: opening, startedAt: starting) { return fresh.microphone }
         }
         throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
     }
 
-    private func confirmOpening(_ state: VoiceSnapshot, startedAt: TimeInterval) -> Bool {
+    private func confirmOpening(_ state: VoiceSnapshot, context: VoiceStartContext, startedAt: TimeInterval) -> Bool {
         guard let evidence = state.voiceConnectionEvidence else { return false }
+        context.didResolveCall()
         connected = true
         lastVoicePID = state.pid
         clearPendingOpening()
@@ -324,97 +346,33 @@ import Foundation
         }
     }
 
-    // Directional speech commands use the existing toggle shortcut with fresh
-    // state. A background speaker read can need one brief focus recovery.
+    // Ethan's explicit mute/unmute phrases now mean one native toggle each.
+    // Hidden Voice controls must not block them; dispatch does not confirm mute state. — GPT-6.1 Sol
     @discardableResult
-    func setAudio(_ action: VoiceAudioAction, onRecognized: (() -> Void)? = nil) async throws -> Bool {
+    func setAudio(_ action: VoiceAudioAction, beforeShortcut: (() throws -> Void)? = nil, onRecognized: (() -> Void)? = nil) async throws -> Bool {
         try checkStartAllowed()
-        var fresh = await snapshot(output: action.controlsSpeakers)
-        try checkStartAllowed()
-        for _ in 0..<2 where fresh.accessibilityAllowed && !fresh.applicationAbsent
-            && fresh.microphone == nil && fresh.outputMuted == nil && !fresh.endControlAvailable
-            && (!fresh.controlsComplete || !fresh.applicationReady) {
-            fresh = await snapshot(output: action.controlsSpeakers) // Retry an incomplete AX view, never a proven absent call or a sent key.
-            try checkStartAllowed()
-        }
-        guard fresh.accessibilityAllowed else { throw BridgeError.message("Allow Accessibility for Hello Chat, then try again.") }
-        if fresh.applicationAbsent { return false }
-        guard let pid = fresh.pid, fresh.microphone != nil || fresh.outputMuted != nil || fresh.endControlAvailable else {
-            let absent = fresh.controlsComplete && (fresh.applicationReady || !fresh.inputRunning) // A complete native shell with active input still cannot prove Voice is absent.
-            guard fresh.pid != nil, absent || (!fresh.applicationHasWindow && !fresh.inputRunning) else {
-                throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
-            }
-            diagnostics?.record("voice.audio.inactive", info: ["action": action.rawValue])
-            return false // Recognized words alone must never launch Voice or play an action sound.
-        }
-        var previousFocus: Int32?
-        var attemptedFocusRecovery = false
-        defer {
-            if let previousFocus, transport.frontmostPID?() == pid,
-               transport.startSession() == .interactive {
-                transport.restoreFocus(previousFocus)
-            }
-        }
-        if action.controlsSpeakers, fresh.outputMuted == nil {
-            attemptedFocusRecovery = true
-            fresh = try await recoverSpeakerControls(pid: pid, previousFocus: &previousFocus)
-        }
-        let current = action.isMuted(in: fresh)
-        guard fresh.accessibilityAllowed, fresh.pid == pid,
-              current != nil || (action.controlsSpeakers && (fresh.microphone != nil || fresh.endControlAvailable)) else {
-            throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
+        guard let pid = transport.audioTargetPID() else {
+            diagnostics?.record("voice.audio.skipped", info: ["action": action.rawValue, "reason": "codex_unavailable"])
+            return false
         }
         onRecognized?()
-        if current == action.targetMuted {
-            connected = true; lastError = nil
-            diagnostics?.record("voice.audio.unchanged", info: ["action": action.rawValue])
-            return true
-        }
-        // Recheck the requested channel immediately before sending a toggle.
-        var ready = await snapshot(output: action.controlsSpeakers)
-        if action.controlsSpeakers, ready.pid == pid, ready.accessibilityAllowed,
-           ready.outputMuted == nil, !attemptedFocusRecovery {
-            ready = try await recoverSpeakerControls(pid: pid, previousFocus: &previousFocus)
-        }
         try checkStartAllowed()
-        let readyMuted = action.isMuted(in: ready)
-        guard ready.accessibilityAllowed, ready.pid == pid,
-              readyMuted != nil || (action.controlsSpeakers && (ready.microphone != nil || ready.endControlAvailable)) else {
-            throw BridgeError.message("Couldn't confirm Codex Voice. Check Voice in Codex.")
-        }
-        if readyMuted == action.targetMuted {
-            connected = true; lastError = nil
-            return true // A manual change during the fresh read already achieved the requested state.
-        }
         let command = action.controlsSpeakers ? VoiceBridge.outputMuteCommand : VoiceBridge.muteCommand
-        try await transport.send(command, pid)
-        diagnostics?.record(action.controlsSpeakers ? "voice.output.shortcut_sent" : "voice.microphone.shortcut_sent",
-            info: ["command": command, "action": action.rawValue, "prior_muted": readyMuted.map(String.init) ?? "unknown"])
-        try checkAttached()
-        try await confirmAudio(action, pid: pid)
-        return true
-    }
-
-    private func recoverSpeakerControls(pid: Int32, previousFocus: inout Int32?) async throws -> VoiceSnapshot {
-        try checkStartAllowed()
-        if let frontmost = transport.frontmostPID?(), frontmost != pid {
-            try transport.activate(pid)
-            previousFocus = frontmost
-            diagnostics?.record("voice.output.focus_requested")
-            let deadline = transport.now() + 0.45
-            // If the user moves to a third app, don't take focus back.
-            while transport.frontmostPID?() == frontmost, transport.now() < deadline {
-                try await transport.wait(0.05)
-                try checkStartAllowed()
-            }
-            diagnostics?.record("voice.output.focus_checked",
-                info: ["frontmost": String(transport.frontmostPID?() == pid)])
+        let startedAt = Diagnostics.now
+        diagnostics?.record("voice.audio.shortcut_attempted", info: ["action": action.rawValue, "command": command, "pid": String(pid)])
+        do {
+            if let beforeShortcut, let guarded = transport.guardedShortcut { try await guarded(command, pid, beforeShortcut) }
+            else { try beforeShortcut?(); try await transport.send(command, pid) }
         }
-        // Focus can expose a different Voice presentation. Always re-read the
-        // native control and verify its process before relying on its state.
-        let focused = await snapshot(output: true)
-        try checkStartAllowed()
-        return focused
+        catch {
+            diagnostics?.failure("voice.audio.shortcut_failed", error)
+            throw error
+        }
+        diagnostics?.record(action.controlsSpeakers ? "voice.output.shortcut_sent" : "voice.microphone.shortcut_sent",
+            numbers: ["ms": (Diagnostics.now - startedAt) * 1000],
+            info: ["command": command, "action": action.rawValue, "pid": String(pid), "effect": "unverified"])
+        try checkAttached()
+        return true
     }
 
     private func confirmAudio(_ action: VoiceAudioAction, pid: Int32) async throws {
@@ -423,7 +381,7 @@ import Foundation
         // a toggle just because the first read still shows the previous state.
         let deadline = transport.now() + 2
         repeat {
-            let confirmed = await snapshot(output: action.controlsSpeakers)
+            let confirmed = await snapshot()
             try checkAttached()
             if confirmed.applicationAbsent || (confirmed.pid != nil && confirmed.pid != pid) { break }
             if confirmed.pid == pid, action.isMuted(in: confirmed) == action.targetMuted {
@@ -635,9 +593,9 @@ import Foundation
 
     // AX reads are bounded and run only during an explicit start/stop, away from
     // the UI thread. There is no background scan of Codex's conversation tree.
-    private func snapshot(output: Bool = false) async -> VoiceSnapshot {
+    private func snapshot() async -> VoiceSnapshot {
         let starting = Diagnostics.now
-        let state = await (output ? (transport.outputSnapshot ?? transport.snapshot) : transport.snapshot)()
+        let state = await transport.snapshot()
         diagnostics?.record("voice.controls.checked", numbers: ["ms": (Diagnostics.now - starting) * 1000, "nodes": Double(state.scanNodes), "timeouts": Double(state.scanTimeouts), "depth": Double(state.scanDepth)], info: ["pid": state.pid.map(String.init) ?? "unknown", "scan_failure": state.scanFailure, "complete": String(state.controlsComplete), "microphone": state.microphone?.rawValue ?? "unknown", "output_muted": state.outputMuted.map(String.init) ?? "unknown", "end_available": String(state.endControlAvailable), "input_running": String(state.inputRunning), "saved_voice_active": state.savedVoiceActive.map(String.init) ?? "unknown", "session": transport.startSession().rawValue])
         return state
     }

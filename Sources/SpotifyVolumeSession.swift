@@ -217,13 +217,14 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     // A spoken absolute volume is a deliberate manual choice, including when it
     // equals our current cap. Persist that override before sending so End/Quit
     // cannot restore the pre-call value over it. — GPT-6.1 Sol
-    func setVolume(_ volume: Int, preservingForCall: Bool, callIdentifier: String?) throws -> Int {
+    func setVolume(_ volume: Int, preservingForCall: Bool, callIdentifier: String?, beforeWrite: (() throws -> Void)? = nil) throws -> Int {
         var dispatched = false
         do {
             guard (0...100).contains(volume) else { throw SpotifyControlError.invalidReply }
             try load()
             guard let current = try access.read() else { throw SpotifyControlError.unavailable }
             guard (0...100).contains(current) else { throw SpotifyControlError.invalidReply }
+            try beforeWrite?()
             if var saved = lease ?? (preservingForCall
                 ? SpotifyVolumeLease(original: current, applied: current, confirmed: true, callIdentifier: callIdentifier, cap: 100) : nil) {
                 saved.mutePhase = .manualOverride
@@ -231,6 +232,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
                 try keep(saved)
             }
             if current == volume { return current }
+            try beforeWrite?()
             dispatched = true
             return try access.write(volume, current, true)
         } catch {

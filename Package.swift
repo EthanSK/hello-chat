@@ -10,6 +10,7 @@ let package = Package(
         path: "Sources",
         linkerSettings: [.linkedLibrary("sqlite3"), .linkedFramework("AppKit"), .linkedFramework("ApplicationServices"),
                          .linkedFramework("CoreAudio"), .linkedFramework("AVFoundation"), .linkedFramework("SwiftUI"),
-                         .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])])],
+                         .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
+              .testTarget(name: "AgentControlIntegrationTests", dependencies: ["HelloChat"], path: "Tests/AgentControlIntegration")],
     swiftLanguageModes: [.v5]
 )

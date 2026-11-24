@@ -98,6 +98,10 @@ final class Diagnostics: @unchecked Sendable {
         queue.sync { try? commandRecords().last?.summary }
     }
 
+    func commandHistory(limit: Int) throws -> [[String: String]] {
+        try queue.sync { try commandRecords().suffix(limit).map { ["time": $0.time, "command": $0.label, "summary": $0.summary] } }
+    }
+
     func exportCommandHistory() throws -> URL {
         try queue.sync {
             var lines = try commandRecords().map {

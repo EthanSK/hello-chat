@@ -188,9 +188,15 @@ enum RunningAppActivation {
         }
     }
 
-    private func carry(_ decision: AppCommandDecision, dispatched: () -> Void) async -> DesktopCommandResult {
+    func openIdentified(_ app: AppCandidate, valid: () -> Bool) async -> DesktopCommandResult {
+        let running = environment.running().first { $0.id == app.id }
+        return await carry(running.map(AppCommandDecision.activate) ?? .open(app), valid: valid, dispatched: {})
+    }
+
+    private func carry(_ decision: AppCommandDecision, valid: () -> Bool = { true }, dispatched: () -> Void) async -> DesktopCommandResult {
         // The catalog can finish after a lock, stop, or quit. Recheck just before dispatch.
         if let unavailable = unavailable() { return unavailable }
+        guard valid() else { return .init(message: "The app request expired.", diagnostic: "expired") }
         switch decision {
         case .ignore: return DesktopCommandResult(message: nil, diagnostic: "ignored")
         case .failure(let text): return DesktopCommandResult(message: text, diagnostic: "not-resolved")
@@ -207,6 +213,7 @@ enum RunningAppActivation {
                 catalog = nil
                 return DesktopCommandResult(message: "\(app.displayName) is no longer installed there.", diagnostic: "verify-failed")
             }
+            guard valid() else { return .init(message: "The app request expired.", diagnostic: "expired") }
             guard await environment.open(app) else {
                 return DesktopCommandResult(message: "Couldn't open \(app.displayName).", diagnostic: "open-failed")
             }

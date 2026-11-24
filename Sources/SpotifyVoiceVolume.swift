@@ -122,6 +122,14 @@ enum SpotifyVolumeControl {
         else { monitor.refresh() }
     }
 
+    // Keep Ethan's phrase-to-Spotify behavior without making its native key wait
+    // for Voice buttons. This is the requested phrase direction, not mute readback. — GPT-6.1 Sol
+    func microphonePhraseSent(_ requestedMuted: Bool, in epoch: Int) {
+        guard enabled, epoch == callEpoch, presence == .active else { return }
+        microphoneMuted = requestedMuted
+        reconcile()
+    }
+
     func setEnabled(_ value: Bool) {
         observeSpotifyLaunch()
         enabled = value; generation += 1; callEpoch += 1
@@ -162,7 +170,7 @@ enum SpotifyVolumeControl {
         if enabled, presence == .active { reconcile(limitEdited: true) }
     }
 
-    func setVolume(to volume: Int) async throws -> Int {
+    func setVolume(to volume: Int, beforeWrite: (() throws -> Void)? = nil) async throws -> Int {
         generation += 1 // Older automatic checks cannot replace this command's permission result.
         let generation = self.generation
         let session = self.session
@@ -171,7 +179,7 @@ enum SpotifyVolumeControl {
         do {
             let actual: Int = try await withCheckedThrowingContinuation { continuation in
                 queue.async {
-                    do { continuation.resume(returning: try session.setVolume(volume, preservingForCall: preserve, callIdentifier: identifier)) }
+                    do { continuation.resume(returning: try session.setVolume(volume, preservingForCall: preserve, callIdentifier: identifier, beforeWrite: beforeWrite)) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -201,7 +209,7 @@ enum SpotifyVolumeControl {
                 let result = try session.reconcile(state, callIdentifier: callIdentifier, microphoneMuted: microphoneMuted, limit: limit, limitEdited: limitEdited)
                 Diagnostics.shared.record("spotify.volume.reconciled", info: [
                     "result": result.rawValue, "call": state.rawValue,
-                    "confirmed_mic_command": microphoneMuted.map { $0 ? "mute" : "unmute" } ?? "none",
+                    "microphone_volume_request": microphoneMuted.map { $0 ? "mute" : "unmute" } ?? "none",
                     "evidence": evidence
                 ])
                 Task { @MainActor [weak self] in
