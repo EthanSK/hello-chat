@@ -12,6 +12,9 @@ import Darwin
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--agent-control-v1"] { exit(HControlMailbox.command()) }
+        if arguments == ["--preview-notification-replies"] || Bundle.main.object(forInfoDictionaryKey: "HChatNotificationReplyPreview") as? Bool == true {
+            MainActor.assumeIsolated { NotificationReplyPreview.run() }; return
+        }
         if arguments.count == 2, arguments[0] == "--check-spotify-volume-phrase" {
             let aliases = PhraseList.decode(UserDefaults.standard.object(forKey: PhraseList.defaultsKey))
             let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map {
@@ -1707,6 +1710,7 @@ struct SettingsView: View {
                 Text("H Chat restores your previous defaults after Voice opens. If Codex is already running, it can use the choices saved in its window.")
                     .foregroundStyle(.secondary)
             }
+            NotificationReplySettingsSection(settings: model.notificationReplies.settings, readiness: { model.notificationReplies.readiness })
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
                     .accessibilityIdentifier("automaticListening")

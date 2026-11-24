@@ -66,8 +66,8 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
 
         // Each phrase slot owns a distinct sound, including the two ways to silence speakers.
         let slotCues = Set(PhraseSlot.allCases.map(\.cue))
-        check(slotCues.union([.microphoneDetected]) == Set(Cue.allCases) && !slotCues.contains(.microphoneDetected),
-              "Every cue belongs to a phrase, except the neutral audio-detection tone")
+        check(slotCues.union([.microphoneDetected, .notificationReplyAccepted]) == Set(Cue.allCases) && !slotCues.contains(.microphoneDetected),
+              "Ambient phrases, neutral audio detection and notification Reply account for every cue")
         check(slotCues.count == PhraseSlot.allCases.count, "Every phrase slot has a distinct sound")
         check(PhraseSlot.wakePhrase.cue == .wake && PhraseSlot.sleepPhrase.cue == .ended, "Wake and End keep their chimes")
         check(VoiceAudioAction.allCases.map { $0.slots.map(\.cue) } ==
@@ -153,10 +153,12 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
             let data = try Data(contentsOf: directory.appendingPathComponent("\(cue.rawValue).wav"))
             check(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == expected, "The original \(cue.rawValue) chime is unchanged")
         }
-        check(Set(original.keys).union(commandCues) == Set(Cue.allCases), "Every cue is either an original chime or a command sound")
+        check(Set(original.keys).union(commandCues).union([.notificationReplyAccepted]) == Set(Cue.allCases), "Every cue has one explicit owner")
 
         // Command sounds match the chimes' level and are clearly unlike every other cue.
         let reference = loudness(waves[.microphoneMuted]!.samples, rate: 44_100)
+        let replyLevel = loudness(waves[.notificationReplyAccepted]!.samples, rate: 44_100)
+        check(replyLevel > reference * 0.3 && replyLevel < reference * 0.4, "Reply acceptance is quieter than ambient command cues")
         let shapes = waves.mapValues { fingerprint($0.samples, rate: $0.rate) }
         for cue in commandCues {
             let level = loudness(waves[cue]!.samples, rate: 44_100)

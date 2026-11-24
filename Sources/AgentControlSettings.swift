@@ -35,6 +35,11 @@ extension HAgentControl {
             if let value = (request.arguments["value"] as? NSNumber)?.doubleValue { model.soundEffectsVolume = value }
         }
         write("settings.spotifyVolumeLimit", ["value": .integer(0...100)]) { [model] request in model.spotifyVolumeLimit = request.integer("value") }
+        write("settings.notificationRepliesEnabled", ["value": .bool]) { [model] request in
+            if let value = request.arguments["value"] as? Bool { model.notificationReplies.settings.enabled = value }
+        }
+        write("settings.notificationReplyIdleSeconds", ["value": .integer(10...180)]) { [model] request in model.notificationReplies.settings.idleSeconds = request.integer("value") }
+        write("settings.notificationReplySeconds", ["value": .integer(10...180)]) { [model] request in model.notificationReplies.settings.replySeconds = request.integer("value") }
         write("settings.rewindVideoSeconds", ["value": .integer(VideoCommand.durationRange)]) { [model] request in model.rewindVideoSeconds = request.integer("value") }
         write("settings.speechModel", ["value": .oneOf(SpeechModel.allCases.map(\.rawValue))]) { [model] request in
             guard let selected = SpeechModel(rawValue: request.string("value")) else { throw HControlFailure.invalid("Unknown speech model.") }
@@ -187,6 +192,9 @@ extension HAgentControl {
         let settings: [String: Any] = ["soundEffects": model.soundEffects, "soundEffectsVolume": model.soundEffectsVolume,
             "lowerSpotifyDuringChat": model.lowerSpotifyDuringChat, "spotifyVolumeLimit": model.spotifyVolumeLimit,
             "saveTranscripts": model.saveTranscripts, "automaticListening": model.automaticListening, "similarPhrases": model.similarPhrases,
+            "notificationRepliesEnabled": model.notificationReplies.settings.enabled,
+            "notificationReplyIdleSeconds": model.notificationReplies.settings.idleSeconds,
+            "notificationReplySeconds": model.notificationReplies.settings.replySeconds,
             "ultrafastForNewVoiceChats": UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true,
             "speechModel": model.speechModel.rawValue, "microphone": model.inputs.selectedUID,
             "display": UserDefaults.standard.string(forKey: WindowDisplay.preferenceKey) ?? "", "rewindVideoSeconds": model.rewindVideoSeconds,

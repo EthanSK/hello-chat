@@ -270,6 +270,7 @@ import Foundation
         }
         add("app.quit", "action") { [model] _ in .init(.accepted, afterReceipt: { model.quit() }) }
         addSettings(to: &operations)
+        addNotificationReplies(to: &operations)
         return operations
     }
     private func describe(_ name: String, _ operation: Operation) -> [String: Any] {

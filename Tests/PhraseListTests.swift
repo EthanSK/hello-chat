@@ -74,6 +74,15 @@ import Foundation
         check(!(reserved[.sleepPhrase] ?? []).contains("End chat"), "An existing alias spelling owns its words during migration")
         check(reserved[.mutePhrase] == nil && !(reserved[.silentPhrase] ?? []).contains("Mute speakers"), "Saved spellings and speaker destinations take precedence")
         savedDefaults.removePersistentDomain(forName: suite)
+        savedDefaults.set(["unmutePhrase": ["Unmute"], "unsilencePhrase": ["Restore Voice audio"]], forKey: PhraseList.defaultsKey)
+        PhraseList.seedDefaults(in: savedDefaults)
+        let speakerUpgrade = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
+        check(speakerUpgrade[.unmutePhrase] == ["Unmute"], "Do not take over a saved microphone unmute alias")
+        check(speakerUpgrade[.unsilencePhrase]?.first == "Restore Voice audio"
+              && speakerUpgrade[.unsilencePhrase]?.contains("Unmute") == false
+              && speakerUpgrade[.unsilencePhrase]?.contains("Unmute speaker") == true,
+              "Add unclaimed speaker aliases and retain saved custom rows")
+        savedDefaults.removePersistentDomain(forName: suite)
         savedDefaults.set("Quiet microphone", forKey: "mutePhrase")
         savedDefaults.set("Restore call audio", forKey: "unsilencePhrase")
         savedDefaults.set("Quiet sound", forKey: "silencePhrase")

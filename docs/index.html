@@ -155,24 +155,26 @@
       <!-- README:commands:start -->
 <div class="reference-scroll"><table class="reference-table"><thead><tr><th scope="col">Say</th><th scope="col">What happens</th></tr></thead><tbody>
 <tr><td><strong>Hello Chat</strong></td><td>Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored.</td></tr>
-<tr><td><strong>Mute Chat</strong>, <strong>Mute mic</strong> / <strong>Unmute Chat</strong></td><td>Mutes or unmutes the active Voice microphone. Repeating a command keeps that state.</td></tr>
-<tr><td><strong>Silent Chat</strong>, <strong>Mute speakers</strong>, <strong>Silent speaker(s)</strong> / <strong>Unsilence Chat</strong>, <strong>Unsilent speaker(s)</strong></td><td>Silences or restores Voice speaker audio. The microphone and call remain independent.</td></tr>
+<tr><td><strong>Mute Chat</strong>, <strong>Mute mic</strong> / <strong>Unmute Chat</strong></td><td>Sends the Voice microphone toggle once. Mute and Unmute both toggle, so repeating either reverses the previous change.</td></tr>
+<tr><td><strong>Silent Chat</strong>, <strong>Mute speakers</strong>, <strong>Silent speaker(s)</strong> / <strong>Unsilence Chat</strong>, <strong>Unsilent speaker(s)</strong>, <strong>Unmute speaker(s)</strong></td><td>Sends the Voice speaker toggle once. Silence and Unsilence both toggle. Standalone <strong>Unmute</strong> and <strong>Unsilence</strong> wait for the utterance to end, so <strong>Unmute Chat</strong> keeps its microphone meaning. The microphone remains independent.</td></tr>
 <tr><td><strong>Bye Chat</strong></td><td>Ends Voice, after checking Codex&#x27;s End Voice control is showing. Also cancels Voice while it&#x27;s opening, and ends a call you started yourself in Codex.</td></tr>
 <tr><td><strong>Pause music</strong> / <strong>Play music</strong></td><td>Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key.</td></tr>
+<tr><td><strong>Call Dot</strong> / <strong>Hang up</strong></td><td>Starts or ends a call with Your dot in ChatGPT. These commands are separate from Codex Voice and meetings. Both have native Shortcuts actions and their own phrase, spelling, repeat and sound settings.</td></tr>
+<tr><td><strong>Spotify volume 40</strong>, <strong>Spotify volume forty percent</strong></td><td>Sets the running Spotify player to a volume from 0 to 100. Spoken numbers work too; “forty five” sets 45. Keeps system volume, playback and your saved Maximum volume setting unchanged. A deliberate volume choice stays in place after the call.</td></tr>
 <tr><td><strong>Pause video</strong> / <strong>Play video</strong></td><td>Controls one Chrome video through <a href="https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install">Agent Flow Bridge</a>. Works with YouTube and standard web video players.</td></tr>
 <tr><td><strong>Switch app Chrome</strong> / <strong>Open app Chrome</strong></td><td>Both bring the app forward, opening it if it isn&#x27;t running. Accepts common names and clear mishearings such as “BS Code” for VS Code. Say the full app name when two apps sound similar.</td></tr>
 <tr><td><strong>Show me Codex</strong>, <strong>Show Codex</strong>, <strong>Show app Codex</strong> / <strong>Open Safari</strong></td><td>Brings the named app forward. Short forms accept an exact name or a saved spelling.</td></tr>
 <tr><td><strong>Show voice</strong></td><td>Opens the current Voice conversation in Codex, or the most recent saved Voice chat after a call.</td></tr>
 <tr><td><strong>Rewind video</strong></td><td>Moves the selected browser video back through Agent Flow Bridge, keeping its paused or playing state. Defaults to ten seconds; change the amount in Rewind video’s gear on Home. Explicit five- and ten-second phrases keep their distances.</td></tr>
 <tr><td><strong>Zoom in</strong> / <strong>Zoom out</strong></td><td>Sends the standard zoom shortcut to the front app. The app decides what its zoom shortcut does.</td></tr>
-<tr><td><strong>Zoom in three times</strong>, <strong>Zoom in 3</strong></td><td>Runs a command that many times, up to 100. Repeat count is on for every command by default. Say the number after the whole command, including any app or speaker name. Without a number, it runs once. For rewind, always include “times”, since a number alone can be a distance. For music, each run is another Play/Pause press, so an even number can leave playback as it was. Turn off <strong>Repeat count</strong> in a command’s gear on Home.</td></tr>
+<tr><td><strong>Zoom in three times</strong>, <strong>Zoom in 3</strong></td><td>Runs a command that many times, up to 100. Repeat count is on for every command by default. Say the number after the whole command, including any app or speaker name. Without a number, it runs once. For rewind, always include “times”, since a number alone can be a distance. For Spotify volume, separate the value with “percent”: “Spotify volume forty percent three times”. For music, each run is another Play/Pause press, so an even number can leave playback as it was. Turn off <strong>Repeat count</strong> in a command’s gear on Home.</td></tr>
 </tbody></table></div>
 <!-- README:commands:end -->
       <p class="fine">Each command has its own short sound. Wake and End acknowledge detection; audio and video cues follow the confirmed result. Music, app and zoom cues acknowledge dispatch. Check the app’s status for the outcome.</p>
       <details class="more">
         <summary>Custom Phrases and App Spellings</summary>
         <div class="more-body">
-          <p>Each command’s Phrases button on Home opens its triggers, with recognized spellings or an exact-only label beside each one. Default phrases have a labelled Edit spellings button. App spellings is inside App prefixes. <a href="https://github.com/EthanSK/hello-chat#in-the-app">Read the in-app editing guide</a>.</p>
+          <p>Each command’s gear on Home opens its settings and spellings. App spellings is inside Switch app. <a href="https://github.com/EthanSK/hello-chat#in-the-app">Read the in-app editing guide</a>.</p>
           <p>For conversation about the app, use H Chat and B Chat. They are discussion names, not extra commands. Anyone or anything the microphone hears can still issue a real command.</p>
         </div>
       </details>
@@ -182,6 +184,7 @@
           <p>Open Settings with the gear button or Command-comma. Resize either window normally; View → Zoom In, Zoom Out and Actual Size control the interface size.</p>
 <!-- README:settings:start -->
 <div class="reference-scroll"><table class="reference-table"><thead><tr><th scope="col">Section</th><th scope="col">Contents</th></tr></thead><tbody>
+<tr><td>Notification Replies</td><td>Optional spoken replies after Codex notifications. <strong>Enabled</strong>, <strong>Cancel after silence (seconds)</strong> and <strong>Maximum reply (seconds)</strong> use the existing speech model and microphone.</td></tr>
 <tr><td>Automatic Listening</td><td><strong>Listen automatically when docked</strong>, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts.</td></tr>
 <tr><td>Recognition</td><td><strong>Alternate spellings for default phrases</strong> and <strong>Check speech recognition</strong>. Phrase and microphone editors are on Home.</td></tr>
 <tr><td>Resources</td><td>Hello Chat&#x27;s own CPU and memory, and Core ML&#x27;s estimated encoder placement.</td></tr>
@@ -220,6 +223,7 @@
             <li>Keeps listening while Voice or Agent Flow is recording, so wake and end phrases still work. Transcripts can include your side of the conversation and background speech.</li>
             <li>Keeps transcripts on your Mac unless you set up the optional Google Drive backup.</li>
             <li>Writes timing and error logs that exclude recognised words.</li>
+            <li>Optional notification replies use the same microphone and local model. The app checks the exact originating chat for newer input, then sends the completed reply only to that chat. The shared notification-speech integration is required; no second recognizer or audio recording is added. <a href="https://github.com/EthanSK/hello-chat#notification-replies">Setup and controls</a>.</li>
             <li>Each command has a short sound. Settings → Sounds controls their volume without changing your system volume or speakers.</li>
             <li>Sound effects, optional Spotify control and paired-Mac priority observe Codex’s native call controls and read saved call-start/end metadata. This enables the End sound when you close Voice directly in Codex. No conversation text is read. Turn all three features off to stop background call monitoring.</li>
             <li>Optional Spotify control lowers its own volume during chat and restores it afterward, unless changed manually. It reads call controls and saved call-boundary metadata, never tracks or transcripts. This is off by default and needs macOS Automation permission.</li>

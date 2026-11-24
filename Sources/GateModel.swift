@@ -36,6 +36,7 @@ import SwiftUI
     @Published private(set) var lastCommandMessage: String?
     @Published private(set) var lastCommandDetail: String?
     private var latestCommandID: UUID?
+    private let notificationHUD = NotificationReplyHUD()
 
     private func commandTitle(_ action: String) -> String {
         if let slot = PhraseSlot(rawValue: action) { return slot.settingsTitle }
@@ -625,6 +626,7 @@ import SwiftUI
     private let desktopSession = DesktopSessionMonitor()
     private let feedback = FeedbackSounds()
     private let listener = SpeechListener()
+    let notificationReplies = NotificationReplyCoordinator()
     private var endPhrase = StandaloneWake() // End shares the direct-address filter; discussion must not hang up.
     private var standaloneWake = StandaloneWake()
     private var audioPhraseDetectors = Dictionary(uniqueKeysWithValues: VoiceAudioAction.allCases.map { ($0, StandaloneWake()) }) // One occurrence counter per directional action; the two silence aliases share one.
@@ -739,13 +741,18 @@ import SwiftUI
             if level >= 0.02 { self?.startupSpeech?.speechResumed() }
             self?.startupSpeech?.audioProcessed(seconds: seconds)
         }
-        listener.onFrame = { [weak self] in
+        listener.onFrame = { [weak self] utteranceEnded in
             self?.speechRecovery.processed(at: Diagnostics.now)
+            // Apple finals close repeat/value bookkeeping, without changing its separate startup-capture boundary. — GPT-6.1 Sol
+            if utteranceEnded, self?.speechModel == .appleLocal {
+                self?.repetitions.endUtterance()
+                self?.finalValueFrame = true
+            }
             // After this frame's text; before a new wake can replace the capture.
             if let boundary = self?.startupSpeech?.boundaryReached {
                 self?.finishStartupSpeech(preserveRequested: true, boundary: boundary)
             }
-            self?.checkStandaloneWake()
+            self?.checkStandaloneWake(utteranceEnded: utteranceEnded)
         }
         listener.onLevel = { [weak self] in self?.meter.level = $0 }
         listener.onError = { [weak self] error in
@@ -764,6 +771,39 @@ import SwiftUI
             self.detail = self.microphone == .listening ? "Say \(self.spokenEndPhrase) to end chat." : "Say \(self.spokenWakePhrase) to start chat."
         }
         listener.onText = { [weak self] text, timings in self?.heard(text, timings: timings) }
+        notificationReplies.currentReadiness = { [weak self] in
+            guard let self, !self.quitting else { return .desktopUnavailable }
+            guard self.enabled else { return .listeningOff }
+            guard self.detectionRunning, !self.checkingSpeech, !self.changingModel else { return .listenerUnavailable }
+            guard DesktopSessionState.current == .interactive else { return .desktopUnavailable }
+            if self.voiceStartContext != nil || self.observedVoicePresence == .active { return .voiceActive }
+            guard self.observedVoicePresence == .inactive else { return .voiceUnknown }
+            guard VoiceBridge.currentApplication() != nil else { return .codexUnavailable }
+            return .ready
+        }
+        notificationReplies.resetRecognition = { [weak self] in
+            guard let self else { return }
+            self.repetitions.cancelPending(); self.endPhrase.reset(); self.standaloneWake.reset(); self.resetAudioPhrases()
+            self.listener.discardPendingRecognition()
+        }
+        notificationReplies.finalizeRecognition = { [weak self] in self?.listener.finalizeReplyRecognition(through: $0) }
+        notificationReplies.showPresentation = { [weak self] in self?.notificationHUD.show($0) }
+        notificationHUD.onDismiss = { [weak self] in self?.notificationReplies.dismiss(event: $0) }
+        notificationReplies.acceptedReply = { [weak self] in self?.feedback.play(.notificationReplyAccepted) }
+        notificationReplies.outcome = { [weak self] event, phase, reason, first in
+            guard let self else { return }
+            if first { self.latestCommandID = event }
+            let summary = "Notification reply · " + NotificationReplyHUDContent.statusTitle(phase, reason: reason)
+            if self.latestCommandID == event {
+                self.lastCommandMessage = summary
+                self.lastCommandDetail = nil
+            }
+            Diagnostics.shared.record("command.history", info: ["receipt": event.uuidString, "command": "Notification reply", "result": phase.rawValue, "summary": summary])
+        }
+        listener.needsReplyRecognition = { [weak self] in self?.notificationReplies.interceptsSpeech ?? false }
+        listener.onReplyRecognition = { [weak self] in self?.notificationReplies.recognized($0) }
+        listener.onReplyProgress = { [weak self] in self?.notificationReplies.processed(through: $0) }
+        listener.onReplyInterruption = { [weak self] in self?.notificationReplies.interrupted($0) }
         listener.onComputePlan = { [weak self] share in
             guard let self else { return }
             guard self.speechModel.neuralPlacementKnown else {
@@ -1137,7 +1177,7 @@ import SwiftUI
         })
         rebuildSpeakerCommands()
         cancelAppCommands()
-        listener.contextualPhrases = phraseConfiguration.allPhrases + activeSpeakerCommands.map { $0.pattern.text }
+        listener.contextualPhrases = phraseConfiguration.allPhrases + activeSpeakerCommands.map { $0.pattern.text } + ["Reply", "End reply"]
         endPhrase.reset()
         standaloneWake.reset()
         resetAudioPhrases()
@@ -1657,6 +1697,8 @@ import SwiftUI
         if changed {
             transcript = text
         }
+        // The same words remain visible/archived under the existing preference, but reply content cannot execute ambient commands. — GPT-6.1 Sol
+        guard !notificationReplies.interceptsSpeech else { return }
         // Use the same phrase and mention rules while Agent Flow records. Its
         // microphone ownership must not pause H Chat's existing recognizer.
         standaloneWake.update(text, at: Diagnostics.now, timings: timings)
@@ -1692,8 +1734,8 @@ import SwiftUI
             }
         }
     }
-    private func checkStandaloneWake() {
-        guard enabled, detectionRunning else { return }
+    private func checkStandaloneWake(utteranceEnded: Bool = false) {
+        guard enabled, detectionRunning, !notificationReplies.interceptsSpeech else { return }
         defer {
             if finalValueFrame { spotifyVolumeDetector.endUtterance(); finalValueFrame = false }
         }
@@ -1835,7 +1877,7 @@ import SwiftUI
         let actions = VoiceAudioAction.allCases.compactMap { action -> (action: VoiceAudioAction, position: Int, slot: PhraseSlot)? in
             let entries = patterns(for: action)
             guard let first = entries.first,
-                  audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first.pattern.text, similar: similarPhrases, rejectNegated: true, patterns: entries.map(\.pattern)),
+                  audioPhraseDetectors[action, default: StandaloneWake()].poll(at: Diagnostics.now, phrase: first.pattern.text, similar: similarPhrases, rejectNegated: true, patterns: entries.map(\.pattern), utteranceEnded: utteranceEnded),
                   let detector = audioPhraseDetectors[action], let position = detector.acceptedRange?.lowerBound,
                   let patternIndex = detector.acceptedPatternIndex, entries.indices.contains(patternIndex) else { return nil }
             return (action, position, entries[patternIndex].slot)
@@ -1960,6 +2002,7 @@ import SwiftUI
         updateListeningDelay = dockDelay
         if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
+        await notificationReplies.shutdown()
         showVoiceTask?.cancel()
         let pendingDot = Array(dotTasks.values)
         pendingDot.forEach { $0.cancel() }

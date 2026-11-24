@@ -4,6 +4,37 @@ import XCTest
 @testable import HelloChat
 
 final class AgentControlIntegrationTests: XCTestCase {
+    @MainActor func testNotificationSettingsUseRevisionGuardedSharedStore() async throws {
+        try requireIsolatedHome()
+        let model = GateModel(enableSpotifyControl: false)
+        let controller = HAgentControl(model, zoom: InterfaceZoom(), updater: AppUpdater())
+        func perform(_ operation: String, _ arguments: [String: Any] = [:]) async throws -> HControlOutcome {
+            try await controller.handle(HControlRequest(JSONSerialization.data(withJSONObject: ["version": 1, "id": UUID().uuidString,
+                "expiresAt": Date().timeIntervalSince1970 + 20, "operation": operation, "arguments": arguments])))
+        }
+        let initial = try await perform("settings.read")
+        var revision = try XCTUnwrap((initial.result as? [String: Any])?["revision"] as? String)
+        let enabled = !model.notificationReplies.settings.enabled
+        let idle = model.notificationReplies.settings.idleSeconds == 30 ? 31 : 30
+        let seconds = model.notificationReplies.settings.replySeconds == 180 ? 179 : 180
+        for (name, value) in [("notificationRepliesEnabled", enabled as Any), ("notificationReplyIdleSeconds", idle as Any), ("notificationReplySeconds", seconds as Any)] {
+            let previous = revision
+            let changed = try await perform("settings." + name, ["value": value, "revision": revision])
+            XCTAssertEqual(changed.state, .confirmed)
+            revision = try XCTUnwrap((changed.result as? [String: Any])?["revision"] as? String)
+            XCTAssertNotEqual(revision, previous)
+            do { _ = try await perform("settings." + name, ["value": value, "revision": previous]); XCTFail("A stale edit overwrote the shared setting") }
+            catch HControlFailure.conflict {}
+        }
+        XCTAssertEqual(model.notificationReplies.settings.enabled, enabled)
+        XCTAssertEqual(model.notificationReplies.settings.idleSeconds, idle)
+        XCTAssertEqual(model.notificationReplies.settings.replySeconds, seconds)
+        XCTAssertEqual(UserDefaults.standard.bool(forKey: NotificationReplySettings.enabledKey), enabled)
+        XCTAssertEqual(UserDefaults.standard.integer(forKey: "notificationReplySeconds"), seconds)
+        do { _ = try await perform("settings.notificationReplySeconds", ["value": 181, "revision": revision]); XCTFail("An out-of-range setting was accepted") }
+        catch HControlFailure.invalid {}
+        await model.notificationReplies.shutdown()
+    }
     private func requireIsolatedHome() throws {
         guard let expected = ProcessInfo.processInfo.environment["HCHAT_CONTROL_FIXTURE_HOME"],
               expected == ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"],
@@ -103,6 +134,11 @@ final class AgentControlIntegrationTests: XCTestCase {
         }
         let read = try await perform("settings.read")
         let original = try XCTUnwrap((read.result as? [String: Any])?["revision"] as? String)
+        for _ in 0..<8 {
+            let repeated = try await perform("settings.read")
+            XCTAssertEqual((repeated.result as? [String: Any])?["revision"] as? String, original,
+                           "Equivalent spelling display forms cannot invalidate an unchanged settings revision")
+        }
         let newSeconds = model.rewindVideoSeconds == 37 ? 38 : 37
         let stored = try await perform("settings.rewindVideoSeconds", ["value": newSeconds, "revision": original])
         XCTAssertEqual(stored.state, .confirmed)

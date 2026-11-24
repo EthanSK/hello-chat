@@ -14,11 +14,13 @@ actor AppleLocalSpeech: SpeechBackend {
     private var targetFormat: AVAudioFormat?
     private var converter: AVAudioConverter?
     private var latest = "", emitted = "", finalized = ""
+    private var finalizedFramePending = false
     private var latestTimings: [(word: String, start: Double, end: Double)] = []
     private var finalizedTimings: [(word: String, start: Double, end: Double)] = []
     private var failure: Error?
     private var duration = 0.0
     private var processedSeconds = 0.0
+    private var recognitionRevision: UInt64 = 0
     private var quiet = 0.0
     private var generation = UUID()
 
@@ -64,8 +66,10 @@ actor AppleLocalSpeech: SpeechBackend {
     }
     private func receive(_ text: String, timings: [(word: String, start: Double, end: Double)], final: Bool, token: UUID) {
         guard token == generation else { return }
+        recognitionRevision &+= 1
         latest = [finalized, text].filter { !$0.isEmpty }.joined(separator: " ")
         latestTimings = finalizedTimings + timings
+        finalizedFramePending = finalizedFramePending || (final && !text.isEmpty)
         if final { finalized = latest; finalizedTimings = latestTimings }
     }
     private func failed(_ error: Error, token: UUID) { if token == generation { failure = error } }
@@ -99,14 +103,23 @@ actor AppleLocalSpeech: SpeechBackend {
             if case .dropped = continuation.yield(AnalyzerInput(buffer: buffer)) {
                 // Never silently feed discontinuous audio to the analyzer.
                 try await resetForDiscontinuity()
-                return SpeechUpdate(text: nil, audioTime: processedSeconds, reset: true)
+                return SpeechUpdate(text: nil, audioTime: processedSeconds, reset: true, lostAudio: true)
             }
             processedSeconds += Double(buffer.frameLength) / buffer.format.sampleRate
         }
         await Task.yield()
-        guard latest != emitted, !latest.isEmpty else { return SpeechUpdate(text: nil, audioTime: processedSeconds, reset: reset) }
-        emitted = latest
-        return SpeechUpdate(text: latest, audioTime: processedSeconds, reset: reset, wordTimings: latestTimings)
+        let changed = latest != emitted && !latest.isEmpty
+        let utteranceEnded = finalizedFramePending
+        finalizedFramePending = false
+        if changed { emitted = latest }
+        return SpeechUpdate(text: changed ? latest : nil, audioTime: processedSeconds, reset: reset,
+                            utteranceEnded: utteranceEnded, wordTimings: changed ? latestTimings : nil,
+                            finalizedWordCount: finalizedTimings.count, inputAudioTime: processedSeconds, recognitionRevision: recognitionRevision)
+    }
+    // Finalize the existing analyzer through a candidate control word, without stopping capture or opening another recognizer. — GPT-6.1 Sol
+    func finalizeRecognition(through time: Double) async throws {
+        guard let analyzer, time.isFinite, time >= 0, time <= processedSeconds else { return }
+        try await analyzer.finalize(through: CMTime(seconds: time, preferredTimescale: 24_000))
     }
     func finish() async throws -> String {
         continuation?.finish()
@@ -127,7 +140,9 @@ actor AppleLocalSpeech: SpeechBackend {
         results?.cancel(); await results?.value; results = nil
         analyzer = nil; targetFormat = nil; converter = nil
         latest = ""; emitted = ""; finalized = ""; failure = nil; duration = 0; quiet = 0
+        finalizedFramePending = false
         processedSeconds = 0
+        recognitionRevision = 0
         latestTimings = []; finalizedTimings = []
     }
 }

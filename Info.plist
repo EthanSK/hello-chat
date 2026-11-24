@@ -22,6 +22,8 @@
 	<string>1078</string>
 	<key>HChatAgentControlProtocol</key>
 	<integer>1</integer>
+	<key>HChatNotificationReplyProtocol</key>
+	<integer>1</integer>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>NSAppleEventsUsageDescription</key>

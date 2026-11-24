@@ -56,6 +56,7 @@ struct VoiceEndFeedback {
         case microphoneDetected = "MicrophoneDetected", microphoneMuted = "MicrophoneMuted", microphoneUnmuted = "MicrophoneUnmuted"
         case speakersMuted = "SpeakersMuted", speakersUnmuted = "SpeakersUnmuted"
         case silent = "Silent"
+        case notificationReplyAccepted = "NotificationReplyAccepted"
         case videoPaused = "VideoPaused", videoPlayed = "VideoPlayed", rewind = "Rewind", rewindFive = "RewindFive", rewindTen = "RewindTen"
         case musicPause = "MusicPause", musicPlay = "MusicPlay"
         case spotifyVolume = "SpotifyVolume"

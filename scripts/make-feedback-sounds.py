@@ -80,10 +80,10 @@ def hits(duration, starts, frequencies, partials, decay, length):
     return samples
 
 
-def write(name, samples):
+def write(name, samples, gain=1.0):
     duration = len(samples) / rate
     faded = [v * min(1, (i / rate) / 0.003, (duration - i / rate) / 0.02) for i, v in enumerate(samples)]
-    scale = min(target / loudness(faded), 0.6 / max(abs(v) for v in faded))
+    scale = min(target / loudness(faded), 0.6 / max(abs(v) for v in faded)) * gain
     with wave.open(str(root / f"{name}.wav"), 'wb') as out:
         out.setparams((1, 2, rate, 0, 'NONE', 'not compressed'))
         out.writeframes(b''.join(struct.pack('<h', round(max(-1, min(1, v * scale)) * 32767)) for v in faded))
@@ -121,3 +121,6 @@ write("RewindTen", hits(0.39, (0.0, 0.155, 0.21, 0.29), (1568, 1175, 880, 659), 
 # Dot calls are independent of the Codex Voice start/end chimes.
 write("CallDot", hits(0.34, (0.02, 0.14, 0.25), (622, 830, 1046), SPRING, 28, 0.075))
 write("HangUpDot", hits(0.31, (0.02, 0.15), (740, 370), WOOD, 35, 0.085))
+
+# A quiet cue only after Reply is accepted; End reply and ordinary pauses have no cue. — GPT-6.1 Sol
+write("NotificationReplyAccepted", hits(0.18, (0.0,), (1046.5,), SPRING, 35, 0.14), gain=0.35)

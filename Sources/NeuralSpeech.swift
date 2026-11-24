@@ -109,8 +109,10 @@ actor NeuralSpeech: SpeechBackend {
         }
         let changed = !text.isEmpty && text != previousText
         if changed { previousText = text }
-        return SpeechUpdate(text: changed ? text : nil, audioTime: await currentAudioTime(), reset: reset, utteranceEnded: ended,
-                            wordTimings: changed ? await currentWordTimings() : nil)
+        let decodedTime = await currentAudioTime()
+        return SpeechUpdate(text: changed ? text : nil, audioTime: decodedTime, reset: reset, utteranceEnded: ended,
+                            wordTimings: changed ? await currentWordTimings() : nil, inputAudioTime: Double(fedSamples) / 16000,
+                            recognitionRevision: UInt64(max(0, (decodedTime * 16000).rounded())))
     }
     private func currentWordTimings() async -> [(word: String, start: Double, end: Double)] {
         let tokens: [TokenTiming]

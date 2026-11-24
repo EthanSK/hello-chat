@@ -54,6 +54,48 @@ import Foundation
             check(!restore.poll(at: 2, phrase: unsilence.text, similar: true, rejectNegated: true, patterns: [unsilence]),
                   "Repeating the unchanged recognition never restores the speaker twice")
         }
+        func detectedAudio(_ utterance: String, finalized: Bool) -> [VoiceAudioAction] {
+            VoiceAudioAction.allCases.filter { action in
+                let patterns = action.slots.flatMap { slot in
+                    active.phrases(for: slot).map {
+                        PhrasePattern(slot: slot, text: $0, similar: false, dictionaries: configured)
+                    }
+                }
+                var detector = StandaloneWake()
+                detector.audio(level: 0.2, seconds: 0.1)
+                detector.update(utterance, at: 1)
+                return detector.poll(at: 1, phrase: patterns[0].text, similar: false,
+                                     rejectNegated: true, patterns: patterns, utteranceEnded: finalized)
+            }
+        }
+        for phrase in ["Unmute speaker", "Unmute speakers", "Unmute. Speaker", "Un-silence Chat"] {
+            check(detectedAudio(phrase, finalized: false) == [.unsilenceSpeakers],
+                  "Full speaker restore phrases dispatch immediately even without similar spellings: " + phrase)
+        }
+        for phrase in ["Unsilence", "Un-silence", "Unmute", "Un-mute", "Please unmute now"] {
+            check(detectedAudio(phrase, finalized: false).isEmpty, "A partial short form can still grow")
+            check(detectedAudio(phrase, finalized: true) == [.unsilenceSpeakers],
+                  "A completed standalone short form restores speaker audio: " + phrase)
+        }
+        check(detectedAudio("Unmute Chat", finalized: true) == [.unmuteMicrophone], "Unmute Chat stays on the microphone")
+        check(detectedAudio("Unmute. Chat", finalized: true) == [.unmuteMicrophone], "Punctuation does not redirect microphone restore")
+        check(detectedAudio("Mute Chat", finalized: true) == [.muteMicrophone], "Mute Chat stays on the microphone")
+        check(detectedAudio("Mute speakers", finalized: true) == [.silenceSpeakers], "Mute speakers stays on the Voice output")
+        for phrase in ["Don't unmute", "I said unmute", "Unmute my microphone", "Unmute the TV"] {
+            check(detectedAudio(phrase, finalized: true).isEmpty, "Bare restore does not accept negations or additional targets: " + phrase)
+        }
+        let shortRestorePatterns = active.phrases(for: .unsilencePhrase).map {
+            PhrasePattern(slot: .unsilencePhrase, text: $0, similar: false, dictionaries: configured)
+        }
+        var shortRestore = StandaloneWake()
+        shortRestore.audio(level: 0.2, seconds: 0.1)
+        shortRestore.update("Unmute", at: 1)
+        check(!shortRestore.poll(at: 1, phrase: "Unsilence Chat", similar: false, patterns: shortRestorePatterns),
+              "Streaming partial waits for its existing recognition boundary")
+        check(shortRestore.poll(at: 2, phrase: "Unsilence Chat", similar: false, patterns: shortRestorePatterns, utteranceEnded: true),
+              "The unchanged hypothesis is reconsidered at utterance end")
+        check(!shortRestore.poll(at: 3, phrase: "Unsilence Chat", similar: false, patterns: shortRestorePatterns, utteranceEnded: true),
+              "A completed standalone phrase is consumed once")
         let silence = PhrasePattern(slot: .silencePhrase, text: "Silence Chat", similar: true, dictionaries: configured)
         var opposite = StandaloneWake()
         opposite.audio(level: 0.2, seconds: 0.1)

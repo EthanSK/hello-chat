@@ -10,8 +10,12 @@ import CoreAudio
     var onSession: (() -> Void)?
     var onWaiting: (() -> Void)?
     var onAudioActivity: ((Double, Double, Double) -> Void)?
-    var onFrame: (() -> Void)?
+    var onFrame: ((Bool) -> Void)?
     var onUtteranceEnd: (() -> Void)?
+    var onReplyRecognition: ((NotificationReplyCore.Recognition) -> Void)?
+    var onReplyInterruption: ((String) -> Void)?
+    var onReplyProgress: ((Double) -> Void)?
+    var needsReplyRecognition: (() -> Bool)?
     var onComputePlan: ((Double) -> Void)?
     var model: SpeechModel = .defaultModel
     var contextualPhrases = ["Hello Chat", "Bye Chat"]
@@ -35,7 +39,41 @@ import CoreAudio
     private var progress = AudioProgressWatchdog(now: Diagnostics.now)
     private var watchdog: Task<Void, Never>?
     private var contextBoundary = SpeechContextBoundary()
+    private var replySpeech = NotificationReplySpeech()
+    private var replyFinalize: ((Double) async throws -> Void)?
+    private var replyFinalizeTask: Task<Void, Never>?
+    private var replyFinalizeRequested: Double?
+    private var replyFinalizedThrough = -Double.infinity
     func discardPendingRecognition() { contextBoundary.invalidate(at: Diagnostics.now) }
+    func finalizeReplyRecognition(through hostTime: Double) {
+        guard hostTime.isFinite, hostTime > replyFinalizedThrough else { return }
+        replyFinalizeRequested = max(replyFinalizeRequested ?? -.infinity, hostTime)
+        flushReplyFinalization()
+    }
+    private func flushReplyFinalization() {
+        guard replyFinalizeTask == nil, let requested = replyFinalizeRequested,
+              let modelTime = replySpeech.modelTime(for: requested), let finalize = replyFinalize else { return }
+        let token = session, batch = replySpeech.batch
+        replyFinalizedThrough = requested; replyFinalizeRequested = nil
+        replyFinalizeTask = Task { [weak self] in
+            defer {
+                if let self, self.session == token, self.replySpeech.batch == batch {
+                    self.replyFinalizeTask = nil
+                }
+            }
+            do { try await finalize(modelTime) }
+            catch {
+                guard let self, self.session == token, self.replySpeech.batch == batch else { return }
+                self.onReplyInterruption?("recognition-finalization-failed")
+                self.diagnostics?.failure("notification.reply.finalization_failed", error)
+            }
+        }
+    }
+    private func recognitionBoundary() {
+        replyFinalizeTask?.cancel(); replyFinalizeTask = nil; replyFinalizeRequested = nil
+        replyFinalizedThrough = -.infinity; replySpeech.boundary()
+        onSession?()
+    }
     private struct Frame {
         let buffer: AVAudioPCMBuffer
         let sequence: UInt64
@@ -171,6 +209,7 @@ import CoreAudio
             diagnostics?.record("speech.capture.formats", numbers: capture.formatDiagnostics(), info: ["phase": "after_start"])
         }
         resultAudioSeconds = 0; resultWasFlushed = false; recordingError = nil
+        replyFinalize = { try await worker.finalizeRecognition(through: $0) }
         diagnostics?.record("speech.capture.started", numbers: ["sample_rate": format.sampleRate, "channels": Double(format.channelCount)])
         if let capture { diagnostics?.record("speech.capture.route", numbers: ["current_device": Double(capture.currentDevice ?? 0)], info: ["engine_running": String(capture.isRunning)]) }
         processing = Task(priority: capture == nil ? .utility : .userInitiated) { [weak self] in
@@ -197,9 +236,10 @@ import CoreAudio
                         let resetting = Diagnostics.now
                         try await worker.resetForDiscontinuity()
                         guard self.session == token else { break }
-                        self.onSession?()
+                        self.recognitionBoundary()
                         timing = SpeechTimingTracker()
                         if !boundaryReset { self.onRecovery?() }
+                        if gap { self.onReplyInterruption?("recognition-audio-gap") }
                         self.diagnostics?.record(boundaryReset ? "speech.context.discarded" : "speech.recovered", numbers: ["ms": (Diagnostics.now - resetting) * 1000])
                         if gap {
                             // A reset may take longer than the queue's capacity.
@@ -217,19 +257,28 @@ import CoreAudio
                     frames += 1; queueMax = max(queueMax, queuedMS); processMax = max(processMax, processMS); processTotal += processMS
                     audioTotal += Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate
                     self.resultAudioSeconds = frame.audioEnd ?? audioTotal
-                    if result.reset { self.diagnostics?.record("speech.context.reset"); self.onSession?(); timing = SpeechTimingTracker() }
+                    if result.reset { self.diagnostics?.record("speech.context.reset"); self.recognitionBoundary(); timing = SpeechTimingTracker() }
+                    if result.lostAudio { self.onReplyInterruption?("recognition-audio-gap") }
                     modelAudioTime = result.audioTime
                     self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate, modelAudioTime)
+                    if self.needsReplyRecognition?() == true {
+                        let recognition = self.replySpeech.observe(text: result.text, timings: result.wordTimings,
+                            inputTime: result.inputAudioTime, capturedAt: frame.capturedAt, finalWords: result.finalizedWordCount, ended: result.utteranceEnded, revision: result.recognitionRevision)
+                        if let through = self.replySpeech.hostTime(forDecodedTime: result.audioTime) { self.onReplyProgress?(through) }
+                        if let recognition { self.onReplyRecognition?(recognition) }
+                        self.flushReplyFinalization()
+                    }
+                    guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
                     if let text = result.text {
                         textUpdates += 1
                         self.onText?(text, timing.update(text, at: modelAudioTime, supplied: result.wordTimings))
                     }
-                    if result.utteranceEnded {
+                    if result.utteranceEnded && selectedModel != .appleLocal {
                         self.diagnostics?.record("speech.utterance.ended", info: ["source": "model_eou"])
                         self.onUtteranceEnd?()
                     }
                     self.progress.processed(at: Diagnostics.now)
-                    self.onFrame?()
+                    self.onFrame?(result.utteranceEnded)
                     if Diagnostics.now - summaryAt >= 5 {
                         self.diagnostics?.record("speech.performance", numbers: ["frames": Double(frames), "text_updates": Double(textUpdates), "gaps": Double(gaps), "queue_max_ms": queueMax, "inference_max_ms": processMax, "inference_total_ms": processTotal, "audio_seconds": audioTotal])
                         summaryAt = Diagnostics.now; frames = 0; textUpdates = 0; gaps = 0; queueMax = 0; processMax = 0; processTotal = 0; audioTotal = 0
@@ -244,13 +293,14 @@ import CoreAudio
             catch {
                 if let self, self.session == token {
                     self.recordingError = error.localizedDescription
+                    self.onReplyInterruption?("recognition-failed")
                     self.diagnostics?.failure("speech.failed", error); self.onError?(error)
                 }
             }
             if let self, self.session == token { self.recordingProducer?.cancel() }
             await worker.close()
         }
-        onSession?()
+        recognitionBoundary()
         if capture != nil {
             progress = AudioProgressWatchdog(now: Diagnostics.now)
             watchdog = Task { [weak self] in
@@ -321,6 +371,8 @@ import CoreAudio
         return mono
     }
     func stop() {
+        onReplyInterruption?("listening-stopped")
+        replyFinalizeTask?.cancel(); replyFinalizeTask = nil; replyFinalizeRequested = nil; replyFinalize = nil
         watchdog?.cancel(); watchdog = nil
         onWaiting?()
         session = UUID()

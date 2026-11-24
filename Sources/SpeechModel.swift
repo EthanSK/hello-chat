@@ -40,6 +40,10 @@ struct SpeechUpdate {
     var reset = false
     var utteranceEnded = false
     var wordTimings: [(word: String, start: Double, end: Double)]? = nil
+    var finalizedWordCount: Int? = nil
+    var inputAudioTime: Double? = nil // Full fed-input timeline, including priming, before decoder chunk rounding.
+    var recognitionRevision: UInt64? = nil
+    var lostAudio = false // A recovery reset after dropped input is different from a normal context rollover. — GPT-6.1 Sol
 }
 
 protocol SpeechBackend: Actor {
@@ -47,5 +51,11 @@ protocol SpeechBackend: Actor {
     func consume(_ mono: AVAudioPCMBuffer) async throws -> SpeechUpdate
     func finish() async throws -> String
     func resetForDiscontinuity() async throws
+    func finalizeRecognition(through time: Double) async throws
     func close() async
+}
+
+extension SpeechBackend {
+    // Neural backends already report their native utterance end; this never fabricates final words. — GPT-6.1 Sol
+    func finalizeRecognition(through time: Double) async throws { }
 }

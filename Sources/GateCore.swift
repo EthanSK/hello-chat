@@ -307,6 +307,10 @@ enum PhraseList {
                 (.silentPhrase, ["Silent speakers", "Silent speaker"]),
                 (.silencePhrase, ["Silence speakers", "Silence speaker"]),
                 (.unsilencePhrase, ["Unsilent speakers", "Unsilent speaker", "Unsilence speakers", "Unsilence speaker"])]),
+            // Ethan's "un-silence" and "unmute" restore Codex Voice speaker audio.
+            // "Unmute Chat" still belongs to the microphone. — GPT-6.2 Sol
+            ("codexVoiceSpeakerRestorePhrases20261124", [
+                (.unsilencePhrase, ["Unmute speakers", "Unmute speaker", "Unsilence", "Unmute"])]),
             // Ethan, 20 November 2026: "Show app Codex", "Show Codex", "Show me Codex". Keep each prefix editable.
             // The short forms require an exact app name or spelling. Show voice has its own slot.
             ("appShowPrefixDefaults20261121", [(.openAppPhrase, ["Show app", "Show me", "Show", "Open"])])
@@ -542,6 +546,11 @@ struct PhrasePattern: Equatable {
         slot == .unsilencePhrase && words.elementsEqual(["unsilenced", "shot"])
             && !words.elementsEqual(PhraseMatcher.words(text))
     }
+    func isBareSpeakerRestore(_ words: ArraySlice<String>) -> Bool {
+        guard slot == .unsilencePhrase else { return false }
+        let spoken = words.joined()
+        return spoken == "unmute" || spoken == "unsilence"
+    }
     func matches(in tokens: [String], timings: [(word: String, start: Double, end: Double)]? = nil, forReservation: Bool = false) -> [(start: Int, end: Int)] {
         let blockSplitUn = slot.map { [.muteMicrophone, .silenceSpeakers, .pauseVideo].contains($0.action) } ?? false
         return PhraseMatcher.matches(in: tokens, phrase: text, similar: similar, ending: ending, timings: timings,
@@ -659,7 +668,8 @@ struct PhraseMatcher {
         return [phrase] + candidates.filter {
             equivalentCompact($0, expected: expected, compact: compact, similar: similar, allowEndAddressEdit: ending)
         }.sorted().map { spelling in
-            if let full = wakeSpellings.union(endSpellings).first(where: { words($0).joined() == spelling }) { return full }
+            // Equivalent display forms ("goodbye" / "good bye") must be stable between editor/control reads. — GPT-6.1 Sol
+            if let full = commandDisplaySpellings.first(where: { words($0).joined() == spelling }) { return full }
             if spelling == "aswellchat" { return "as well chat" }
             for name in ["chad", "chat"] where spelling.hasSuffix(name) {
                 return String(spelling.dropLast(name.count)) + " " + name
@@ -703,6 +713,7 @@ struct PhraseMatcher {
         "bye charts", "by charts", "buy charts", "byte charts", "by the charts",
         "goodbye chat", "good bye chat", "goodbye chad", "good buy charts", "bye bye chat",
     ]
+    private static let commandDisplaySpellings = wakeSpellings.union(endSpellings).sorted()
     private static let wakeVariants = Set(wakeSpellings.map { words($0).joined() })
     private static let endVariants = Set(endSpellings.map { words($0).joined() })
     // Retain this observed phrase's existing extra context checks; it is never an End alias.

@@ -17,7 +17,7 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | --- | --- |
 | **Hello Chat** | Opens Voice in Codex. No need to turn it on first. Works after other speech, such as “I stopped the video, Hello Chat”. Clear mentions, such as “I said Hello Chat”, are ignored. |
 | **Mute Chat**, **Mute mic** / **Unmute Chat** | Sends the Voice microphone toggle once. Mute and Unmute both toggle, so repeating either reverses the previous change. |
-| **Silent Chat**, **Mute speakers**, **Silent speaker(s)** / **Unsilence Chat**, **Unsilent speaker(s)** | Sends the Voice speaker toggle once. Silence and Unsilence both toggle. The microphone remains independent. |
+| **Silent Chat**, **Mute speakers**, **Silent speaker(s)** / **Unsilence Chat**, **Unsilent speaker(s)**, **Unmute speaker(s)** | Sends the Voice speaker toggle once. Silence and Unsilence both toggle. Standalone **Unmute** and **Unsilence** wait for the utterance to end, so **Unmute Chat** keeps its microphone meaning. The microphone remains independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 | **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key. |
 | **Call Dot** / **Hang up** | Starts or ends a call with Your dot in ChatGPT. These commands are separate from Codex Voice and meetings. Both have native Shortcuts actions and their own phrase, spelling, repeat and sound settings. |
@@ -144,6 +144,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 | Section | Contents |
 | --- | --- |
+| Notification Replies | Optional spoken replies after Codex notifications. **Enabled**, **Cancel after silence (seconds)** and **Maximum reply (seconds)** use the existing speech model and microphone. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
 | Recognition | **Alternate spellings for default phrases** and **Check speech recognition**. Phrase and microphone editors are on Home. |
 | Resources | Hello Chat's own CPU and memory, and Core ML's estimated encoder placement. |
@@ -153,6 +154,14 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Updates | **Check for Updates…**, automatic checking and automatic downloads on release-configured builds. |
 | Diagnostics | Timing, errors and startup request/revision metadata, which exclude recognised words. |
 | Appearance | **Open H Chat windows on** remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. **View → Zoom In / Zoom Out / Actual Size** works too. |
+
+## Notification replies
+
+Enable **Settings → Notification Replies** with the shared Codex notification-speech integration installed. After a notification finishes, say **Reply** within two seconds, then speak your answer. Say **End reply** to send it to the exact chat that produced the notification. Pauses keep listening; the safety limits cancel without sending. The compact floating display shows the complete original notification in a scroll area. Drag its header to move it, or use its close button to cancel an unsent reply. Last command keeps the outcome. Queue acceptance is separate from a reply appearing in that chat.
+
+This uses H Chat's existing microphone and selected local speech model. It adds no second recognizer and saves no audio. Codex Voice, manual Agent Flow recording, disabled listening and newer input in the original chat cancel an unsent reply. The reply body cannot execute ambient H Chat commands. The ordinary Save transcripts preference still applies to the shared listener.
+
+The app reads the exact originating chat's saved user-message boundary and optional open-question state to reject stale replies, then sends once through the running Codex Desktop's supported `queue --thread` command. It never pastes into the foreground or resumes a second writer. The shared notification integration keeps its own speech provider, voice, queue and media ownership. See the [app/client contract](docs/notification-replies.md) for installation and verification boundaries.
 
 ## Spotify volume during chat
 
@@ -217,6 +226,7 @@ The three Core ML models run with `cpuAndNeuralEngine`, so GPU is excluded. Befo
 - **Network**: listening makes no network requests, and models are never downloaded at runtime. The build, Sparkle update checks/downloads and the optional backup script use the network. Update checks do not include saved transcripts or audio.
 - **Codex controls and call monitoring**: Hello Chat reads Codex's shortcuts in `~/.codex/keybindings.json` and fills missing Voice control bindings, preserving custom choices. It inspects native call controls for commands and, while sound effects, Spotify control or paired-Mac priority are enabled, observes call changes and reads saved call-start/end metadata. This supports the End cue when a call closes directly in Codex. It does not read conversation text or subscribe to a private server. Disable all three optional features to stop background call monitoring. Startup speech is handed to the local Voice skill through the private file above; Hello Chat does not navigate to a chat or submit a message. Start uses the global native shortcut without first activating Codex. The conversation, its audio, network connection and sign-in all belong to Codex.
 - **Optional Spotify control**: when enabled, native window/control notifications trigger read-only call checks in the background. Hello Chat also reads only saved call-start/end metadata from Codex's local timeline. Its private `SpotifyVolume/restore.json` receipt stores the original/applied volume values and an opaque call identifier. macOS Automation permission permits Spotify volume access; tracks and library contents are not read.
+- **Optional notification replies**: separately reads the specified chat's saved message boundary and open-question state, then sends the completed spoken reply only to that chat. Private status files contain no speech text. The existing transcript-saving choice still applies. This feature requires the shared notification-speech integration and is off by default for new installations.
 
 ### Optional Google Drive Backup
 

@@ -5,6 +5,12 @@ cd "${0:A:h:h}"
 speed_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Tests/CodexChatSpeedTests.swift)
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
+swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplyCoreTests.swift -o "$build_dir/NotificationReplyCoreTests"
+"$build_dir/NotificationReplyCoreTests"
+swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Sources/NotificationReplySpeech.swift Tests/NotificationReplySpeechTests.swift -o "$build_dir/NotificationReplySpeechTests"
+"$build_dir/NotificationReplySpeechTests"
+swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyOrigin.swift Tests/NotificationReplyOriginTests.swift -o "$build_dir/NotificationReplyOriginTests" -lsqlite3
+"$build_dir/NotificationReplyOriginTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/TranscriptArchive.swift Sources/AgentControlMailbox.swift Sources/AgentControlArchive.swift Tests/AgentControlTests.swift -o "$build_dir/AgentControlTests"
 "$build_dir/AgentControlTests"
 swiftc -swift-version 5 -parse-as-library Sources/CommandRepetition.swift Tests/CommandRepetitionTests.swift -o "$build_dir/CommandRepetitionTests"
