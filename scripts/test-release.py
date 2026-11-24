@@ -26,6 +26,13 @@ feeds = load("release_feed", "create-appcast.py")
 
 
 class Releases(unittest.TestCase):
+    def test_bundle_advertises_the_existing_command_receipt_protocol(self):
+        info = plistlib.loads((Path(__file__).resolve().parent.parent / 'Info.plist').read_bytes())
+        self.assertIs(type(info.get('HChatCommandReceiptVersion')), int)
+        self.assertEqual(info['HChatCommandReceiptVersion'], 1)
+        allocated = versions.local_release_info(info, info)
+        self.assertEqual(allocated['HChatCommandReceiptVersion'], 1)
+
     def test_local_releases_advance_both_numbers_without_installing_each_build(self):
         source = {'CFBundleIdentifier': 'com.ethansk.HeyChat',
                   'CFBundleShortVersionString': '1.5.0', 'CFBundleVersion': '1069',

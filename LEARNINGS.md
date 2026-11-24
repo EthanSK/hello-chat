@@ -4,6 +4,8 @@
 
 Ethan wants the existing H Chat window brought forward on phrase detection, with a saved default-on Settings toggle. Use the shared spoken-command reservation, including discarded busy commands, plus the already-consumed busy wake branch. Do not raise on every recognition frame, a repeat's execution, manual controls or notification-reply body text. Keep the normal command target: native `orderFrontRegardless()` raises Home without taking keyboard focus, unlike app activation, which can redirect Zoom into H Chat. `unhideWithoutActivation()` restores a hidden app; keep the existing window and its placement. Native offscreen checks verified visibility, retained-window reopening, unchanged frame and unchanged frontmost process. Physical microphone acceptance is separate.
 
+Voice's command-ownership helper requires the integer `HChatCommandReceiptVersion` before invoking the existing `--voice-command-receipt` CLI. A running receipt handler without that bundle marker is undiscoverable to the client. Preserve the marker through version allocation and packaging; checking malformed CLI arguments is safe, whereas live fallback claims need their real current call/frame. Restoring discovery does not prove any historical command was dispatched.
+
 ## 24 November 2026 — Explicit Voice audio commands send one toggle
 
 - Ethan replaced the read-first policy with one native key per accepted microphone or speaker command, including repeated mute phrases. `NativeVoice.setAudio` resolves the verified Codex process and uses the existing sender without snapshots, activation, readback waits or retry toggles. Start/End and the call observer are separate.
