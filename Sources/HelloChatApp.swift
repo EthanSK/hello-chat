@@ -412,7 +412,7 @@ struct HelloChatApp: App {
         Window("Hello Chat · \(AppVersion.display)", id: "main") {
             MainView(model: model, zoom: zoom, updater: updater)
                 .modifier(HControlWindow(control: agentControl))
-                .background(InitialWindowPlacement())
+                .background(InitialWindowPlacement(windowFound: model.phraseWindow.attach))
                 .onAppear {
                     delegate.model = model
                     model.initializeListening()
@@ -1808,6 +1808,8 @@ struct SettingsView: View {
             Section("Diagnostics") { DiagnosticsView() }
             Section("Appearance") {
                 WindowDisplaySettings()
+                Toggle("Bring Home forward when a phrase is heard", isOn: $model.bringHomeForward)
+                    .accessibilityIdentifier("bringHomeForward")
                 LabeledContent("Zoom") {
                     HStack {
                         Button("−") { zoom.decrease() }.disabled(!zoom.canDecrease).accessibilityLabel("Zoom Out")
@@ -1955,10 +1957,13 @@ struct MenuView: View {
 // Initial placement only. Native resizing, window zoom and user placement are
 // left to macOS; scrolling handles content larger than the chosen window.
 struct InitialWindowPlacement: NSViewRepresentable {
+    var windowFound: ((NSWindow) -> Void)? = nil
     final class Host: NSView {
+        var windowFound: ((NSWindow) -> Void)?
         private var placed = false
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            if let window { windowFound?(window) }
             guard let window, !placed, let screen = WindowDisplay.preferredScreen else { return }
             placed = true
             DispatchQueue.main.async {
@@ -1968,6 +1973,13 @@ struct InitialWindowPlacement: NSViewRepresentable {
             }
         }
     }
-    func makeNSView(context: Context) -> Host { Host() }
-    func updateNSView(_ nsView: Host, context: Context) {}
+    func makeNSView(context: Context) -> Host {
+        let host = Host()
+        host.windowFound = windowFound
+        return host
+    }
+    func updateNSView(_ nsView: Host, context: Context) {
+        nsView.windowFound = windowFound
+        if let window = nsView.window { windowFound?(window) }
+    }
 }

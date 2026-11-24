@@ -153,7 +153,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Transcript Archive | **Save transcripts** (on by default), the archive location, and this Mac’s optional backup configuration. |
 | Updates | **Check for Updates…**, automatic checking and automatic downloads on release-configured builds. |
 | Diagnostics | Timing, errors and startup request/revision metadata, which exclude recognised words. |
-| Appearance | **Open H Chat windows on** remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. **View → Zoom In / Zoom Out / Actual Size** works too. |
+| Appearance | **Bring Home forward when a phrase is heard** is on by default. Detected commands raise Home without taking keyboard focus from the app you’re using. **Open H Chat windows on** remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. **View → Zoom In / Zoom Out / Actual Size** works too. |
 
 ## Notification replies
 

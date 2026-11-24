@@ -16,6 +16,10 @@ import SwiftUI
     @Published var soundEffectsVolume = Double(FeedbackVolume.level(UserDefaults.standard.object(forKey: FeedbackVolume.defaultsKey))) {
         didSet { UserDefaults.standard.set(soundEffectsVolume, forKey: FeedbackVolume.defaultsKey) }
     }
+    @Published var bringHomeForward = UserDefaults.standard.object(forKey: "bringHomeForward") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(bringHomeForward, forKey: "bringHomeForward") }
+    }
+    let phraseWindow = PhraseWindowPresentation()
     private var endFeedback = VoiceEndFeedback()
     private var voiceStatusRefresh = VoiceStatusRefresh()
     private var voiceStatusTask: Task<Void, Never>?
@@ -94,10 +98,13 @@ import SwiftUI
     // Use the accepted words' audio time, even when an ASR revision arrives after Voice's handoff.
     // Every speech action supplies its normal replay route here. New actions cannot opt out
     // accidentally: the callback is required, while the user's per-command toggle defaults on. — GPT-6.1 Sol
-    private func reserveSpeech(_ action: String, target: String = "", range: Range<Int>?, discard: Bool = false,
+    func reserveSpeech(_ action: String, target: String = "", range: Range<Int>?, discard: Bool = false,
                                onReserved: (UUID) -> Void = { _ in },
                                repeatAction: @escaping (UUID) -> Void) -> UUID? {
         guard let range else { return nil }
+        // Showing what was heard is independent of dispatch: failed or already-covered
+        // commands still need visible feedback. Repeated runs reuse their receipt. — GPT-6.1 Sol
+        showHomeForDetectedPhrase()
         let now = Date().timeIntervalSince1970
         let index = range.upperBound - 1
         let age = receiptWordEnds.indices.contains(index) ? max(0, latestAudioTime - receiptWordEnds[index]) : 0
@@ -133,6 +140,11 @@ import SwiftUI
             // A later lookup might recover. Without a durable claim it could repeat this action.
             return nil
         }
+    }
+    private func showHomeForDetectedPhrase() {
+        guard bringHomeForward, !quitting else { return }
+        let requested = phraseWindow.show()
+        Diagnostics.shared.record("window.phrase", info: ["result": requested ? "requested" : "window-unavailable"])
     }
     private func repetitionKey(_ action: String) -> String {
         let raw = action == "app" ? "switchAppPhrase" : (VoiceAudioAction(rawValue: action)?.slots.first?.rawValue ?? action)
@@ -1941,6 +1953,7 @@ import SwiftUI
         if busy {
             // A detected wake still gets its cue while Voice is busy, without
             // scheduling another call or cancelling the work already underway.
+            showHomeForDetectedPhrase()
             feedback.play(PhraseSlot.wakePhrase.cue)
             lastEvent = "Heard \(spokenWakePhrase) · finishing the current Voice action"
         } else if let id = reserveSpeech("wakePhrase", range: standaloneWake.acceptedRange,

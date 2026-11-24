@@ -42,3 +42,19 @@ struct WindowDisplaySettings: View {
             }
     }
 }
+
+// Ethan wants H Chat visible when a phrase is detected. Keep keyboard focus
+// with the current app so Zoom and other foreground commands retain their target. — GPT-6.1 Sol
+@MainActor final class PhraseWindowPresentation {
+    private weak var window: NSWindow?
+
+    func attach(_ window: NSWindow) { self.window = window }
+
+    @discardableResult func show() -> Bool {
+        guard let window else { return false }
+        if NSApp.isHidden { NSApp.unhideWithoutActivation() }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.orderFrontRegardless()
+        return true
+    }
+}

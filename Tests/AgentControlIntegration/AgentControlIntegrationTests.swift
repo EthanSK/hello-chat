@@ -1,9 +1,77 @@
 // Run using scripts/test-control-integration.sh, which gives H Chat a fresh private home before any settings are loaded.
 import Foundation
+import AppKit
 import XCTest
 @testable import HelloChat
 
 final class AgentControlIntegrationTests: XCTestCase {
+    @MainActor func testPhraseWindowUsesSharedDefaultAndPreservesOffChoice() async throws {
+        try requireIsolatedHome()
+        _ = NSApplication.shared
+        UserDefaults.standard.removeObject(forKey: "bringHomeForward")
+        let model = GateModel(enableSpotifyControl: false)
+        XCTAssertTrue(model.bringHomeForward)
+        let window = PhraseTestWindow(contentRect: NSRect(x: -20000, y: -20000, width: 100, height: 100),
+                                      styleMask: [.titled], backing: .buffered, defer: false)
+        model.phraseWindow.attach(window)
+        _ = model.reserveSpeech("zoomInPhrase", range: 0..<2, repeatAction: { _ in XCTFail("No real desktop action belongs in this fixture") })
+        XCTAssertEqual(window.raises, 1)
+        XCTAssertFalse(window.isKeyWindow)
+        _ = model.reserveSpeech("zoomInPhrase", range: nil, repeatAction: { _ in XCTFail() })
+        XCTAssertEqual(window.raises, 1, "A rejected phrase cannot raise Home")
+        let now = Date().timeIntervalSince1970
+        XCTAssertEqual(try SpokenCommandJournal.shared.decide(action: "future-fixture", target: "", session: "fixture", frame: UUID(),
+            from: now - 1, through: now + 1, allowFallback: true), "fallbackGranted")
+        XCTAssertNil(model.reserveSpeech("future-fixture", range: 0..<2, repeatAction: { _ in XCTFail() }))
+        XCTAssertEqual(window.raises, 2, "A detected future command still shows Home when another owner already handled its effect")
+        let control = HAgentControl(model, zoom: InterfaceZoom(), updater: AppUpdater())
+        func perform(_ operation: String, _ arguments: [String: Any] = [:]) async throws -> HControlOutcome {
+            try await control.handle(HControlRequest(JSONSerialization.data(withJSONObject: ["version": 1, "id": UUID().uuidString,
+                "expiresAt": Date().timeIntervalSince1970 + 20, "operation": operation, "arguments": arguments])))
+        }
+        let read = try await perform("settings.read")
+        let revision = try XCTUnwrap((read.result as? [String: Any])?["revision"] as? String)
+        let changed = try await perform("settings.bringHomeForward", ["value": false, "revision": revision])
+        XCTAssertEqual(changed.state, .confirmed)
+        XCTAssertFalse(model.bringHomeForward)
+        XCTAssertFalse(GateModel(enableSpotifyControl: false).bringHomeForward, "Restart preserves a saved off choice")
+        _ = model.reserveSpeech("speakerOutput", range: 0..<3, repeatAction: { _ in XCTFail() })
+        XCTAssertEqual(window.raises, 2)
+        do { _ = try await perform("settings.bringHomeForward", ["value": true, "revision": revision]); XCTFail("Stale settings applied") }
+        catch HControlFailure.conflict {}
+        UserDefaults.standard.removeObject(forKey: "bringHomeForward")
+    }
+
+    @MainActor private final class PhraseTestWindow: NSWindow {
+        var raises = 0
+        override func orderFrontRegardless() { raises += 1 }
+    }
+
+    @MainActor func testNativePhraseWindowRaisesWithoutActivationOrRepositioning() throws {
+        try requireIsolatedHome()
+        _ = NSApplication.shared
+        let foreground = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let frame = NSRect(x: -20000, y: -20000, width: 200, height: 120)
+        let home = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        home.isReleasedWhenClosed = false
+        defer { home.close() }
+        let presenter = PhraseWindowPresentation()
+        XCTAssertFalse(presenter.show(), "A missing window must not open another app or window")
+        presenter.attach(home)
+        let originalFrame = home.frame
+        XCTAssertTrue(presenter.show())
+        XCTAssertTrue(home.isVisible)
+        XCTAssertFalse(home.isKeyWindow)
+        XCTAssertEqual(home.frame, originalFrame)
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, foreground)
+        home.close()
+        XCTAssertFalse(home.isVisible)
+        XCTAssertTrue(presenter.show())
+        XCTAssertTrue(home.isVisible, "The same retained Home window reopens")
+        XCTAssertEqual(home.frame, originalFrame)
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, foreground)
+    }
+
     @MainActor func testNotificationSettingsUseRevisionGuardedSharedStore() async throws {
         try requireIsolatedHome()
         let model = GateModel(enableSpotifyControl: false)

@@ -21,7 +21,7 @@ extension HAgentControl {
         }
         let bools: [String: ReferenceWritableKeyPath<GateModel, Bool>] = [
             "soundEffects": \.soundEffects, "lowerSpotifyDuringChat": \.lowerSpotifyDuringChat, "saveTranscripts": \.saveTranscripts,
-            "automaticListening": \.automaticListening, "similarPhrases": \.similarPhrases
+            "automaticListening": \.automaticListening, "similarPhrases": \.similarPhrases, "bringHomeForward": \.bringHomeForward
         ]
         for (name, key) in bools {
             write("settings." + name, ["value": .bool]) { [model] request in
@@ -192,6 +192,7 @@ extension HAgentControl {
         let settings: [String: Any] = ["soundEffects": model.soundEffects, "soundEffectsVolume": model.soundEffectsVolume,
             "lowerSpotifyDuringChat": model.lowerSpotifyDuringChat, "spotifyVolumeLimit": model.spotifyVolumeLimit,
             "saveTranscripts": model.saveTranscripts, "automaticListening": model.automaticListening, "similarPhrases": model.similarPhrases,
+            "bringHomeForward": model.bringHomeForward,
             "notificationRepliesEnabled": model.notificationReplies.settings.enabled,
             "notificationReplyIdleSeconds": model.notificationReplies.settings.idleSeconds,
             "notificationReplySeconds": model.notificationReplies.settings.replySeconds,
