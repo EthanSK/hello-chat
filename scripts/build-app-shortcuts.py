@@ -33,7 +33,8 @@ def main() -> None:
     constants = work / 'HelloChat.swiftconstvalues'
     subprocess.run(['xcrun', 'swiftc', '-typecheck', '-parse-as-library', '-module-name', 'HelloChat',
                     '-target', target, '-sdk', sdk, '-Xfrontend', '-emit-const-values-path',
-                    '-Xfrontend', str(constants), '-const-gather-protocols-list', str(protocol_file), str(source)], check=True)
+                    '-Xfrontend', str(constants), '-Xfrontend', '-const-gather-protocols-file',
+                    '-Xfrontend', str(protocol_file), str(source)], check=True)
     sources_list = work / 'sources.txt'
     sources_list.write_text(str(source) + '\n')
     constants_list = work / 'constants.txt'
