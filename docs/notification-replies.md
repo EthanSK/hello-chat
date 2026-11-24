@@ -96,6 +96,10 @@ Reply starts composition; End reply is the only normal send. Pauses never submit
 180 seconds. No command, empty content, cancellation, stale origin, listener failure or a safety
 limit sends nothing. Remove only the timed control words, preserving a genuine body-leading reply.
 
+Notification control spellings reuse the existing phrase dictionary store and global alternate-spelling
+choice. Preparation freezes the exact configured forms for that attempt. The editing, built-in and
+empty-list behavior is documented in [Notification replies](../README.md#notification-replies).
+
 Native nonactivating feedback is visible throughout preparation, announcement, waiting and
 composition on every display/Space. The live reply words derive from the same capture state and appear while composing. The exact original spoken text remains available beneath them; neither is added to metadata status files.
 The native header can be dragged without taking keyboard focus. Each display remembers its own
