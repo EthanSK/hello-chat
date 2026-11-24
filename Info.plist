@@ -19,7 +19,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.6.5</string>
 	<key>CFBundleVersion</key>
-	<string>1088</string>
+	<string>1089</string>
 	<key>HChatAgentControlProtocol</key>
 	<integer>1</integer>
 	<key>HChatCommandReceiptVersion</key>
