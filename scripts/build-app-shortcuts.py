@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import plistlib
+import re
 import subprocess
 import sys
 
@@ -52,10 +53,15 @@ def main() -> None:
     # Compiling AppIntent types alone is insufficient. Fail packaging when the
     # system cannot discover every shipped action and its preconfigured shortcut.
     data = json.loads((metadata / 'extract.actionsdata').read_bytes())
-    expected = {'StartChatIntent', 'EndChatIntent', 'MuteChatMicrophoneIntent', 'UnmuteChatMicrophoneIntent',
-                'SilenceChatSpeakersIntent', 'RestoreChatSpeakersIntent', 'SetVoiceUltrafastIntent', 'ChatStatusIntent'}
+    # Swift owns both lists. New actions need discoverable metadata even when
+    # they intentionally omit automatic Siri phrases (local speech owns Dot).
+    # Found and fixed by GPT-6.1 Sol.
+    declarations = source.read_text()
+    expected = set(re.findall(r'\bstruct\s+(\w+)\s*:\s*AppIntent\b', declarations))
+    expected_auto = set(re.findall(r'\bAppShortcut\s*\(\s*intent\s*:\s*(\w+)\s*\(', declarations))
+    assert expected and expected_auto <= expected, 'Invalid App Intent declarations'
     assert set(data['actions']) == expected, 'Missing App Intents metadata'
-    assert {shortcut['actionIdentifier'] for shortcut in data['autoShortcuts']} == expected, 'Missing App Shortcuts'
+    assert {shortcut['actionIdentifier'] for shortcut in data['autoShortcuts']} == expected_auto, 'Missing App Shortcuts'
     assert all(action['isDiscoverable'] and not action['openAppWhenRun'] for action in data['actions'].values())
     assert list(resources.glob('*.lproj/nlu.appintents/*')), 'Missing Siri phrase assets'
 

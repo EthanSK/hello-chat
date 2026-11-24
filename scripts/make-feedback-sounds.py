@@ -117,3 +117,7 @@ write("SpotifyVolume", hits(0.28, (0.0, 0.06, 0.15), (660, 880, 1100), BUBBLE, 3
 write("Rewind", hits(0.37, (0.0, 0.085, 0.185), (1397, 932, 740), SQUAREISH, 40, 0.1))
 write("RewindFive", hits(0.39, (0.0, 0.065, 0.23), (880, 698, 523), SQUAREISH, 38, 0.1))
 write("RewindTen", hits(0.39, (0.0, 0.155, 0.21, 0.29), (1568, 1175, 880, 659), SQUAREISH, 38, 0.1))
+
+# Dot calls are independent of the Codex Voice start/end chimes.
+write("CallDot", hits(0.34, (0.02, 0.14, 0.25), (622, 830, 1046), SPRING, 28, 0.075))
+write("HangUpDot", hits(0.31, (0.02, 0.15), (740, 370), WOOD, 35, 0.085))

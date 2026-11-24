@@ -59,6 +59,7 @@ struct VoiceEndFeedback {
         case videoPaused = "VideoPaused", videoPlayed = "VideoPlayed", rewind = "Rewind", rewindFive = "RewindFive", rewindTen = "RewindTen"
         case musicPause = "MusicPause", musicPlay = "MusicPlay"
         case spotifyVolume = "SpotifyVolume"
+        case callDot = "CallDot", hangUpDot = "HangUpDot"
         case switchApp = "SwitchApp", openApp = "OpenApp", zoomIn = "ZoomIn", zoomOut = "ZoomOut", showVoice = "ShowVoice"
     }
     private var sounds: [Cue: AVAudioPlayer] = [:]
@@ -132,6 +133,8 @@ extension PhraseSlot {
         case .pauseMusicPhrase: return .musicPause
         case .playMusicPhrase: return .musicPlay
         case .spotifyVolumePhrase: return .spotifyVolume
+        case .callDotPhrase: return .callDot
+        case .hangUpDotPhrase: return .hangUpDot
         case .switchAppPhrase: return .switchApp
         case .openAppPhrase: return .openApp
         case .zoomInPhrase: return .zoomIn

@@ -336,9 +336,38 @@ struct VoiceBridge {
         var queue: [(AXUIElement, Int)] = (windows.isEmpty ? [root] : windows).map { ($0, 0) }
         var seen = Set<Identity>()
         let deadline = Date().addingTimeInterval(2)
+        var controlScopes: [Identity: CodexCallControlScope] = [:]
+        func controlScope(_ element: AXUIElement) -> CodexCallControlScope {
+            let key = Identity(element: element)
+            if let known = controlScopes[key] { return known }
+            var current: AXUIElement? = element
+            var visited = Set<Identity>()
+            var ancestors: [(role: String, label: String)] = []
+            while let node = current, visited.count < maximumDepth, Date() < deadline {
+                guard visited.insert(Identity(element: node)).inserted,
+                      let role = read(kAXRoleAttribute, node) as? String else { break }
+                AXUIElementSetMessagingTimeout(node, 0.04)
+                let label = role == kAXGroupRole ? ((read(kAXTitleAttribute, node, required: false) as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? read(kAXDescriptionAttribute, node, required: false) as? String ?? "") : ""
+                ancestors.append((role, label))
+                let scope = CodexCallControlScope.classify(ancestors)
+                if scope != .unknown { controlScopes[key] = scope; return scope }
+                current = read(kAXParentAttribute, node) as! AXUIElement?
+            }
+            controlScopes[key] = .unknown
+            return .unknown
+        }
         func inspectButton(_ element: AXUIElement) {
             for name in [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
                 if let label = read(name, element) as? String {
+                    if MicrophoneState.accessibilityLabel(label) != nil || outputMuteState(label: label) != nil || isEndVoiceLabel(label) {
+                        switch controlScope(element) {
+                        case .dot: return
+                        case .unknown:
+                            readFailed = true; if result.failure.isEmpty { result.failure = "control_scope" }; return
+                        case .voice: break
+                        }
+                    }
                     // A web area can exist while Electron is still showing its
                     // launch shell. A real conversation action is better evidence.
                     if ["new chat", "new thread", "send message", "send now"].contains(label.lowercased()) {
@@ -365,6 +394,11 @@ struct VoiceBridge {
             // A hung child must not bypass the traversal's overall deadline.
             AXUIElementSetMessagingTimeout(element, 0.04)
             let role = read(kAXRoleAttribute, element) as? String
+            if role == kAXGroupRole {
+                let label = (read(kAXTitleAttribute, element, required: false) as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    ?? read(kAXDescriptionAttribute, element, required: false) as? String ?? ""
+                if CodexCallControlScope.isDotContainer(role: role, label: label) { continue }
+            }
             if isVoiceControlRole(role) {
                 inspectButton(element)
                 // Stop after the requested control is found. An End button alone

@@ -20,6 +20,7 @@ Hello Chat is a native macOS app that listens for both phrases with a local spee
 | **Silent Chat**, **Mute speakers**, **Silent speaker(s)** / **Unsilence Chat**, **Unsilent speaker(s)** | Silences or restores Voice speaker audio. The microphone and call remain independent. |
 | **Bye Chat** | Ends Voice, after checking Codex's End Voice control is showing. Also cancels Voice while it's opening, and ends a call you started yourself in Codex. |
 | **Pause music** / **Play music** | Each sends one hardware Play/Pause press to the current system media session. Both are toggles, so either phrase can pause or resume. H Chat does not choose or launch an app; macOS routes the key. |
+| **Call Dot** / **Hang up** | Starts or ends a call with Your dot in ChatGPT. These commands are separate from Codex Voice and meetings. Both have native Shortcuts actions and their own phrase, spelling, repeat and sound settings. |
 | **Spotify volume 40**, **Spotify volume forty percent** | Sets the running Spotify player to a volume from 0 to 100. Spoken numbers work too; “forty five” sets 45. Keeps system volume, playback and your saved Maximum volume setting unchanged. A deliberate volume choice stays in place after the call. |
 | **Pause video** / **Play video** | Controls one Chrome video through [Agent Flow Bridge](https://github.com/EthanSK/AgentFlow/tree/main/companions/youtube-bridge#install). Works with YouTube and standard web video players. |
 | **Switch app Chrome** / **Open app Chrome** | Both bring the app forward, opening it if it isn't running. Accepts common names and clear mishearings such as “BS Code” for VS Code. Say the full app name when two apps sound similar. |
@@ -54,7 +55,7 @@ Speech recognition runs on your Mac, by default with the bundled Nemotron model 
 
 ## Siri and Apple Vocal Shortcuts
 
-Hello Chat provides eight native actions in Apple's Shortcuts app: Start chat, End chat, Mute chat microphone, Unmute chat microphone, Silence chat speakers, Restore chat speakers, Set Voice to Ultrafast and Get chat status. They use the same Codex controls as the app. Start can work while local listening is off; it does not turn the local speech model on. Get chat status only reads the current state.
+Hello Chat provides ten native actions in Apple's Shortcuts app: Start chat, End chat, Mute chat microphone, Unmute chat microphone, Silence chat speakers, Restore chat speakers, Set Voice to Ultrafast, Get chat status, Call Dot and Hang up Dot. They use the same controls as the app. Dot actions target Your dot; the other call actions target Codex Voice. Start can work while local listening is off; it does not turn the local speech model on. Get chat status only reads the current state.
 
 **Set Voice to Ultrafast**, also in Settings and the menu bar, opens the current local Voice chat and selects Ultrafast in Codex’s native Speed menu. It keeps that chat’s model, reasoning and draft. The selection applies to its next turn; it does not change a running turn or the realtime speaking voice. If Voice is off, the chat name is ambiguous, more than one chat pane is open or you start interacting during selection, the action refuses rather than guessing. This control does not change new-chat defaults.
 

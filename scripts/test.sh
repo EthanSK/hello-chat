@@ -11,6 +11,9 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpokenC
 "$build_dir/SpokenCommandJournalTests"
 swiftc -swift-version 5 -parse-as-library $speed_sources -o "$build_dir/CodexChatSpeedTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/CodexChatSpeedTests"
+dot_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/DotCallCommand.swift Tests/DotCallCommandTests.swift)
+swiftc -swift-version 5 -parse-as-library $dot_sources -o "$build_dir/DotCallCommandTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+"$build_dir/DotCallCommandTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppShortcuts.swift Tests/AppShortcutTests.swift -o "$build_dir/AppShortcutTests" -framework AppIntents
 "$build_dir/AppShortcutTests"
 swiftc -swift-version 5 -parse-as-library Sources/SettingsNumberBinding.swift Sources/SpotifyVolumeSession.swift Tests/SpotifyVolumeTests.swift -o "$build_dir/SpotifyVolumeTests"

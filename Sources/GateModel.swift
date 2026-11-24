@@ -327,6 +327,12 @@ import SwiftUI
     @Published var spotifyVolumePhrase = PhraseSlot.spotifyVolumePhrase.savedValue() {
         didSet { UserDefaults.standard.set(spotifyVolumePhrase, forKey: PhraseSlot.spotifyVolumePhrase.rawValue); updatePhrases() }
     }
+    @Published var callDotPhrase = PhraseSlot.callDotPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(callDotPhrase, forKey: PhraseSlot.callDotPhrase.rawValue); updatePhrases() }
+    }
+    @Published var hangUpDotPhrase = PhraseSlot.hangUpDotPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(hangUpDotPhrase, forKey: PhraseSlot.hangUpDotPhrase.rawValue); updatePhrases() }
+    }
     @Published var switchAppPhrase = PhraseSlot.switchAppPhrase.savedValue() {
         didSet { UserDefaults.standard.set(switchAppPhrase, forKey: "switchAppPhrase"); updatePhrases() }
     }
@@ -363,6 +369,38 @@ import SwiftUI
     @Published private(set) var speakerOutputStatus: String?
     private var showVoiceDetector = StandaloneWake()
     private var spotifyVolumeDetector = SpotifyVolumePhrase()
+    private var dotPhraseDetectors = CommandPhraseDetectors<DotCallCommand.Action>()
+    private var dotTasks: [UUID: Task<DotCallCommand.Result, Never>] = [:]
+    private var dotTail: Task<DotCallCommand.Result, Never>?
+    private var dotPatterns: [DotCallCommand.Action: [PhrasePattern]] {
+        [.start: patterns(for: .callDotPhrase), .hangUp: patterns(for: .hangUpDotPhrase)]
+    }
+    private func runDot(_ action: DotCallCommand.Action) async -> DotCallCommand.Result {
+        let previous = dotTail
+        let token = UUID()
+        let operation = Task { @MainActor [weak self] in
+            _ = await previous?.value
+            guard let self, !self.quitting, !Task.isCancelled else { return DotCallCommand.Result(status: "unavailable", state: .unknown) }
+            return await DotCallCommand.perform(action)
+        }
+        dotTasks[token] = operation; dotTail = operation
+        let result = await operation.value
+        dotTasks[token] = nil
+        if dotTasks.isEmpty { dotTail = nil }
+        return result
+    }
+    private func requestDot(_ action: DotCallCommand.Action, receipt id: UUID) {
+        Task { @MainActor [weak self] in
+            guard let self, !self.quitting, self.repetitions.shouldRun(id) else { self?.finishCommand(id, .superseded); return }
+            let result = await self.runDot(action)
+            let phase: SpokenCommandJournal.Phase = result.confirmed ? .confirmed : (result.submitted ? .submitted : (result.beforeDispatch ? .failedBeforeDispatch : .unknown))
+            self.finishCommand(id, phase, detail: result.message)
+            Diagnostics.shared.record("dot.command.completed", info: ["action": action.rawValue, "status": result.status, "state": result.state.rawValue])
+            if (result.status == "confirmed" || result.submitted), self.repetitions.isFirst(id) {
+                self.feedback.play(action == .start ? PhraseSlot.callDotPhrase.cue : PhraseSlot.hangUpDotPhrase.cue)
+            }
+        }
+    }
     private var showVoiceTask: Task<Void, Never>?
     private var speakerOutputDetector = StandaloneWake(speakerRoute: true)
     private var speakerQueue = SpeakerOutputQueue()
@@ -553,6 +591,8 @@ import SwiftUI
         case .pauseMusicPhrase: return \.pauseMusicPhrase
         case .playMusicPhrase: return \.playMusicPhrase
         case .spotifyVolumePhrase: return \.spotifyVolumePhrase
+        case .callDotPhrase: return \.callDotPhrase
+        case .hangUpDotPhrase: return \.hangUpDotPhrase
         case .switchAppPhrase: return \.switchAppPhrase
         case .openAppPhrase: return \.openAppPhrase
         case .showVoicePhrase: return \.showVoicePhrase
@@ -690,6 +730,7 @@ import SwiftUI
             self?.musicPhraseDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.showVoiceDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.spotifyVolumeDetector.audio(level: level, seconds: seconds, at: audioTime)
+            self?.dotPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.speakerOutputDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.endPhrase.audio(level: level, seconds: seconds, at: audioTime)
@@ -1083,6 +1124,7 @@ import SwiftUI
         musicPhraseDetector.reset()
         showVoiceDetector.reset()
         spotifyVolumeDetector.reset()
+        dotPhraseDetectors.reset()
         speakerOutputDetector.reset()
         appCommandDetector.reset()
     }
@@ -1287,6 +1329,13 @@ import SwiftUI
     // and task ownership as the window/phrases. A native shortcut can start a
     // call while local transcription is off, without turning that listener on.
     func performShortcut(_ action: HChatShortcutAction, playFeedback: Bool = true) async throws -> String {
+        if action == .callDot || action == .hangUpDot {
+            guard !quitting else { throw CancellationError() }
+            let result = await runDot(action == .callDot ? .start : .hangUp)
+            guard result.confirmed || result.submitted else { throw BridgeError.message(result.message) }
+            if playFeedback, result.status != "unchanged" { feedback.play(action == .callDot ? PhraseSlot.callDotPhrase.cue : PhraseSlot.hangUpDotPhrase.cue) }
+            return result.message
+        }
         if action == .status {
             let snapshot = await voice.readStatus()
             guard snapshot.accessibilityAllowed else {
@@ -1337,7 +1386,7 @@ import SwiftUI
             case .unmuteMicrophone: audio = .unmuteMicrophone
             case .silenceSpeakers: audio = .silenceSpeakers
             case .unsilenceSpeakers: audio = .unsilenceSpeakers
-            case .start, .end, .ultrafast, .status: preconditionFailure("Handled above")
+            case .start, .end, .ultrafast, .status, .callDot, .hangUpDot: preconditionFailure("Handled above")
             }
             busy = true
             voiceTask = Task {
@@ -1360,7 +1409,7 @@ import SwiftUI
                     self.error = error.localizedDescription
                 }
             }
-        case .status: break // Read-only status returned before reserving any control work.
+        case .status, .callDot, .hangUpDot: break // Read-only status and Dot returned before reserving any control work.
         }
         let completionGeneration = generation // End may supersede an opening/audio operation.
         let operation = voiceTask
@@ -1380,6 +1429,7 @@ import SwiftUI
         case .unsilenceSpeakers: return "Chat speakers are on."
         case .ultrafast: return "Ultrafast selected for the next turn."
         case .status: return "Chat status is unknown."
+        case .callDot, .hangUpDot: preconditionFailure("Dot commands returned above")
         }
     }
     func manualMute(feedbackAlreadyPlayed: Bool = false, force: Bool = false, receipt: UUID? = nil) {
@@ -1577,6 +1627,7 @@ import SwiftUI
         musicPhraseDetector.update(text, at: Diagnostics.now, timings: timings)
         showVoiceDetector.update(text, at: Diagnostics.now, timings: timings)
         spotifyVolumeDetector.update(text, at: Diagnostics.now, timings: timings)
+        dotPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         speakerOutputDetector.update(text, at: Diagnostics.now, timings: timings)
         appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
         endPhrase.update(text, at: Diagnostics.now, timings: timings)
@@ -1620,6 +1671,7 @@ import SwiftUI
             musicPhraseDetector.cancelPending(patterns: musicPatterns.map(\.pattern), endPatterns: endPatterns)
             showVoiceDetector.cancelPending(patterns: patterns(for: .showVoicePhrase), endPatterns: endPatterns)
             spotifyVolumeDetector.cancelPending(prefixes: patterns(for: .spotifyVolumePhrase), endPatterns: endPatterns)
+            dotPhraseDetectors.cancelPending(aliases: dotPatterns, endPatterns: endPatterns)
             speakerOutputDetector.cancelPending(patterns: activeSpeakerCommands.map(\.pattern), endPatterns: endPatterns)
             appCommandDetector.consumeAll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
             cancelStartupSpeech()
@@ -1664,6 +1716,14 @@ import SwiftUI
            let index = musicPhraseDetector.acceptedPatternIndex, music.indices.contains(index) {
             standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: music.map(\.pattern))
             requestMusic(music[index].slot)
+        }
+        for command in dotPhraseDetectors.poll(at: Diagnostics.now, aliases: dotPatterns, directOnly: true) {
+            let slot: PhraseSlot = command.command == .start ? .callDotPhrase : .hangUpDotPhrase
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: patterns(for: slot))
+            if let id = reserveSpeech(slot.rawValue, range: command.range,
+                repeatAction: { [weak self] id in self?.requestDot(command.command, receipt: id) }) {
+                requestDot(command.command, receipt: id)
+            }
         }
         let showPatterns = patterns(for: .showVoicePhrase)
         for command in spotifyVolumeDetector.poll(at: Diagnostics.now, prefixes: patterns(for: .spotifyVolumePhrase)) {
@@ -1867,6 +1927,8 @@ import SwiftUI
         if enabled { updateListeningDelay?.resumeActiveSession() }
         quitting = true
         showVoiceTask?.cancel()
+        let pendingDot = Array(dotTasks.values)
+        pendingDot.forEach { $0.cancel() }
         voiceStatusTask?.cancel(); voiceStatusTask = nil
         voiceCalls.stop()
         voicePeerMailbox.stop()
@@ -1876,6 +1938,7 @@ import SwiftUI
         stopLocal()
         await voicePeerPriority.shutdown()
         await previous?.value
+        for operation in pendingDot { _ = await operation.value }
         do { try await CodexVoiceSpeed.shared.shutdown() }
         catch { Diagnostics.shared.failure("voice.defaults.restore_failed", error) }
         await speakerOutputTask?.value // Let the helper finish microphone recovery before exit.

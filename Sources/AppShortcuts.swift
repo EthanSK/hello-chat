@@ -4,7 +4,7 @@ import AppIntents
 import Foundation
 
 enum HChatShortcutAction: String, CaseIterable {
-    case start, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, ultrafast, status
+    case start, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, ultrafast, status, callDot, hangUpDot
 }
 
 enum HChatShortcutError: LocalizedError {
@@ -87,6 +87,22 @@ struct ChatStatusIntent: AppIntent {
     }
 }
 
+struct CallDotIntent: AppIntent {
+    static var title: LocalizedStringResource = "Call Dot"
+    static var description = IntentDescription("Start a call with Your dot in ChatGPT.")
+    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
+        .result(value: try await HChatShortcutActions.perform(.callDot))
+    }
+}
+
+struct HangUpDotIntent: AppIntent {
+    static var title: LocalizedStringResource = "Hang up Dot"
+    static var description = IntentDescription("End the current Dot call without changing Codex Voice.")
+    @MainActor func perform() async throws -> some IntentResult & ReturnsValue<String> {
+        .result(value: try await HChatShortcutActions.perform(.hangUpDot))
+    }
+}
+
 struct HChatShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: StartChatIntent(), phrases: ["Start a chat with \(.applicationName)"],
@@ -105,5 +121,7 @@ struct HChatShortcuts: AppShortcutsProvider {
                     shortTitle: "Voice Ultrafast", systemImageName: "bolt.fill")
         AppShortcut(intent: ChatStatusIntent(), phrases: ["Get chat status with \(.applicationName)"],
                     shortTitle: "Chat status", systemImageName: "info.circle")
+        // Dot actions remain available in Shortcuts as AppIntents. Do not add a
+        // second automatic Siri phrase containing the local Call Dot/wake words.
     }
 }

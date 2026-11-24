@@ -59,6 +59,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
     case pauseVideoPhrase, playVideoPhrase, rewindVideoPhrase, rewindFivePhrase, rewindTenPhrase
     case pauseMusicPhrase, playMusicPhrase, spotifyVolumePhrase
+    case callDotPhrase, hangUpDotPhrase
     case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase
     var id: String { rawValue }
     var label: String {
@@ -78,6 +79,8 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .pauseMusicPhrase: return "Pause music phrase"
         case .playMusicPhrase: return "Play music phrase"
         case .spotifyVolumePhrase: return "Spotify volume phrase"
+        case .callDotPhrase: return "Call Dot phrase"
+        case .hangUpDotPhrase: return "Hang up Dot phrase"
         case .switchAppPhrase, .openAppPhrase: return "App prefix"
         case .zoomInPhrase: return "Zoom in phrase"
         case .zoomOutPhrase: return "Zoom out phrase"
@@ -112,6 +115,8 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .pauseMusicPhrase: return "Pause music"
         case .playMusicPhrase: return "Play music"
         case .spotifyVolumePhrase: return "Spotify volume"
+        case .callDotPhrase: return "Call Dot"
+        case .hangUpDotPhrase: return "Hang up"
         case .switchAppPhrase: return "Switch app"
         case .openAppPhrase: return "Open app"
         case .zoomInPhrase: return "Zoom in"
@@ -130,8 +135,10 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     }
     var controlsMusic: Bool { [.pauseMusicPhrase, .playMusicPhrase, .spotifyVolumePhrase].contains(self) }
     // Desktop phrases act on Mac apps and never reach Codex Voice either.
+    var controlsDot: Bool { [.callDotPhrase, .hangUpDotPhrase].contains(self) }
+    static let dotSlots = allCases.filter(\.controlsDot)
     var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase].contains(self) }
-    static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop }
+    static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop && !$0.controlsDot }
     static let videoSlots = allCases.filter(\.controlsVideo)
     static let musicSlots = allCases.filter(\.controlsMusic)
     static let desktopSlots = allCases.filter(\.controlsDesktop)
@@ -184,6 +191,8 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
             .pauseMusicPhrase: ["Pause music": ["Pause the music", "Paws music", "Paws the music"]],
             .playMusicPhrase: ["Play music": ["Play the music", "Resume music", "Resume the music"]],
             .spotifyVolumePhrase: ["Spotify volume": ["Spotify volume to", "Set Spotify volume", "Set Spotify volume to", "Spot ify volume"]],
+            .callDotPhrase: ["Call Dot": ["Call my dot", "Call dots", "Call the dot"]],
+            .hangUpDotPhrase: ["Hang up": ["Hang up Dot", "Hang up my dot", "Hang up the dot"]],
             .switchAppPhrase: ["Switch app": ["Switch apps", "Switch the app"], "Switch up": ["Switch upp"],
                                "Switch to": ["Switch too"]],
             .openAppPhrase: ["Open app": ["Open apps", "Open the app"], "Show app": ["Show apps", "Show the app"],
@@ -229,6 +238,8 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .rewindTenPhrase: return .rewindTen
         case .pauseMusicPhrase, .playMusicPhrase: return .mediaPlayPause
         case .spotifyVolumePhrase: return .spotifyVolume
+        case .callDotPhrase: return .callDot
+        case .hangUpDotPhrase: return .hangUpDot
         case .switchAppPhrase, .openAppPhrase: return .app
         case .zoomInPhrase: return .zoomIn
         case .zoomOutPhrase: return .zoomOut
@@ -238,7 +249,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
 }
 
 enum PhraseAction: String, CaseIterable {
-    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, app, zoomIn, zoomOut, showVoice
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, callDot, hangUpDot, app, zoomIn, zoomOut, showVoice
     // Ethan’s “brackets Codex” identifies the four call audio rows in Home and their phrase editors.
     var settingsTitle: String {
         switch self {
@@ -255,6 +266,8 @@ enum PhraseAction: String, CaseIterable {
         case .rewindTen: return "Rewind video 10 seconds"
         case .mediaPlayPause: return "Music"
         case .spotifyVolume: return "Spotify volume"
+        case .callDot: return "Call Dot (ChatGPT)"
+        case .hangUpDot: return "Hang up Dot (ChatGPT)"
         case .app: return "Switch app"
         case .zoomIn: return "Zoom in"
         case .zoomOut: return "Zoom out"
@@ -861,5 +874,22 @@ enum GateDecision: Equatable {
     static func set(_ target: MicrophoneState, current: MicrophoneState?) -> GateDecision {
         guard let current else { return .unavailable }
         return current == target ? .unchanged : .toggle
+    }
+}
+
+// Dot calls and Codex Voice share microphone labels, but not a call owner.
+// The observed Dot region is Call controls; keep this one boundary shared by
+// discovery and Voice exclusion. Found by Claude Opus 5.5; fixed by GPT-6.1 Sol.
+enum CodexCallControlScope: Equatable {
+    case voice, dot, unknown
+    static func isDotContainer(role: String?, label: String) -> Bool {
+        role == "AXGroup" && label == "Call controls"
+    }
+    static func classify(_ ancestors: [(role: String, label: String)]) -> Self {
+        for ancestor in ancestors {
+            if isDotContainer(role: ancestor.role, label: ancestor.label) { return .dot }
+            if ["AXWindow", "AXApplication"].contains(ancestor.role) { return .voice }
+        }
+        return .unknown
     }
 }

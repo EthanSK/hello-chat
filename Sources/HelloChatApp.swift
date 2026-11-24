@@ -606,6 +606,7 @@ struct MainView: View {
                     .accessibilityIdentifier("speechModelPicker")
                     // Rows take value snapshots, so live transcript updates don't rebuild every command row.
                     PhraseFields(model: model, configuration: model.phraseConfiguration).equatable()
+                    PhraseFields(model: model, configuration: model.phraseConfiguration, slots: PhraseSlot.dotSlots).equatable()
                     VideoControls(model: model, bridge: model.videoBridge, configuration: model.phraseConfiguration,
                                   rewindSeconds: model.rewindVideoSeconds).equatable()
                     PhraseFields(model: model, configuration: model.phraseConfiguration, slots: PhraseSlot.musicSlots).equatable()
@@ -1005,6 +1006,8 @@ private extension PhraseSlot {
         case .zoomInPhrase: return "Sends Zoom In to the app you’re using."
         case .zoomOutPhrase: return "Sends Zoom Out to the app you’re using."
         case .showVoicePhrase: return "Opens the current Voice chat in Codex, or your last Voice chat if the call has ended."
+        case .callDotPhrase: return "Opens Your dot in ChatGPT and starts a call. It won’t start while Codex Voice is active or its status is unknown. A Dot call that’s already active or opening is left alone."
+        case .hangUpDotPhrase: return "Ends the Dot call shown in ChatGPT. If Dot call controls aren’t available, it does nothing."
         case .spotifyVolumePhrase: return "Sets Spotify’s volume to the number you say, from 0 to 100. Spotify must already be running. Without a number, it does nothing. Your Maximum volume setting, system volume and playback aren’t changed."
         }
     }
