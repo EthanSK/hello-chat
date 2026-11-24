@@ -38,6 +38,7 @@ jobs:
       contents: write
       actions: read
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
       HELLOCHAT_NOTARY_PROFILE: ReleaseCI
       HELLOCHAT_SPARKLE_ACCOUNT: com.ethansk.HelloChat
@@ -46,6 +47,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Show the selected Swift toolchain
+        run: |
+          xcodebuild -version
+          swift --version
       - name: Prepare isolated release paths
         shell: bash
         run: |
