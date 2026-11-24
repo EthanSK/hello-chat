@@ -59,10 +59,36 @@ struct SpeechRecovery {
 struct SpeechContextBoundary {
     private var cutoff = -Double.infinity
     private var resetPending = false
-    mutating func invalidate(at time: Double) { cutoff = time; resetPending = true }
+    private(set) var nextSequence: UInt64?
+    mutating func invalidate(at time: Double, nextSequence: UInt64? = nil) {
+        cutoff = time; resetPending = true; self.nextSequence = nextSequence
+    }
     func accepts(capturedAt time: Double) -> Bool { time >= cutoff }
+    func accepts(sequence: UInt64, capturedAt time: Double) -> Bool {
+        accepts(capturedAt: time) && nextSequence.map { sequence >= $0 } != false
+    }
     mutating func takeReset() -> Bool {
         let value = resetPending; resetPending = false; return value
+    }
+}
+
+// Snapshot the existing producer's clock and next frame together. A frame published
+// after a boundary can otherwise be mistaken for deliberately discarded old audio. — GPT-6.1 Sol
+final class SpeechCaptureCursor: @unchecked Sendable {
+    struct Mark { let sequence: UInt64; let capturedAt: Double }
+    private let lock = NSLock()
+    private var next: UInt64 = 0
+    private let clock: () -> Double
+    init(clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) { self.clock = clock }
+    func capture() -> Mark {
+        lock.lock(); defer { lock.unlock() }
+        let mark = Mark(sequence: next, capturedAt: clock())
+        next &+= 1
+        return mark
+    }
+    func boundary() -> Mark {
+        lock.lock(); defer { lock.unlock() }
+        return Mark(sequence: next, capturedAt: clock())
     }
 }
 
@@ -86,6 +112,7 @@ struct AudioProgressWatchdog {
 // busy. Reset recognition across that gap rather than combining unrelated
 // pieces of speech or permanently disabling the detector.
 struct SpeechContinuity {
+    struct Admission { let contextReset: Bool; let audioGap: Bool }
     // Hold two seconds of already captured live audio during brief CPU stalls.
     // An empty queue delivers immediately. Longer overruns still reset recognition.
     static let captureFrames: UInt32 = 4096
@@ -95,6 +122,15 @@ struct SpeechContinuity {
     private(set) var missingFrames: UInt64 = 0
     private var next: UInt64? = 0
     private var discardBefore = -Double.infinity
+    // Intentional context disposal is not capture loss. Rebase to the boundary's
+    // exact producer cursor, so real loss AFTER that boundary still cancels replies.
+    // Found and fixed by GPT-6.1 Sol.
+    mutating func admit(sequence: UInt64, capturedAt: Double, boundary: inout SpeechContextBoundary) -> Admission? {
+        guard boundary.accepts(sequence: sequence, capturedAt: capturedAt), accepts(capturedAt: capturedAt) else { return nil }
+        let reset = boundary.takeReset()
+        if reset, let expected = boundary.nextSequence { next = expected }
+        return Admission(contextReset: reset, audioGap: hasGap(sequence: sequence))
+    }
     func accepts(capturedAt time: Double) -> Bool { time >= discardBefore }
     mutating func resetCompleted(at time: Double) {
         // A slow model reset can itself overflow the bounded input queue.

@@ -134,6 +134,64 @@ import XCTest
         XCTAssertFalse(f.coordinator.hasOpenAttempt)
         await f.coordinator.shutdown()
     }
+    func testIntentionalCaptureCutKeepsReplyHUDUntilGenuinePostCutLoss() async throws {
+        let f = try fixture(), event = UUID()
+        let cursor = SpeechCaptureCursor(clock: { f.clock.time })
+        var boundary = SpeechContextBoundary(), continuity = SpeechContinuity()
+        var phases: [NotificationReplyCore.Phase] = []
+        f.coordinator.showPresentation = { if let value = $0 { phases.append(value.phase) } }
+        let consumed = cursor.capture()
+        XCTAssertFalse(try XCTUnwrap(continuity.admit(sequence: consumed.sequence, capturedAt: consumed.capturedAt, boundary: &boundary)).audioGap)
+        let queued = [cursor.capture(), cursor.capture()]
+        f.coordinator.resetRecognition = {
+            let cut = cursor.boundary()
+            boundary.invalidate(at: cut.capturedAt, nextSequence: cut.sequence)
+        }
+        _ = try await prepare(f, event: event)
+        for frame in queued {
+            XCTAssertNil(continuity.admit(sequence: frame.sequence, capturedAt: frame.capturedAt, boundary: &boundary))
+        }
+        let fresh = cursor.capture()
+        let admitted = try XCTUnwrap(continuity.admit(sequence: fresh.sequence, capturedAt: fresh.capturedAt, boundary: &boundary))
+        XCTAssertTrue(admitted.contextReset); XCTAssertFalse(admitted.audioGap)
+        // This is the listener's actual interruption predicate, using the same
+        // shared admission policy and real coordinator; no model/capture is started.
+        if admitted.audioGap { f.coordinator.interrupted("recognition-audio-gap") }
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "preparing")
+        f.clock.time = 100.1
+        _ = try f.coordinator.audioStarted(event: event, instance: f.coordinator.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time)
+        f.clock.time = 100.2
+        _ = try f.coordinator.audioEnded(event: event, instance: f.coordinator.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time, completed: true)
+        f.clock.time = 101
+        f.coordinator.recognized(.init(batch: UUID(), text: "Reply yes", words: [
+            .init(text: "reply", start: 100.5, end: 100.6), .init(text: "yes", start: 100.7, end: 100.8)], stableWords: 1))
+        XCTAssertEqual(phases.suffix(4), [.preparing, .announcing, .waiting, .composing])
+        XCTAssertTrue(f.coordinator.interceptsSpeech)
+        _ = cursor.capture() // One genuinely missing post-boundary buffer.
+        let afterLoss = cursor.capture()
+        let lost = try XCTUnwrap(continuity.admit(sequence: afterLoss.sequence, capturedAt: afterLoss.capturedAt, boundary: &boundary))
+        XCTAssertTrue(lost.audioGap)
+        if lost.audioGap { f.coordinator.interrupted("recognition-audio-gap") }
+        let status = try f.coordinator.status(event: event, instance: f.coordinator.instance)
+        XCTAssertEqual(status["phase"] as? String, "cancelled")
+        XCTAssertEqual(status["reason"] as? String, "recognition-audio-gap")
+        XCTAssertFalse(f.coordinator.interceptsSpeech); XCTAssertEqual(f.calls.count, 0)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        await f.coordinator.shutdown()
+    }
+    func testFirstMissingPostCutBufferStillCancelsBeforeAnnouncement() async throws {
+        let f = try fixture(), event = UUID()
+        var boundary = SpeechContextBoundary(), continuity = SpeechContinuity()
+        f.coordinator.resetRecognition = { boundary.invalidate(at: f.clock.time, nextSequence: 3) }
+        _ = try await prepare(f, event: event)
+        let admitted = try XCTUnwrap(continuity.admit(sequence: 5, capturedAt: f.clock.time + 0.1, boundary: &boundary))
+        XCTAssertTrue(admitted.contextReset); XCTAssertTrue(admitted.audioGap)
+        XCTAssertEqual(continuity.missingFrames, 2)
+        if admitted.audioGap { f.coordinator.interrupted("recognition-audio-gap") }
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["reason"] as? String, "recognition-audio-gap")
+        XCTAssertEqual(f.calls.count, 0)
+        await f.coordinator.shutdown()
+    }
     func testReplySettingsShareSavedValuesAndCancelAnUnsentAttempt() async throws {
         let f = try fixture(), event = UUID(), settings = f.coordinator.settings
         _ = try await prepare(f, event: event)

@@ -277,7 +277,7 @@ import Foundation
         session.signature = signature; session.revision += 1
         lastPhase = session.core.phase; lastReason = session.core.reason
         files.write(snapshot(session), event: session.event, revision: session.revision)
-        Diagnostics.shared.record("notification.reply.phase", info: ["event": session.event.uuidString, "phase": session.core.phase.rawValue, "reason": session.core.reason])
+        Diagnostics.shared.record("notification.reply.phase", info: ["notification_event": session.event.uuidString, "phase": session.core.phase.rawValue, "reason": session.core.reason])
         outcome?(session.event, session.core.phase, session.core.reason, first)
         present(session)
         if session.core.phase == .queued { session.queuedAt = now; session.spokenText = "" }

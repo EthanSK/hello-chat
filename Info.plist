@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.6.1</string>
+	<string>1.6.2</string>
 	<key>CFBundleVersion</key>
-	<string>1082</string>
+	<string>1083</string>
 	<key>HChatAgentControlProtocol</key>
 	<integer>1</integer>
 	<key>HChatCommandReceiptVersion</key>

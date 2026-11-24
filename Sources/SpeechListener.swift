@@ -39,6 +39,7 @@ import CoreAudio
     private var progress = AudioProgressWatchdog(now: Diagnostics.now)
     private var watchdog: Task<Void, Never>?
     private var contextBoundary = SpeechContextBoundary()
+    private var captureCursor = SpeechCaptureCursor()
     private var replySpeech = NotificationReplySpeech()
     private var replyFinalize: ((Double) async throws -> Void)?
     private var replyFinalizeTask: Task<Void, Never>?
@@ -47,7 +48,10 @@ import CoreAudio
     private var replyEndFinalize: ((Double) async throws -> SpeechUpdate?)?
     private var replyUsesAnalyzer = false
     private var replyFinalizedThrough = -Double.infinity
-    func discardPendingRecognition() { contextBoundary.invalidate(at: Diagnostics.now) }
+    func discardPendingRecognition() {
+        let mark = captureCursor.boundary()
+        contextBoundary.invalidate(at: mark.capturedAt, nextSequence: mark.sequence)
+    }
     func finalizeReplyRecognition(through hostTime: Double, ending: Bool = false) {
         guard hostTime.isFinite, hostTime > replyFinalizedThrough else { return }
         replyFinalizeRequested = max(replyFinalizeRequested ?? -.infinity, hostTime)
@@ -121,6 +125,9 @@ import CoreAudio
         let token = UUID(); session = token
         await cleanup?.value
         guard session == token else { throw CancellationError() }
+        let captureCursor = SpeechCaptureCursor()
+        self.captureCursor = captureCursor
+        contextBoundary = SpeechContextBoundary()
         guard let directory = selectedModel.directory else { throw BridgeError.message("Local speech model is missing. Reinstall Hello Chat.") }
         let worker: any SpeechBackend
         if selectedModel == .appleLocal {
@@ -165,7 +172,6 @@ import CoreAudio
         let (stream, continuation) = AsyncStream<Frame>.makeStream(bufferingPolicy: .bufferingNewest(capacity))
         self.continuation = continuation
         var meterFrames = 0
-        var sequence: UInt64 = 0
         let framesPerUpdate = max(1, Int(format.sampleRate / 10))
         var reportedBufferFormat = false
         let captureDiagnostics = diagnostics
@@ -179,8 +185,8 @@ import CoreAudio
                     captureDiagnostics?.record("speech.capture.first_buffer", numbers: ["sample_rate": buffer.format.sampleRate, "channels": Double(buffer.format.channelCount)])
                 }
                 guard let mono = SpeechPCM.mono(buffer) else { return }
-                continuation.yield(Frame(buffer: mono, sequence: sequence, capturedAt: Diagnostics.now, audioEnd: nil))
-                sequence &+= 1
+                let mark = captureCursor.capture()
+                continuation.yield(Frame(buffer: mono, sequence: mark.sequence, capturedAt: mark.capturedAt, audioEnd: nil))
                 meterFrames += Int(mono.frameLength)
                 if meterFrames >= framesPerUpdate {
                     meterFrames %= framesPerUpdate
@@ -232,16 +238,15 @@ import CoreAudio
                 for await frame in stream {
                     try Task.checkCancellation()
                     guard let self, self.session == token else { break }
-                    guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
-                    guard continuity.accepts(capturedAt: frame.capturedAt) else { continue }
-                    let gap = continuity.hasGap(sequence: frame.sequence)
-                    let boundaryReset = self.contextBoundary.takeReset()
+                    guard let admission = continuity.admit(sequence: frame.sequence, capturedAt: frame.capturedAt,
+                                                           boundary: &self.contextBoundary) else { continue }
+                    let gap = admission.audioGap, boundaryReset = admission.contextReset
                     if boundaryReset || gap {
-                        if !boundaryReset {
+                        if gap {
                             gaps += 1
-                            self.diagnostics?.record("speech.audio_gap", numbers: ["missing_buffers": Double(continuity.missingFrames), "queue_capacity": Double(capacity)])
-                            self.onDelay?()
+                            self.diagnostics?.record("speech.audio_gap", numbers: ["missing_buffers": Double(continuity.missingFrames), "queue_capacity": Double(capacity), "context_reset": boundaryReset ? 1 : 0])
                         }
+                        if !boundaryReset { self.onDelay?() }
                         let resetting = Diagnostics.now
                         try await worker.resetForDiscontinuity()
                         guard self.session == token else { break }
@@ -261,7 +266,7 @@ import CoreAudio
                     let queuedMS = (consuming - frame.capturedAt) * 1000
                     let result = try await worker.consume(frame.buffer)
                     guard self.session == token else { break }
-                    guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
+                    guard self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) else { continue }
                     let processMS = (Diagnostics.now - consuming) * 1000
                     frames += 1; queueMax = max(queueMax, queuedMS); processMax = max(processMax, processMS); processTotal += processMS
                     audioTotal += Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate
@@ -286,7 +291,7 @@ import CoreAudio
                             do {
                                 if let final = try await finalize(modelTime), self.session == token,
                                    self.replySpeech.batch == replyBatch, self.needsReplyRecognition?() == true,
-                                   self.contextBoundary.accepts(capturedAt: frame.capturedAt) {
+                                   self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) {
                                     // Archive/display the same native final before consuming its
                                     // End command. Terminal cancellation may invalidate this frame.
                                     if let text = final.text {
@@ -309,7 +314,7 @@ import CoreAudio
                             }
                         }
                     }
-                    guard self.contextBoundary.accepts(capturedAt: frame.capturedAt) else { continue }
+                    guard self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) else { continue }
                     if let text = result.text, !publishedNativeFinal {
                         textUpdates += 1
                         self.onText?(text, timing.update(text, at: modelAudioTime, supplied: result.wordTimings))
@@ -361,13 +366,12 @@ import CoreAudio
             let start = Diagnostics.now
             recordingProducer = Task { [weak self] in
                 do {
-                    var number: UInt64 = 0
                     var producedSeconds = 0.0
                     @MainActor func enqueue(_ buffer: AVAudioPCMBuffer) async throws {
                         let mono = try Self.recordedChannel(buffer, channels: channels)
                         producedSeconds += Double(buffer.frameLength) / file.processingFormat.sampleRate
-                        continuation.yield(Frame(buffer: mono, sequence: number, capturedAt: Diagnostics.now, audioEnd: producedSeconds))
-                        number &+= 1
+                        let mark = captureCursor.capture()
+                        continuation.yield(Frame(buffer: mono, sequence: mark.sequence, capturedAt: mark.capturedAt, audioEnd: producedSeconds))
                         let remaining = start + producedSeconds - Diagnostics.now
                         if remaining > 0 { try await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
                     }

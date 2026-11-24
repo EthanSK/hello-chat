@@ -22,6 +22,46 @@ import Foundation
         precondition(!boundary.accepts(capturedAt: 11), "Reject an old inference that finishes after the ownership change")
         boundary.invalidate(at: 15)
         precondition(!boundary.accepts(capturedAt: 14) && boundary.accepts(capturedAt: 15))
+        // Every captured frame exists: only the old queued frames are intentionally
+        // excluded. The previous timestamp-only path reported two missing buffers.
+        var intentional = SpeechContinuity(), replyBoundary = SpeechContextBoundary()
+        precondition(intentional.admit(sequence: 0, capturedAt: 9, boundary: &replyBoundary)?.audioGap == false)
+        replyBoundary.invalidate(at: 10, nextSequence: 3)
+        precondition(intentional.admit(sequence: 1, capturedAt: 9.8, boundary: &replyBoundary) == nil)
+        precondition(intentional.admit(sequence: 2, capturedAt: 9.9, boundary: &replyBoundary) == nil)
+        let admitted = intentional.admit(sequence: 3, capturedAt: 10.1, boundary: &replyBoundary)
+        precondition(admitted?.contextReset == true && admitted?.audioGap == false && intentional.missingFrames == 0)
+        precondition(intentional.admit(sequence: 4, capturedAt: 10.2, boundary: &replyBoundary)?.contextReset == false)
+        precondition(intentional.admit(sequence: 6, capturedAt: 10.4, boundary: &replyBoundary)?.audioGap == true,
+                     "A later real post-boundary drop must still interrupt a reply")
+        var firstMissing = SpeechContinuity(), missingBoundary = SpeechContextBoundary()
+        missingBoundary.invalidate(at: 10, nextSequence: 3)
+        let missing = firstMissing.admit(sequence: 5, capturedAt: 10.3, boundary: &missingBoundary)
+        precondition(missing?.contextReset == true && missing?.audioGap == true && firstMissing.missingFrames == 2,
+                     "Even the first new frame must reveal actual post-boundary loss")
+        var tiedClock = SpeechContinuity(), tiedBoundary = SpeechContextBoundary()
+        let cursor = SpeechCaptureCursor(clock: { 10 })
+        let oldFrame = cursor.capture(), mark = cursor.boundary(), newFrame = cursor.capture()
+        precondition(mark.sequence == 1 && mark.capturedAt == 10 && newFrame.sequence == 1)
+        tiedBoundary.invalidate(at: mark.capturedAt, nextSequence: mark.sequence)
+        precondition(tiedClock.admit(sequence: oldFrame.sequence, capturedAt: oldFrame.capturedAt, boundary: &tiedBoundary) == nil,
+                     "The exact sequence cut also excludes old frames sharing the cutoff timestamp")
+        precondition(tiedClock.admit(sequence: newFrame.sequence, capturedAt: newFrame.capturedAt, boundary: &tiedBoundary)?.audioGap == false)
+        let parallelCursor = SpeechCaptureCursor(clock: { 20 })
+        DispatchQueue.concurrentPerform(iterations: 1000) { _ in _ = parallelCursor.capture() }
+        precondition(parallelCursor.boundary().sequence == 1000, "Capture and boundary share one atomic sequence owner")
+        let newSession = SpeechCaptureCursor(clock: { 30 })
+        precondition(newSession.capture().sequence == 0, "A new physical capture session starts its own sequence")
+        var ambient = SpeechContinuity(), noBoundary = SpeechContextBoundary()
+        precondition(ambient.admit(sequence: 0, capturedAt: 1, boundary: &noBoundary)?.audioGap == false)
+        precondition(ambient.admit(sequence: 1, capturedAt: 2, boundary: &noBoundary)?.contextReset == false)
+        precondition(ambient.admit(sequence: 4, capturedAt: 3, boundary: &noBoundary)?.audioGap == true,
+                     "Ordinary ambient overflow keeps the existing recovery policy")
+        replyBoundary.invalidate(at: 12, nextSequence: 10)
+        replyBoundary.invalidate(at: 13, nextSequence: 12)
+        precondition(intentional.admit(sequence: 11, capturedAt: 13, boundary: &replyBoundary) == nil)
+        precondition(intentional.admit(sequence: 12, capturedAt: 13, boundary: &replyBoundary)?.audioGap == false,
+                     "The newest context cut owns both its clock and sequence")
         var silent = AudioProgressWatchdog(now: 0)
         for time in stride(from: 1.0, through: 120.0, by: 1) {
             silent.captured(at: time); silent.processed(at: time)
