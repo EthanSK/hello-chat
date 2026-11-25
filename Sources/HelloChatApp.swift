@@ -394,7 +394,9 @@ struct HelloChatApp: App {
     @StateObject private var zoom: InterfaceZoom
     @StateObject private var updater: AppUpdater
     private let agentControl: HAgentControl
+    private let initialHomeFrame: String?
     init() {
+        initialHomeFrame = UserDefaults.standard.string(forKey: "NSWindow Frame main")
         let model = GateModel()
         let zoom = InterfaceZoom()
         let updater = AppUpdater()
@@ -412,7 +414,7 @@ struct HelloChatApp: App {
         Window("Hello Chat · \(AppVersion.display)", id: "main") {
             MainView(model: model, zoom: zoom, updater: updater)
                 .modifier(HControlWindow(control: agentControl))
-                .background(InitialWindowPlacement(savedFrameName: "main", windowFound: model.phraseWindow.attach))
+                .background(InitialWindowPlacement(savedFrameName: "main", initialSavedFrame: initialHomeFrame, windowFound: model.phraseWindow.attach))
                 .onAppear {
                     delegate.model = model
                     model.initializeListening()
@@ -1990,9 +1992,11 @@ struct MenuView: View {
 // left to macOS; scrolling handles content larger than the chosen window.
 struct InitialWindowPlacement: NSViewRepresentable {
     var savedFrameName: String? = nil
+    var initialSavedFrame: String? = nil
     var windowFound: ((NSWindow) -> Void)? = nil
     final class Host: NSView {
         var savedFrameName: String?
+        var initialSavedFrame: String?
         var windowFound: ((NSWindow) -> Void)?
         private var placed = false
         override func viewDidMoveToWindow() {
@@ -2001,6 +2005,12 @@ struct InitialWindowPlacement: NSViewRepresentable {
             guard let window, !placed, let screen = WindowDisplay.preferredScreen else { return }
             placed = true
             DispatchQueue.main.async {
+                // Native window creation can save its temporary centred frame before this
+                // callback. Restore the launch snapshot through AppKit, not that overwritten
+                // preference. Settings has no Home snapshot. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+                if self.savedFrameName != nil, let frame = self.initialSavedFrame {
+                    window.setFrame(from: frame); return
+                }
                 if let name = self.savedFrameName, window.setFrameUsingName(name) { return }
                 let bounds = screen.visibleFrame.insetBy(dx: screen.visibleFrame.width * 0.1, dy: screen.visibleFrame.height * 0.1)
                 let size = NSSize(width: min(window.frame.width, bounds.width), height: min(window.frame.height, bounds.height))
@@ -2011,11 +2021,13 @@ struct InitialWindowPlacement: NSViewRepresentable {
     func makeNSView(context: Context) -> Host {
         let host = Host()
         host.savedFrameName = savedFrameName
+        host.initialSavedFrame = initialSavedFrame
         host.windowFound = windowFound
         return host
     }
     func updateNSView(_ nsView: Host, context: Context) {
         nsView.savedFrameName = savedFrameName
+        nsView.initialSavedFrame = initialSavedFrame
         nsView.windowFound = windowFound
         if let window = nsView.window { windowFound?(window) }
     }

@@ -1931,6 +1931,7 @@ import SwiftUI
         let appCommands = appCommandDetector.poll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase),
             reserved: patterns(for: .showVoicePhrase) + activeSpeakerCommands.map(\.pattern),
             reservedSwitchPrefixes: activeSpeakerPrefixes,
+            immediateSwitchNames: DesktopCommands.runningApps().filter { $0.id == "com.google.Chrome" }.flatMap { $0.names + appNameSpellings.spellings(for: $0.id) },
             onDecision: { command, decision, evidence in
                 // Counts and timing only, never words: separates a missed pause from discussion.
                 var numbers = ["left_words": Double(evidence.leftWords), "name_words": Double(evidence.nameWords)]

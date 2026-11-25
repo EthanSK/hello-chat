@@ -67,6 +67,7 @@ struct AppCommandDetector {
     private static let prefixLeftWords: Set<String> = ["please", "ok", "okay", "now", "can", "you", "could", "would", "and", "then", "again"]
     private static let bareLeftWords: Set<String> = ["please", "ok", "okay", "now"]
     private var context: [String] = []
+    private var directContext = StandaloneWake()
     private var sentenceStarts: [Int] = []
     private var leftBoundaries: [Int] = []
     private var endBoundaries: [Int] = []
@@ -102,6 +103,8 @@ struct AppCommandDetector {
 
     mutating func reset() { self = AppCommandDetector(usesEditableShortForms: usesEditableShortForms) }
     mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
+        if let time { directContext.audio(level: level, seconds: seconds, at: time) }
+        else { directContext.audio(level: level, seconds: seconds, at: 0) }
         audioTime = time
         if level < 0.02 { quiet += seconds }
         else {
@@ -113,6 +116,7 @@ struct AppCommandDetector {
         }
     }
     mutating func update(_ text: String, at time: Double, timings: [(word: String, start: Double, end: Double)]? = nil) {
+        directContext.update(text, at: time, timings: timings)
         var words: [String] = [], starts: [Int] = []
         let source = text.lowercased() as NSString
         for match in Self.tokenizer.matches(in: source as String, range: NSRange(location: 0, length: source.length)) {
@@ -163,7 +167,7 @@ struct AppCommandDetector {
     // `reserved` lists another command's own phrases (Show voice). Words that form one of them are
     // never an app request, whether or not that command itself was accepted, so "Show voice" can't
     // become "Show" followed by an app named Voice.
-    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern], reserved: [PhrasePattern] = [], reservedSwitchPrefixes: [PhrasePattern] = [],
+    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern], reserved: [PhrasePattern] = [], reservedSwitchPrefixes: [PhrasePattern] = [], immediateSwitchNames: @autoclosure () -> [String] = [],
                        onDecision: ((AppCommandKind, String, Evidence) -> Void)? = nil) -> [AppCommandCandidate] {
         guard heardSpeech, checkedRevision != revision || waiting else { return [] }
         checkedRevision = revision; waiting = false
@@ -177,6 +181,28 @@ struct AppCommandDetector {
             if let range = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
                 if consumedAudio.contains(where: { $0.overlaps(range) }) { continue }
             } else if index < consumedCount { continue }
+            // Ethan's four explicit Chrome switch forms must work during a playing podcast.
+            // Only an exact, caller-resolved running-app name can complete this directional
+            // Switch request without room silence. Open's whole-name policy stays unchanged.
+            // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+            if prefix.kind == .switchApp {
+                var nameStart = prefix.end
+                if context[safe: nameStart] == "to" { nameStart += 1 }
+                if context[safe: nameStart] == "the" { nameStart += 1 }
+                let exact = immediateSwitchNames().map(PhraseMatcher.words).filter { name in
+                    !name.isEmpty && nameStart + name.count <= context.count && Array(context[nameStart..<(nameStart + name.count)]) == name
+                }.max { $0.count < $1.count }
+                if let name = exact {
+                    let end = nameStart + name.count, range = prefix.start..<end
+                    let reserved = reservedRanges.contains { $0.overlaps(range) } || reservedSwitchRanges.contains { $0.overlaps(prefix.start..<prefix.end) }
+                    if !reserved && directContext.permitsDirectCommand(in: range, allowEmbedded: true) {
+                        consume(index: index, start: prefix.start, end: end)
+                        result.append(.init(kind: .switchApp, name: name.joined(separator: " "), bare: false, wordRange: range, alternateName: nil))
+                        onDecision?(.switchApp, "accepted_known_app_without_pause", Self.evidence(prefix: prefix.start, end: end, timings: alignedTimings))
+                        continue
+                    }
+                }
+            }
             let sentenceStart = (sentenceStarts + leftBoundaries).filter { $0 <= prefix.start }.max() ?? 0
             let sentenceEnd = max(prefix.end, (sentenceStarts + endBoundaries).filter { $0 > prefix.start }.min() ?? context.count)
             let elapsed: Double
