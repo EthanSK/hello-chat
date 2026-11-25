@@ -748,7 +748,7 @@ struct PhraseMatcher {
     // address/name cross-products. H Chat / B Chat discussion names remain absent. The older
     // Hey-as-discussion rule is superseded by his explicit request to add Hey Chat as a default.
     private static let wakeSpellings: Set<String> = [
-        "hello chat", "hello chad", "hello chats", "hello chart", "hello charts", "hello chance",
+        "hello chat", "hello cat", "hello chad", "hello chats", "hello chart", "hello charts", "hello chance",
         "hallo chat", "hallo chad", "hullo chat", "hullo chad", "hullo chart", "halo chat", "hollow chat",
         "yellow chat", "hello chard", "hello chants", "oh hello chat",
     ]

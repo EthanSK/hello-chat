@@ -22,6 +22,17 @@ import Foundation
             precondition(!successiveShow.poll(at: Double(number) + 0.1, phrase: showPhrase, similar: false,
                 rejectNegated: true, directOnly: true), "The same occurrence cannot be replayed")
         }
+        var catWake = StandaloneWake()
+        catWake.audio(level: 0.2, seconds: 0.1)
+        catWake.update("Hello cat", at: 1)
+        precondition(catWake.poll(at: 1, phrase: "Hello Chat", similar: true, rejectNegated: true),
+                     "Ethan's exact Hello cat spelling starts the existing wake command")
+        var exactWake = StandaloneWake()
+        exactWake.audio(level: 0.2, seconds: 0.1); exactWake.update("Hello cat", at: 1)
+        precondition(!exactWake.poll(at: 1, phrase: "Hello Chat", similar: false, rejectNegated: true),
+                     "Explicitly disabled alternate spellings remain disabled")
+        precondition(PhraseSlot.wakePhrase.stockSpellings(for: "Hello Chat").contains("hello cat"),
+                     "The existing dictionary editor exposes the same Hello cat recognition spelling")
         var checks = 0
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1
@@ -249,7 +260,8 @@ import Foundation
         }
         check("High Chat. Hello Chat", expected: true)
         for text in ["as well chat", "Hello charts"] { check(text, expected: true) }
-        for text in ["Hello cat", "Hello that", "Hello shat", "Hey Chat", "hey chat can you help"] { check(text, expected: false) }
+        check("Hello cat", expected: true)
+        for text in ["Hello that", "Hello shat", "Hey Chat", "hey chat can you help"] { check(text, expected: false) }
         for text in ["the hallo chad detection", "I said yellow chat", "the hello cat app",
                      "I said as well chat", "as well chat detection", "that as well. Chat what next", "help chat"] {
             check(text, expected: false)

@@ -5,9 +5,9 @@ extension HAgentControl {
     func addNotificationReplies(to operations: inout [String: Operation]) {
         let replies = model.notificationReplies
         let event: Fields = ["eventID": .uuid, "instance": .uuid]
-        func add(_ name: String, fields: Fields, _ body: @escaping (HControlRequest) async throws -> [String: Any]) {
+        func add(_ name: String, fields: Fields, optional: Fields = [:], _ body: @escaping (HControlRequest) async throws -> [String: Any]) {
             // These bounded lifecycle callbacks must remain usable while an unrelated native action awaits its own completion. — GPT-6.1 Sol
-            operations["notificationReply." + name] = Operation(kind: name == "status" ? "read" : "session", fields: fields, run: { request in
+            operations["notificationReply." + name] = Operation(kind: name == "status" ? "read" : "session", fields: fields, optionalFields: optional, run: { request in
                 do { return .init(.confirmed, try await body(request)) }
                 catch let failure as NotificationReplyCoordinator.Failure {
                     switch failure {
@@ -18,14 +18,15 @@ extension HAgentControl {
                 }
             })
         }
-        add("prepare", fields: ["eventID": .uuid, "threadID": .uuid, "turnID": .text, "questionID": .text, "spokenText": .text]) { request in
+        add("prepare", fields: ["eventID": .uuid, "threadID": .uuid, "turnID": .text, "questionID": .text, "spokenText": .text], optional: ["manualFinish": .bool]) { request in
             let rawTurn = request.string("turnID")
             let turn = UUID(uuidString: rawTurn)
             guard rawTurn.isEmpty || turn != nil,
                   let event = UUID(uuidString: request.string("eventID")), let thread = UUID(uuidString: request.string("threadID")) else {
                 throw NotificationReplyCoordinator.Failure.invalidEvent
             }
-            return try await replies.prepare(event: event, thread: thread, turn: turn, question: request.string("questionID"), spokenText: request.string("spokenText"))
+            return try await replies.prepare(event: event, thread: thread, turn: turn, question: request.string("questionID"), spokenText: request.string("spokenText"),
+                                             manualFinish: request.arguments["manualFinish"] as? Bool ?? false)
         }
         add("audioStarted", fields: event.merging(["startedUptime": .number(0...1e12), "startedWall": .number(0...1e12)]) { $1 }) { request in
             let ids = try request.notificationReplyIDs()

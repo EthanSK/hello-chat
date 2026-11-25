@@ -54,13 +54,13 @@ protocol SpeechBackend: Actor {
     func finish() async throws -> String
     func resetForDiscontinuity() async throws
     func finalizeRecognition(through time: Double) async throws
-    func finalizeNotificationEnd(through time: Double) async throws -> SpeechUpdate?
+    func finalizeNotificationCommand(through time: Double) async throws -> SpeechUpdate?
     func close() async
 }
 
 extension SpeechBackend {
-    // Optional analyzer-prefix request. Neural Reply activation uses agreeing
-    // real inference revisions; explicit notification End has its own hook.
+    // Apple analyzer-prefix request. Neural notification Reply/End/Cancel share the
+    // real final-decode hook; ordinary ambient command behavior is unchanged.
     func finalizeRecognition(through time: Double) async throws { }
-    func finalizeNotificationEnd(through time: Double) async throws -> SpeechUpdate? { nil }
+    func finalizeNotificationCommand(through time: Double) async throws -> SpeechUpdate? { nil }
 }
