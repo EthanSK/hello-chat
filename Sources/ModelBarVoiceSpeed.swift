@@ -136,16 +136,38 @@ enum ModelBarVoiceSpeed {
 // The existing call observer supplies the exact identity when native Voice opens before its
 // saved thread exists. Only an H Chat-dispatched new call can arm this handoff. — GPT-6.1 Sol
 struct ModelBarVoiceLaunch {
-    private(set) var pending: (sent: Date, pid: Int32)?
-    mutating func arm(sent: Date, pid: Int32) { pending = (sent, pid) }
-    mutating func cancel() { pending = nil }
+    enum Readiness: String {
+        case notArmed, armed, waitingForCall, identityUnconfirmed, missingStart, wrongProcess, olderCall
+        case titlePending, callEnded, callReplaced, expired, ready
+    }
+    private(set) var pending: (sent: Date, pid: Int32, call: VoicePeerCall?)?
+    private(set) var readiness: Readiness = .notArmed
+    mutating func arm(sent: Date, pid: Int32) { pending = (sent, pid, nil); readiness = .armed }
+    mutating func cancel() { pending = nil; readiness = .notArmed }
     mutating func take(_ state: VoicePeerReceipt, at now: Date, composerReady: Bool = true) -> VoicePeerCall? {
-        guard let pending else { return nil }
-        guard (0...30).contains(now.timeIntervalSince(pending.sent)) else { self.pending = nil; return nil }
-        guard composerReady, state.status == .active, let call = state.call,
-              call.pid == pending.pid, let started = state.startedAtMilliseconds,
-              Double(started) >= pending.sent.timeIntervalSince1970 * 1000 else { return nil }
+        guard var pending else { readiness = .notArmed; return nil }
+        guard (0...30).contains(now.timeIntervalSince(pending.sent)) else {
+            self.pending = nil; readiness = .expired; return nil
+        }
+        if pending.call != nil, state.status == .inactive {
+            self.pending = nil; readiness = .callEnded; return nil
+        }
+        guard state.status == .active, let call = state.call else {
+            readiness = state.status == .inactive ? .waitingForCall : .identityUnconfirmed; return nil
+        }
+        // Bind before waiting for a title. Otherwise a later manual/replacement call could
+        // consume the first call's request. Unknown reads retain the binding; a proven End
+        // or another active identity retires it. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+        if let bound = pending.call, bound != call {
+            self.pending = nil; readiness = .callReplaced; return nil
+        }
+        guard call.pid == pending.pid else { readiness = .wrongProcess; return nil }
+        guard let started = state.startedAtMilliseconds else { readiness = .missingStart; return nil }
+        guard Double(started) >= pending.sent.timeIntervalSince1970 * 1000 else { readiness = .olderCall; return nil }
+        pending.call = call; self.pending = pending
+        guard composerReady else { readiness = .titlePending; return nil }
         self.pending = nil
+        readiness = .ready
         return call
     }
 }

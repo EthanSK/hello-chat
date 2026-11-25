@@ -94,6 +94,24 @@ import Foundation
         check(launch.take(state, at: now.addingTimeInterval(31)) == nil && launch.pending == nil, "An expired opening cannot make a late selection")
         launch.arm(sent: now, pid: good.call.pid); launch.cancel()
         check(launch.take(state, at: now) == nil, "Quit/cancellation retires the pending selection")
+        launch.arm(sent: now, pid: good.call.pid)
+        _ = launch.take(state, at: now, composerReady: false)
+        let replacement = VoicePeerCall(token: "\(UUID()):\(UUID()):\(good.call.pid)")!
+        let next = VoicePeerReceipt(status: .active, call: replacement, startedAtMilliseconds: state.startedAtMilliseconds! + 1000)
+        check(launch.take(next, at: now.addingTimeInterval(2)) == nil && launch.pending == nil,
+              "A replacement call cannot inherit a launch whose first identified call was waiting for its title")
+        check(launch.readiness == .callReplaced, "Replacement is retained as the actual readiness decision")
+        launch.arm(sent: now, pid: good.call.pid)
+        _ = launch.take(state, at: now, composerReady: false)
+        check(launch.pending?.call == good.call && launch.readiness == .titlePending, "The first genuine identity is bound before its title is available")
+        check(launch.take(.init(status: .unknown), at: now) == nil && launch.pending?.call == good.call && launch.readiness == .identityUnconfirmed,
+              "A temporary unknown read cannot discard or replace the bound call")
+        check(launch.take(state, at: now) == good.call && launch.readiness == .ready, "The same call can recover and proceed exactly once")
+        launch.arm(sent: now, pid: good.call.pid)
+        _ = launch.take(state, at: now, composerReady: false)
+        check(launch.take(.init(status: .inactive), at: now) == nil && launch.pending == nil && launch.readiness == .callEnded,
+              "A proven End while the title is pending retires the request without a later expiry or relay")
+        check(launch.take(next, at: now.addingTimeInterval(2)) == nil, "A call after the proven End cannot revive the old request")
         print("Passed \(checks) exact-call Model Bar handoff checks")
     }
 }

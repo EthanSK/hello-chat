@@ -952,9 +952,10 @@ import SwiftUI
                 self.modelBarLaunchExpiry = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(30)) } catch { return }
                     guard let self, !self.quitting, self.modelBarLaunch.pending?.sent == sent else { return }
+                    let gate = self.modelBarLaunch.readiness.rawValue
                     self.modelBarLaunch.cancel()
                     self.lastEvent = CodexChatSpeed.Result(status: "unconfirmed", thread: nil, speed: nil, model: nil).message
-                    Diagnostics.shared.record("voice.model_bar.after_launch", info: ["outcome": "identity-unconfirmed"])
+                    Diagnostics.shared.record("voice.model_bar.after_launch", info: ["outcome": "identity-unconfirmed", "gate": gate])
                 }
                 self.lastEvent = CodexChatSpeed.Result(status: "unconfirmed", thread: nil, speed: nil, model: nil).message
                 self.applyPendingModelBarSpeed()
@@ -1816,9 +1817,17 @@ import SwiftUI
             let titleReady = await Task.detached {
                 state.call.flatMap { try? CodexChatSpeed.uniqueTitle(thread: $0.thread, database: VoiceTimeline.databaseURL()) } != nil
             }.value
-            guard !Task.isCancelled, !self.quitting, let started = state.startedAtMilliseconds,
-                  let call = self.modelBarLaunch.take(state, at: Date(), composerReady: titleReady) else { return }
-            self.modelBarLaunchExpiry?.cancel(); self.modelBarLaunchExpiry = nil
+            guard !Task.isCancelled, !self.quitting else { return }
+            let previousGate = self.modelBarLaunch.readiness
+            let selected = self.modelBarLaunch.take(state, at: Date(), composerReady: titleReady)
+            // Retain the actual gate, once per transition, without logging titles or body text
+            // or adding another read/poller. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+            if self.modelBarLaunch.readiness != previousGate {
+                Diagnostics.shared.record("voice.model_bar.readiness", info: ["gate": self.modelBarLaunch.readiness.rawValue,
+                    "identity": state.status.rawValue, "title_ready": String(titleReady)])
+            }
+            if self.modelBarLaunch.pending == nil { self.modelBarLaunchExpiry?.cancel(); self.modelBarLaunchExpiry = nil }
+            guard let started = state.startedAtMilliseconds, let call = selected else { return }
             // Finish the launch's existing defaults receipt before acquiring the speed lease.
             // This recovery changes no call state and cannot send a shortcut. — GPT-6.1 Sol
             do { try await CodexVoiceSpeed.shared.observedSessionStart(Date(timeIntervalSince1970: Double(started) / 1000),

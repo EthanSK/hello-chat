@@ -1,5 +1,10 @@
 # Hello Chat engineering notes
 
+## 25 November 2026 — Bind a pending speed handoff before its title is ready
+
+- Bind the first fresh, verified Voice identity before waiting for its exact composer title. A different active identity or a proven inactive result after that binding must retire the request; a transient unknown read may keep the same binding. Otherwise a replacement call in the same desktop process can inherit a prior call's unfinished speed request. The inert regression reproduces the old inheritance and verifies replacement/End retirement plus same-call recovery.
+- Retain the typed readiness gate once per transition and at expiry, using only enum/boolean fields. Do not infer the local failure from `voice.peer.checked`: that event logs the other Mac's response. A saved session End proves the call ended, but an `outcome: ended` payload does not establish who ended it or why. A brief naturally ended call without relay success is not positive speed acceptance or proof of a launch regression; never widen a timer or relax identity guards from that alone.
+
 ## 25 November 2026 — App focus and visible window order are different
 
 - `orderFrontRegardless()` can put Home above an already-active target app without changing keyboard focus. A successful AppKit activation and a matching frontmost PID therefore do not prove the requested app is visibly above Home. After an explicit app switch, order only Home below the verified target's normal window and confirm the resulting WindowServer order. Keep placement, keyboard focus and notification panels unchanged. The opt-in isolated native window test reproduces and corrects this across processes, including a repeated request; WindowServer completion may arrive after the ordering call returns.
