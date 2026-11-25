@@ -401,3 +401,9 @@ Fresh qualification exposed two separate compatibility assumptions. The feedback
 ## CLI run loop
 
 The M1 change helper trapped because `dispatchMain` can move main-queue work off the real thread. Keep that thread alive. A port is used here. The normal app loop is unchanged.
+
+## Native Voice speed tier identity
+
+Codex's displayed Fast selection persisted `service_tier = "priority"` on the M1; lowercasing the label produced the wrong ownership receipt and left the native write unrestored. Resolve the tier ID from the selected model's `service_tiers` catalogue, using the same model-name lookup as model restoration. Standard remains the implicit `default` tier. Isolated fixtures deliberately write literal `priority`, independently of the production mapper, and cover native Fast restoration with both inherited and explicit ordinary defaults. Missing or ambiguous metadata must refuse the action before a native selection.
+
+Keep default cleanup independent of post-Start control confirmation: arm the existing session observer/finite expiry immediately after successful native dispatch. A separate real launch did reach High/Ultrafast, but its restoration attempted an unavailable model button and failed; normal app-owned shutdown recovered the original configuration exactly. That evidence does not establish the underlying AX cause or prove native restoration during a live call. Preserve recovery receipts on failure and qualify the complete native restore separately before promoting the M1 candidate.

@@ -145,6 +145,22 @@ import Foundation
         precondition(!reusedMailboxContext.requestedNewCall && mailboxEvents == ["speed", "mailbox", VoiceBridge.startCommand])
 
         precondition(launchBoundaries.count == 2 && launchBoundaries[0] != nil && launchBoundaries[1] == nil)
+        // Native confirmation can suspend after a successful shortcut. Cleanup must
+        // already be handed to the defaults owner, independently of that UI read. — GPT-6.1 Sol
+        var dispatched = false, cleanupArmed = false
+        var resumeConfirmation: CheckedContinuation<VoiceSnapshot, Never>?
+        let delayedConfirmation = NativeVoice(transport: .init(snapshot: {
+            guard dispatched else { return state() }
+            precondition(cleanupArmed, "Defaults cleanup must be armed before post-Start confirmation")
+            return await withCheckedContinuation { resumeConfirmation = $0 }
+        }, send: { _, _ in dispatched = true }, activate: { _ in },
+            finishLaunchDefaults: { _, sent in cleanupArmed = sent != nil }))
+        let delayedStart = Task { try await delayedConfirmation.start() }
+        while resumeConfirmation == nil { await Task.yield() }
+        precondition(cleanupArmed && !delayedConfirmation.connected)
+        resumeConfirmation?.resume(returning: state(.listening))
+        _ = try await delayedStart.value
+        precondition(delayedConfirmation.connected)
         var rollbackOnError = false
         var appeared = state()
         let appearedDuringSpeedChange = NativeVoice(transport: .init(snapshot: { appeared },
@@ -1023,7 +1039,10 @@ import Foundation
         func selectSpeed(_ value: String) throws {
             precondition(selection.model != speedlessModel && value != DraftChoices.speedUnavailable)
             if rejectSpeed { throw BridgeError.message("Speed choice unavailable") }
-            try put("service_tier", value == "Standard" ? "default" : value.lowercased()); selection.speed = value
+            // Observed Codex persistence: the displayed Fast tier is priority,
+            // deliberately independent of production's catalogue lookup. — GPT-6.1 Sol
+            let raw = ["Standard": "default", "Fast": "priority", "Ultrafast": "ultrafast"][value]!
+            try put("service_tier", raw); selection.speed = value
         }
         func closeIfEmpty() { if !adopted { closed = true } }
     }
@@ -1082,6 +1101,9 @@ import Foundation
         let generation = Date()
         let baseline = DraftChoices(model: "GPT-6.1 Sol", effort: "Extra High", speed: "Standard")
         let config = "model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"xhigh\"\n"
+        let observedTiers = try Data(contentsOf: URL(fileURLWithPath: "Tests/Fixtures/CodexVoice/service-tiers-observed.json"))
+        let catalogue = dir.appendingPathComponent("models_cache.json")
+        try observedTiers.write(to: catalogue)
         let fixture = DraftFixture(baseline, file: file)
         let manager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in fixture }, generation: { _ in generation })
         try config.write(to: file, atomically: true, encoding: .utf8)
@@ -1162,8 +1184,6 @@ import Foundation
         speedless.speedlessModel = "Opus 5.5"
         let hiddenConfig = "model = \"opus-5.5\"\nmodel_reasoning_effort = \"high\"\n"
         try hiddenConfig.write(to: file, atomically: true, encoding: .utf8)
-        try #"{"models":[{"slug":"opus-5.5","display_name":"Opus 5.5"}]}"#.write(
-            to: dir.appendingPathComponent("models_cache.json"), atomically: true, encoding: .utf8)
         let hidden = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in speedless }, generation: { _ in generation })
         let fourth = UUID()
         try await hidden.prepare(fourth, executable: executable, environment: env, runningPID: 57)
@@ -1224,6 +1244,33 @@ import Foundation
         precondition(selected.succeeded && already.selection.speed == "Ultrafast" && already.closed)
         let rawRestored = try String(contentsOf: file, encoding: .utf8)
         precondition(rawRestored == config, "Keep a differing warm UI and saved inherited default exactly as found")
+        for rawOriginal in [config, config + "service_tier = \"default\"\n"] {
+            let fast = DraftFixture(.init(model: baseline.model, effort: baseline.effort, speed: "Fast"), file: file)
+            let fastManager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in fast }, generation: { _ in generation })
+            try rawOriginal.write(to: file, atomically: true, encoding: .utf8)
+            let outcome = await fastManager.preservingSpeedDefaults(thread: exact, speed: .ultrafast, pid: 57,
+                executable: executable, environment: env) {
+                precondition(fast.selection.speed == "Ultrafast")
+                return .init(status: "confirmed", thread: exact, speed: .ultrafast, model: baseline.model)
+            }
+            precondition(outcome.succeeded && fast.selection.speed == "Fast" && fast.closed)
+            let restored = try String(contentsOf: file, encoding: .utf8)
+            precondition(restored == rawOriginal, "Restore native Fast/priority and then its exact inherited or explicit raw default")
+        }
+        // Missing/ambiguous model metadata is not permission to guess a tier ID.
+        for badCatalogue in [#"{"models":[]}"#,
+            #"{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1 Sol","service_tiers":[{"id":"priority","name":"Fast"},{"id":"other","name":"Fast"}]}]}"#] {
+            try badCatalogue.write(to: catalogue, atomically: true, encoding: .utf8)
+            try config.write(to: file, atomically: true, encoding: .utf8)
+            let unresolved = DraftFixture(baseline, file: file)
+            let unresolvedManager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in unresolved }, generation: { _ in generation })
+            let refused = await unresolvedManager.preservingSpeedDefaults(thread: exact, speed: .fast, pid: 57,
+                executable: executable, environment: env) { fatalError("Unknown tier metadata must prevent any target action") }
+            let unchanged = try String(contentsOf: file, encoding: .utf8)
+            precondition(!refused.succeeded && unchanged == config && unresolved.selection == baseline && unresolved.closed)
+            precondition(!FileManager.default.fileExists(atPath: receipt.path))
+        }
+        try observedTiers.write(to: catalogue)
         let locked = DraftFixture(baseline, file: file)
         let lockedManager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in locked }, generation: { _ in generation })
         try config.write(to: file, atomically: true, encoding: .utf8)

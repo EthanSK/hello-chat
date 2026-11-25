@@ -142,7 +142,7 @@ import Foundation
             try await transport.finishLaunchDefaults?(opening, nil)
             throw error
         }
-        try await transport.finishLaunchDefaults?(opening, opening.requestedNewCall ? opening.sentAt : nil)
+        if !opening.requestedNewCall { try await transport.finishLaunchDefaults?(opening, nil) }
         return result
     }
 
@@ -292,6 +292,10 @@ import Foundation
                     }
                     lastVoicePID = pid
                     opening.didRequestNewCall()
+                    // Release is now armed at the successful native dispatch, before
+                    // another AX read can delay confirmation. The existing session
+                    // observer/finite expiry owns cleanup, never a call-ending action. — GPT-6.1 Sol
+                    try await transport.finishLaunchDefaults?(opening, opening.sentAt)
                 }
                 catch { clearPendingOpening(ownedBy: opening.id); throw error }
                 diagnostics?.record("voice.shortcut.sent", numbers: ["ms_since_request": (Diagnostics.now - starting) * 1000],

@@ -42,6 +42,7 @@ import Darwin
             else { print("invalid"); exit(2) }
             let speed = CodexChatSpeed.Speed.allCases.first { $0.rawValue.lowercased() == arguments[2] }
             func emit(_ result: CodexChatSpeed.Result) -> Never {
+                Diagnostics.shared.flush()
                 print(String(decoding: try! JSONEncoder().encode(result), as: UTF8.self))
                 exit(result.succeeded ? 0 : 1)
             }

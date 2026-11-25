@@ -131,7 +131,7 @@ actor CodexVoiceSpeed {
         defer { if owner == nil { releaseDefaultsLease() } }
         try recover(executable: executable, environment: environment)
         if let runningPID {
-            try prepareDraft(id, pid: runningPID, executable: executable, environment: environment)
+            _ = try prepareDraft(id, pid: runningPID, executable: executable, environment: environment)
             return
         }
         let c = try client(executable, environment)
@@ -206,19 +206,32 @@ actor CodexVoiceSpeed {
         throw BridgeError.message("Codex hasn’t finished saving the picker change.")
     }
 
-    private func nativeModelID(_ name: String, configPath: String) -> String? {
-        // Desktop's display name may hide provider prefixes or replace hyphens with spaces.
-        struct Model: Decodable { let slug: String; let display_name: String }
-        struct Catalogue: Decodable { let models: [Model] }
+    private struct NativeModel: Decodable {
+        struct Tier: Decodable { let id: String; let name: String }
+        let slug: String
+        let display_name: String
+        let service_tiers: [Tier]?
+    }
+    // Extraction of existing nativeModelID catalogue lookup; speed selection now
+    // shares that model's published tier IDs instead of guessing from its label. — GPT-6.1 Sol
+    private func nativeModel(_ name: String, configPath: String) -> NativeModel? {
+        struct Catalogue: Decodable { let models: [NativeModel] }
         let url = URL(fileURLWithPath: configPath).deletingLastPathComponent().appendingPathComponent("models_cache.json")
         guard let data = try? Data(contentsOf: url),
               let models = try? JSONDecoder().decode(Catalogue.self, from: data).models else { return nil }
         func normalized(_ value: String) -> String { value.lowercased().filter { $0.isLetter || $0.isNumber } }
         let matches = models.filter { normalized($0.display_name) == normalized(name) }
-        return matches.count == 1 ? matches[0].slug : nil
+        return matches.count == 1 ? matches[0] : nil
     }
 
-    private func prepareDraft(_ id: UUID, pid: pid_t, executable: URL, environment: [String: String]?, speedOnly: CodexChatSpeed.Speed? = nil) throws {
+    private func nativeSpeedTier(_ speed: String, model: String, configPath: String) throws -> String {
+        if speed == "Standard" { return "default" }
+        let matches = nativeModel(model, configPath: configPath)?.service_tiers?.filter { $0.name == speed } ?? []
+        guard matches.count == 1, !matches[0].id.isEmpty else { throw CodexConfigClient.configurationFailure }
+        return matches[0].id
+    }
+
+    private func prepareDraft(_ id: UUID, pid: pid_t, executable: URL, environment: [String: String]?, speedOnly: CodexChatSpeed.Speed? = nil) throws -> DraftChoices {
         guard let launched = generation(pid) else { throw BridgeError.message("Codex closed while opening Voice.") }
         let picker = try openDraft(pid)
         draft = picker
@@ -232,15 +245,15 @@ actor CodexVoiceSpeed {
             } else { requestedChoices = .voice }
             // Keep this verified composer through Start even if it needed no edits.
             // Closing it here could return focus to an existing chat with different choices.
-            if previous == requestedChoices { owner = id; return }
+            if previous == requestedChoices { owner = id; return previous }
             let original = try readLayer(executable, environment)
             let requested = ["model": requestedChoices.model == previous.model
                 ? original.values["model"] as? String ?? Self.model : Self.model,
                 "model_reasoning_effort": Self.rawEffort(requestedChoices.effort),
-                "service_tier": requestedChoices.speed == "Standard" ? "default" : requestedChoices.speed.lowercased()]
+                "service_tier": try nativeSpeedTier(requestedChoices.speed, model: requestedChoices.model, configPath: original.file)]
             let edits = Self.order.map { Edit(key: $0, previous: original.values[$0] as? String, temporary: requested[$0]!) }
             var saved = Saved(file: original.file, edits: edits, native: Native(pid: pid, launched: launched, previous: previous, attempted: [], settled: []))
-            saved.native?.previousModelID = nativeModelID(previous.model, configPath: original.file)
+            saved.native?.previousModelID = nativeModel(previous.model, configPath: original.file)?.slug
             guard previous.model == requestedChoices.model || saved.native?.previousModelID != nil || original.values["model"] as? String != nil else {
                 throw BridgeError.message("Couldn’t read the previous Codex model. No settings changed.")
             }
@@ -278,6 +291,7 @@ actor CodexVoiceSpeed {
             saved.native?.pendingEfforts = nil
             try persist(saved)
             guard current == requestedChoices else { throw BridgeError.message("The Codex Voice launch choices changed.") }
+            return current
         } catch {
             do { try release(executable, environment) }
             catch { Diagnostics.shared.failure("voice.defaults.restore_failed", error) }
@@ -361,11 +375,12 @@ actor CodexVoiceSpeed {
             try select(edit.key, old, picker) { before, after in
                 pending.insert(Self.rawEffort(before)); pending.insert(Self.rawEffort(after))
             }
-            guard label(edit.key, try picker.choices()) == old else { throw BridgeError.message("Couldn’t restore the previous Codex choices.") }
+            let restored = try picker.choices()
+            guard label(edit.key, restored) == old else { throw BridgeError.message("Couldn’t restore the previous Codex choices.") }
             let nativeRaw: String?
             switch edit.key {
             case "model_reasoning_effort": nativeRaw = Self.rawEffort(old)
-            case "service_tier": nativeRaw = old == "Standard" ? "default" : old.lowercased()
+            case "service_tier": nativeRaw = try nativeSpeedTier(old, model: restored.model, configPath: saved.file)
             default: nativeRaw = native.previousModelID ?? edit.previous
             }
             pending.remove(nativeRaw)
@@ -430,14 +445,14 @@ actor CodexVoiceSpeed {
                         ? .init(status: "unchanged", thread: thread, speed: before.speed, model: before.model) : before
                 }
             }
-            try prepareDraft(id, pid: pid, executable: executable, environment: environment, speedOnly: speed)
+            let prepared = try prepareDraft(id, pid: pid, executable: executable, environment: environment, speedOnly: speed)
             if !FileManager.default.fileExists(atPath: receipt.path) {
                 // A warm picker may already show the target while the saved default differs.
                 // Preserve that raw inherited/explicit value around the target's write too.
                 let layer = try readLayer(executable, environment)
                 try persist(Saved(file: layer.file, edits: [.init(key: "service_tier",
                     previous: layer.values["service_tier"] as? String,
-                    temporary: speed == .standard ? "default" : speed.rawValue.lowercased())]))
+                    temporary: try nativeSpeedTier(speed.rawValue, model: prepared.model, configPath: layer.file))]))
             }
             let result = await apply()
             applied = result
@@ -527,7 +542,8 @@ actor CodexVoiceSpeed {
 // This short-lived client only reads and writes configuration. It never opens threads or calls.
 // Bound the exchange so an unresponsive Codex binary cannot leave H Chat stuck on Start.
 private final class CodexConfigClient {
-    let failure = BridgeError.message("Couldn’t update the Codex Voice launch settings.")
+    static let configurationFailure = BridgeError.message("Couldn’t update the Codex Voice launch settings.")
+    let failure = configurationFailure
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()

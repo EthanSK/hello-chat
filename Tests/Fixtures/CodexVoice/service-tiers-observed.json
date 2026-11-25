@@ -1,0 +1,11 @@
+{
+  "provider": "Codex desktop models_cache.json",
+  "observed_on": "2026-11-25",
+  "provenance": "M1 read-only Claude009 inventory: gpt-6.2-sol service_tiers and actual Fast persistence. The earlier supported Sol model shares these fixture tiers for isolated transaction coverage.",
+  "redactions": "Only model identity and tier label/id pairs retained; no user configuration or credentials.",
+  "models": [
+    {"slug": "gpt-6.2-sol", "display_name": "GPT-6.2 Sol", "service_tiers": [{"id": "priority", "name": "Fast"}, {"id": "ultrafast", "name": "Ultrafast"}]},
+    {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "service_tiers": [{"id": "priority", "name": "Fast"}, {"id": "ultrafast", "name": "Ultrafast"}]},
+    {"slug": "opus-5.5", "display_name": "Opus 5.5"}
+  ]
+}
