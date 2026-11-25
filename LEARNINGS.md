@@ -1,5 +1,10 @@
 # Hello Chat engineering notes
 
+## 25 November 2026 — App focus and visible window order are different
+
+- `orderFrontRegardless()` can put Home above an already-active target app without changing keyboard focus. A successful AppKit activation and a matching frontmost PID therefore do not prove the requested app is visibly above Home. After an explicit app switch, order only Home below the verified target's normal window and confirm the resulting WindowServer order. Keep placement, keyboard focus and notification panels unchanged. The opt-in isolated native window test reproduces and corrects this across processes, including a repeated request; WindowServer completion may arrive after the ordering call returns.
+- Ethan wants automatic app-name discovery for all installed apps, with editable spelling overrides. Use the existing app catalog, resolver and bundle-keyed spelling store for exact completion during ongoing narration. Demand-load that catalog at a real app prefix, share concurrent lookups with the editor/executor, and recheck unchanged input when it completes. A lookup still in progress must not consume the candidate as an unknown name. Keep ambiguity, mention/negation, bare-Open and command-reservation checks; no second recognizer or new quiet interval.
+
 ## 25 November 2026 — Preserve the installed backup's overnight wrapper
 
 The transcript-backup installer can encounter its own saved command behind an existing overnight gate. Parse and preserve that exact prefix, alongside the private Drive configuration and destination, when refreshing the inner backup script. Check both the outer job label and wrapper arguments before accepting ownership; a different job remains refused. This follows the existing saved-route preservation path and leaves the 05:45 calendar intact. The focused transcript-backup suite covers ordinary reinstall, guarded reinstall and wrong-job refusal; no live backup or app restart is needed for this installer-only change.

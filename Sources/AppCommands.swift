@@ -102,6 +102,7 @@ struct AppCommandDetector {
     }
 
     mutating func reset() { self = AppCommandDetector(usesEditableShortForms: usesEditableShortForms) }
+    mutating func recheckNames() { checkedRevision = -1 }
     mutating func audio(level: Double, seconds: Double, at time: Double? = nil) {
         if let time { directContext.audio(level: level, seconds: seconds, at: time) }
         else { directContext.audio(level: level, seconds: seconds, at: 0) }
@@ -167,7 +168,7 @@ struct AppCommandDetector {
     // `reserved` lists another command's own phrases (Show voice). Words that form one of them are
     // never an app request, whether or not that command itself was accepted, so "Show voice" can't
     // become "Show" followed by an app named Voice.
-    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern], reserved: [PhrasePattern] = [], reservedSwitchPrefixes: [PhrasePattern] = [], immediateSwitchNames: @autoclosure () -> [String] = [],
+    mutating func poll(switchPrefixes: [PhrasePattern], openPrefixes: [PhrasePattern], reserved: [PhrasePattern] = [], reservedSwitchPrefixes: [PhrasePattern] = [], immediateSwitchNames: @autoclosure () -> [String] = [], nameLookupPending: @autoclosure () -> Bool = false,
                        onDecision: ((AppCommandKind, String, Evidence) -> Void)? = nil) -> [AppCommandCandidate] {
         guard heardSpeech, checkedRevision != revision || waiting else { return [] }
         checkedRevision = revision; waiting = false
@@ -181,11 +182,11 @@ struct AppCommandDetector {
             if let range = audioRange(start: prefix.start, end: prefix.end, timings: alignedTimings) {
                 if consumedAudio.contains(where: { $0.overlaps(range) }) { continue }
             } else if index < consumedCount { continue }
-            // Ethan's four explicit Chrome switch forms must work during a playing podcast.
-            // Only an exact, caller-resolved running-app name can complete this directional
-            // Switch request without room silence. Open's whole-name policy stays unchanged.
+            // Ethan wants this for all apps automatically, with editable spelling overrides.
+            // An exact catalog name completes a listed app prefix without room silence. Bare
+            // Open and the direct-address/negation/mention guards keep their existing rules.
             // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
-            if prefix.kind == .switchApp {
+            if !prefix.bare {
                 var nameStart = prefix.end
                 if context[safe: nameStart] == "to" { nameStart += 1 }
                 if context[safe: nameStart] == "the" { nameStart += 1 }
@@ -197,8 +198,8 @@ struct AppCommandDetector {
                     let reserved = reservedRanges.contains { $0.overlaps(range) } || reservedSwitchRanges.contains { $0.overlaps(prefix.start..<prefix.end) }
                     if !reserved && directContext.permitsDirectCommand(in: range, allowEmbedded: true) {
                         consume(index: index, start: prefix.start, end: end)
-                        result.append(.init(kind: .switchApp, name: name.joined(separator: " "), bare: false, wordRange: range, alternateName: nil))
-                        onDecision?(.switchApp, "accepted_known_app_without_pause", Self.evidence(prefix: prefix.start, end: end, timings: alignedTimings))
+                        result.append(.init(kind: prefix.kind, name: name.joined(separator: " "), bare: false, wordRange: range, alternateName: nil))
+                        onDecision?(prefix.kind, "accepted_known_app_without_pause", Self.evidence(prefix: prefix.start, end: end, timings: alignedTimings))
                         continue
                     }
                 }
@@ -222,6 +223,10 @@ struct AppCommandDetector {
                 onDecision?(prefix.kind, "rejected_reserved", evidence)
                 continue
             }
+            // A real installed-app lookup may finish after the audio does. Keep its candidate
+            // eligible until that required work completes; do not consume it as an unknown name.
+            // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+            if nameLookupPending() { waiting = true; continue }
             if sentenceEnd < context.count, alignedTimings != nil, elapsed + 1e-9 < Self.finalizationSeconds {
                 consume(index: index, start: prefix.start, end: prefix.end)
                 onDecision?(prefix.kind, "rejected_no_audio_boundary", evidence)
