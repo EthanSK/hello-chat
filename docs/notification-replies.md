@@ -42,9 +42,16 @@ Operations, all scoped to one notification UUID:
 - `notificationReply.fallbackReady`: `eventID`, `instance`, `deliveredUptime`, `deliveredWall`,
   `skipReason`. This optional capability opens a visual-only opportunity for intended speech that
   definitively never started. The supported classifications are `agent-flow-speech-denied`: the
-  speaker's initial Agent Flow admission refused before any media coordination or audio child.
+  speaker's Agent Flow admission refused before any audio child launch. Initial denial happens
+  before media coordination; a final refresh can instead be refused after bridge setup.
+  That later route requires an explicit `refresh-before-child` stage, `audioChildLaunched:false`
+  and `audioAdmitted:false` in both skip and cleanup receipts, followed by balanced cleanup
+  classified as no-media, acknowledged or disconnected. It must finish media cleanup before
+  opening this first fallback opportunity; the same FIFO stays held until the app's decision.
+  Do not call an earlier bridge pause no-media. A parked/failed child or unknown cleanup cannot
+  fall back, even if no audio-start receipt exists. Ordinary audio holds media until its decision.
   This classification includes unavailable recording admission; it is not proof of actual capture. `audio-unavailable-before-start` is the other eligible refusal: neither provider rendered audio, with no interruption, lease, media pause or child admission.
-  A forced kill, unknown outcome, Voice refusal, later refresh refusal or started/failed audio is
+  A forced kill, unknown outcome, Voice refusal or started/failed audio is
   not eligible. The client must prove the exact native notification was delivered and bind its
   native ID/origin/turn/question to this event. No latest-notification lookup or banner resend.
   Both original delivery clocks must be finite, agree with the continuous app clock, and be no
