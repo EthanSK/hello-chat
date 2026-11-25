@@ -112,7 +112,7 @@ enum ModelBarVoiceSpeed {
         guard running.count == 1, let app = running.first, let bundleURL = app.bundleURL,
               let bundle = Bundle(url: bundleURL), bundle.bundleIdentifier == "com.ethansk.codex-model-bar",
               let version = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-              let build = Int(version), build >= 59,
+              let build = Int(version), build >= 60,
               let executable = bundle.executableURL, app.executableURL == executable,
               let data = try? JSONEncoder().encode(request), data.count <= 4096 else { return nil }
         let process = Process(), input = Pipe(), output = Pipe()
