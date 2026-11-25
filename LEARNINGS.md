@@ -1,5 +1,9 @@
 # Hello Chat engineering notes
 
+## 25 November 2026 — Preserve the installed backup's overnight wrapper
+
+The transcript-backup installer can encounter its own saved command behind an existing overnight gate. Parse and preserve that exact prefix, alongside the private Drive configuration and destination, when refreshing the inner backup script. Check both the outer job label and wrapper arguments before accepting ownership; a different job remains refused. This follows the existing saved-route preservation path and leaves the 05:45 calendar intact. The focused transcript-backup suite covers ordinary reinstall, guarded reinstall and wrong-job refusal; no live backup or app restart is needed for this installer-only change.
+
 ## 24 November 2026 — Show Home when a phrase is heard
 
 Ethan wants the existing H Chat window brought forward on phrase detection, with a saved default-on Settings toggle. Use the shared spoken-command reservation, including discarded busy commands, plus the already-consumed busy wake branch. Do not raise on every recognition frame, a repeat's execution, manual controls or notification-reply body text. Keep the normal command target: native `orderFrontRegardless()` raises Home without taking keyboard focus, unlike app activation, which can redirect Zoom into H Chat. `unhideWithoutActivation()` restores a hidden app; keep the existing window and its placement. Native offscreen checks verified visibility, retained-window reopening, unchanged frame and unchanged frontmost process. Physical microphone acceptance is separate.

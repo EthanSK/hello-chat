@@ -225,5 +225,31 @@ class TranscriptBackupTests(unittest.TestCase):
 
 
 
+    def test_reinstall_preserves_existing_overnight_guard_and_private_route(self):
+        spec = importlib.util.spec_from_file_location("installer", Path(__file__).with_name("install-transcript-backup.py"))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        root = Path(self.temporary.name)
+        private_config = root / 'private.conf'; private_config.write_text('[test]\n')
+        guard = ['/usr/bin/python3', '/shared/nightly-sync/scripts/overnight_command.py', '--job', installer.LABEL, '--']
+        original = installer.configuration(root, Path('/old/backup-transcripts.py'), private_config, 'test:archive')
+        original['ProgramArguments'] = guard + original['ProgramArguments']
+        target = root / 'Library/LaunchAgents' / (installer.LABEL + '.plist'); target.parent.mkdir(parents=True)
+        target.write_bytes(plistlib.dumps(original))
+        with patch.object(installer.Path, 'home', return_value=root), patch.object(sys, 'argv', ['installer', '--install']), patch.object(installer.subprocess, 'run'):
+            installer.main()
+        actual = plistlib.loads(target.read_bytes())
+        self.assertEqual(actual['ProgramArguments'][:5], guard)
+        self.assertEqual(actual['ProgramArguments'][-4:], ['--rclone-config', str(private_config), '--destination', 'test:archive'])
+        self.assertEqual(actual['StartCalendarInterval'], original['StartCalendarInterval'])
+        self.assertNotIn('RunAtLoad', actual)
+
+    def test_overnight_wrapper_for_a_different_job_is_refused(self):
+        spec = importlib.util.spec_from_file_location("installer", Path(__file__).with_name("install-transcript-backup.py"))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        target = Path(self.temporary.name) / 'job.plist'
+        target.write_bytes(plistlib.dumps({'Label': installer.LABEL, 'ProgramArguments': ['/usr/bin/python3', '/nightly/overnight_command.py', '--job', 'different-job', '--', '/usr/bin/python3', '/old/backup-transcripts.py']}))
+        with self.assertRaisesRegex(ValueError, 'unexpected arguments'):
+            installer.saved_route(target)
+
 if __name__ == "__main__":
     unittest.main()

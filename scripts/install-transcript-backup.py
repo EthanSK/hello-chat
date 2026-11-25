@@ -13,9 +13,16 @@ LABEL = "com.ethansk.hello-chat-transcript-backup"
 
 def saved_route(path):
     if not path.exists():
-        return None, None
+        return None, None, []
     settings = plistlib.loads(path.read_bytes())
     arguments = settings.get("ProgramArguments", [])
+    # Keep an existing overnight gate when refreshing the backup's saved route.
+    # Found and fixed by GPT-6.1 Sol.
+    guard = []
+    if len(arguments) >= 7 and Path(arguments[1]).name in ("overnight-command.py", "overnight_command.py"):
+        if arguments[2:5] != ["--job", LABEL, "--"]:
+            raise ValueError("Existing overnight gate has unexpected arguments")
+        guard, arguments = arguments[:5], arguments[5:]
     if settings.get("Label") != LABEL or len(arguments) < 2 or Path(arguments[1]).name != "backup-transcripts.py":
         raise ValueError("Existing backup job is not owned by this installer")
     parsed = argparse.ArgumentParser(add_help=False)
@@ -24,10 +31,10 @@ def saved_route(path):
     values, extra = parsed.parse_known_args(arguments[2:])
     if extra:
         raise ValueError("Existing backup job has custom arguments; refusing to replace them")
-    return values.rclone_config, values.destination
+    return values.rclone_config, values.destination, guard
 
 
-def configuration(home, script, rclone_config=None, destination=None):
+def configuration(home, script, rclone_config=None, destination=None, guard=None):
     arguments = ["/usr/bin/python3", str(script)]
     if rclone_config:
         arguments.extend(["--rclone-config", str(rclone_config)])
@@ -35,7 +42,7 @@ def configuration(home, script, rclone_config=None, destination=None):
         arguments.extend(["--destination", destination])
     return {
         "Label": LABEL,
-        "ProgramArguments": arguments,
+        "ProgramArguments": [*(guard or []), *arguments],
         "StartCalendarInterval": {"Hour": 5, "Minute": 45},  # Keep backups overnight at a fixed time, rather than drifting or starting again at login.
         "ProcessType": "Background",
         "Nice": 10,
@@ -58,12 +65,12 @@ def main():
     path = home / "Library/LaunchAgents" / (LABEL + ".plist")
     # An ordinary reinstall refreshes the script/schedule, not the private Drive
     # account or destination. Only explicitly supplied route options replace it.
-    saved_config, saved_destination = saved_route(path)
+    saved_config, saved_destination, guard = saved_route(path)
     rclone_config = args.rclone_config if args.rclone_config is not None else saved_config
     destination = args.destination if args.destination is not None else saved_destination
     if rclone_config and not rclone_config.is_file():
         parser.error("Dedicated rclone configuration does not exist")
-    contents = plistlib.dumps(configuration(home, script, rclone_config, destination))
+    contents = plistlib.dumps(configuration(home, script, rclone_config, destination, guard))
     if not args.install:
         sys.stdout.buffer.write(contents)
         return
