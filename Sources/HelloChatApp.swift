@@ -412,7 +412,7 @@ struct HelloChatApp: App {
         Window("Hello Chat · \(AppVersion.display)", id: "main") {
             MainView(model: model, zoom: zoom, updater: updater)
                 .modifier(HControlWindow(control: agentControl))
-                .background(InitialWindowPlacement(windowFound: model.phraseWindow.attach))
+                .background(InitialWindowPlacement(savedFrameName: "main", windowFound: model.phraseWindow.attach))
                 .onAppear {
                     delegate.model = model
                     model.initializeListening()
@@ -1989,8 +1989,10 @@ struct MenuView: View {
 // Initial placement only. Native resizing, window zoom and user placement are
 // left to macOS; scrolling handles content larger than the chosen window.
 struct InitialWindowPlacement: NSViewRepresentable {
+    var savedFrameName: String? = nil
     var windowFound: ((NSWindow) -> Void)? = nil
     final class Host: NSView {
+        var savedFrameName: String?
         var windowFound: ((NSWindow) -> Void)?
         private var placed = false
         override func viewDidMoveToWindow() {
@@ -1999,6 +2001,7 @@ struct InitialWindowPlacement: NSViewRepresentable {
             guard let window, !placed, let screen = WindowDisplay.preferredScreen else { return }
             placed = true
             DispatchQueue.main.async {
+                if let name = self.savedFrameName, window.setFrameUsingName(name) { return }
                 let bounds = screen.visibleFrame.insetBy(dx: screen.visibleFrame.width * 0.1, dy: screen.visibleFrame.height * 0.1)
                 let size = NSSize(width: min(window.frame.width, bounds.width), height: min(window.frame.height, bounds.height))
                 window.setFrame(NSRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height), display: true)
@@ -2007,10 +2010,12 @@ struct InitialWindowPlacement: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> Host {
         let host = Host()
+        host.savedFrameName = savedFrameName
         host.windowFound = windowFound
         return host
     }
     func updateNSView(_ nsView: Host, context: Context) {
+        nsView.savedFrameName = savedFrameName
         nsView.windowFound = windowFound
         if let window = nsView.window { windowFound?(window) }
     }
