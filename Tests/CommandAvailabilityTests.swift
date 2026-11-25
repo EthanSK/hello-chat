@@ -4,7 +4,7 @@ import Foundation
 @main enum CommandAvailabilityTests {
     static func main() {
         let commands = HomeCommand.all
-        precondition(commands.count == 19)
+        precondition(commands.count == 20)
         precondition(Set(commands.map(\.id)).count == commands.count)
         precondition(Set(commands.flatMap(\.slots)) == Set(PhraseSlot.allCases), "Every current phrase slot inherits a command switch")
         precondition(commands.last == .speakerOutput)
@@ -38,6 +38,6 @@ import Foundation
         saved.setEnabled(true, for: future); saved.save(to: defaults)
         precondition(defaults.object(forKey: CommandAvailability.preferenceKey) == nil)
         precondition(commands.allSatisfy(CommandAvailability.load(from: defaults).isEnabled))
-        print("Command availability: 19 groups, all phrase slots, directional choices and persistence passed")
+        print("Command availability: 20 groups, all phrase slots, directional choices and persistence passed")
     }
 }
