@@ -27,7 +27,7 @@ import Foundation
         }
         check((savedDefaults.dictionary(forKey: PhraseList.defaultsKey)?["futurePhrase"] as? [String]) == ["Keep me"], "Future-build preferences survive seeding")
         check(seeded[.mutePhrase] == ["Mute mic"] && seeded[.silentPhrase] == ["Mute speakers", "Silent speakers", "Silent speaker"], "New installs list both mute aliases")
-        check(PhraseAction.allCases.filter { $0.settingsTitle.hasSuffix(" (Codex Voice)") } == [.wake, .end, .muteMicrophone, .unmuteMicrophone, .silenceSpeakers, .unsilenceSpeakers], "Call start, end and audio controls carry the Codex Voice scope in the list and its editor")
+        check(PhraseAction.allCases.filter { $0.settingsTitle.hasSuffix(" (Codex Voice)") } == [.wake, .end, .muteMicrophone, .unmuteMicrophone, .silenceSpeakers, .unsilenceSpeakers, .setSpeed], "Call start, end, audio and speed controls carry the Codex Voice scope in the list and its editor")
         let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map {
             ($0, [$0.savedValue(in: savedDefaults)] + (seeded[$0] ?? []))
         }))
