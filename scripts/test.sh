@@ -2,7 +2,7 @@
 # Compile and run the local regression suites with injected transports, never live Voice calls.
 set -euo pipefail
 cd "${0:A:h:h}"
-speed_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/AppActivation.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Sources/CodexVoiceSpeed.swift Sources/CodexVoiceDraft.swift Tests/CodexChatSpeedTests.swift)
+speed_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/AppActivation.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Sources/ModelBarVoiceSpeed.swift Sources/CodexVoiceSpeed.swift Sources/CodexVoiceDraft.swift Tests/CodexChatSpeedTests.swift)
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplyCoreTests.swift -o "$build_dir/NotificationReplyCoreTests"
@@ -23,6 +23,8 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpokenC
 "$build_dir/SpokenCommandJournalTests"
 swiftc -swift-version 5 -parse-as-library $speed_sources -o "$build_dir/CodexChatSpeedTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/CodexChatSpeedTests"
+swiftc -swift-version 5 -parse-as-library ${speed_sources[1,-2]} Tests/ModelBarVoiceSpeedTests.swift -o "$build_dir/ModelBarVoiceSpeedTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+"$build_dir/ModelBarVoiceSpeedTests"
 dot_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/AppActivation.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/DotCallCommand.swift Tests/DotCallCommandTests.swift)
 swiftc -swift-version 5 -parse-as-library $dot_sources -o "$build_dir/DotCallCommandTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/DotCallCommandTests"
@@ -52,7 +54,7 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/CoreTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpeechPCM.swift Tests/SpeechPCMTests.swift -o "$build_dir/SpeechPCMTests" -framework AVFoundation
 "$build_dir/SpeechPCMTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/AppActivation.swift Sources/VoiceBridge.swift Sources/Diagnostics.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Sources/CodexVoiceDraft.swift Sources/CodexVoiceSpeed.swift Sources/NativeVoice.swift Tests/NativeVoiceTests.swift -o "$build_dir/NativeVoiceTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/AppActivation.swift Sources/VoiceBridge.swift Sources/Diagnostics.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Sources/CodexVoiceDraft.swift Sources/ModelBarVoiceSpeed.swift Sources/CodexVoiceSpeed.swift Sources/NativeVoice.swift Tests/NativeVoiceTests.swift -o "$build_dir/NativeVoiceTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 # Keep the real configuration protocol's diagnostics in the fixture's home.
 mkdir -p "$build_dir/native-test-home"
 CFFIXED_USER_HOME="${build_dir:A}/native-test-home" "$build_dir/NativeVoiceTests"

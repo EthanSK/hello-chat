@@ -137,14 +137,23 @@ import Foundation
         }, activate: { _ in fatalError("Global Start must not make Codex frontmost") },
         prepareNewVoiceSpeed: { pid, _ in precondition(pid == 123); mailboxEvents.append("speed") },
         finishLaunchDefaults: { _, sent in launchBoundaries.append(sent) }))
+        var afterLaunchCalls = 0
+        mailboxVoice.onNewCall = { context in
+            precondition(mailboxState.microphone == .listening && context.requestedPID == 123 && context.sentAt != nil,
+                         "Model Bar handoff is armed only after a native new-call confirmation")
+            afterLaunchCalls += 1
+        }
         _ = try await mailboxVoice.start(context: mailboxContext)
-        precondition(mailboxEvents == ["speed", "mailbox", VoiceBridge.startCommand] && mailboxContext.requestedNewCall)
+        precondition(mailboxEvents == ["speed", "mailbox", VoiceBridge.startCommand] && mailboxContext.requestedNewCall && afterLaunchCalls == 1)
         let reusedMailboxContext = VoiceStartContext()
         reusedMailboxContext.prepareNewCall = { fatalError("Reusing a live call must not replace startup speech") }
         _ = try await mailboxVoice.start(context: reusedMailboxContext)
-        precondition(!reusedMailboxContext.requestedNewCall && mailboxEvents == ["speed", "mailbox", VoiceBridge.startCommand])
+        precondition(!reusedMailboxContext.requestedNewCall && mailboxEvents == ["speed", "mailbox", VoiceBridge.startCommand] && afterLaunchCalls == 1,
+                     "Reusing the active call never repeats automatic speed selection")
 
         precondition(launchBoundaries.count == 2 && launchBoundaries[0] != nil && launchBoundaries[1] == nil)
+        _ = try await mailboxVoice.start(context: mailboxContext)
+        precondition(afterLaunchCalls == 1, "Even an accidentally reused opening context cannot repeat its Model Bar handoff")
         // Native confirmation can suspend after a successful shortcut. Cleanup must
         // already be handed to the defaults owner, independently of that UI read. — GPT-6.1 Sol
         var dispatched = false, cleanupArmed = false

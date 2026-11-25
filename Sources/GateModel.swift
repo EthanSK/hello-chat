@@ -442,6 +442,9 @@ import SwiftUI
         }
     }
     private var showVoiceTask: Task<Void, Never>?
+    private var modelBarLaunch = ModelBarVoiceLaunch()
+    private var modelBarLaunchTask: Task<Void, Never>?
+    private var modelBarLaunchExpiry: Task<Void, Never>?
     private var speakerOutputDetector = StandaloneWake(speakerRoute: true)
     private var speakerQueue = SpeakerOutputQueue()
     private var speakerOutputTask: Task<Void, Never>?
@@ -891,11 +894,27 @@ import SwiftUI
         appCommandDetector.usesEditableShortForms = UserDefaults.standard.bool(forKey: PhraseList.editableShortFormsKey)
         updatePhrases()
         if enableSpotifyControl {
+            voice.onNewCall = { [weak self] context in
+                guard let self, !self.quitting, let pid = context.requestedPID, let sent = context.sentAt,
+                      UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true else { return }
+                self.modelBarLaunch.arm(sent: sent, pid: pid)
+                self.modelBarLaunchExpiry?.cancel()
+                self.modelBarLaunchExpiry = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                    guard let self, !self.quitting, self.modelBarLaunch.pending?.sent == sent else { return }
+                    self.modelBarLaunch.cancel()
+                    self.lastEvent = CodexChatSpeed.Result(status: "unconfirmed", thread: nil, speed: nil, model: nil).message
+                    Diagnostics.shared.record("voice.model_bar.after_launch", info: ["outcome": "identity-unconfirmed"])
+                }
+                self.lastEvent = CodexChatSpeed.Result(status: "unconfirmed", thread: nil, speed: nil, model: nil).message
+                self.applyPendingModelBarSpeed()
+            }
             Task { await CodexVoiceSpeed.shared.recoverOnLaunch() }
-            voiceCalls.onSessionStarted = { date in
+            voiceCalls.onSessionStarted = { [weak self] date in
                 Task {
                     do { try await CodexVoiceSpeed.shared.observedSessionStart(date, executable: CodexVoiceSpeed.executable()) }
                     catch { Diagnostics.shared.failure("voice.defaults.restore_failed", error) }
+                    self?.applyPendingModelBarSpeed()
                 }
             }
             voiceCalls.onChange = { [weak self] state in
@@ -910,6 +929,7 @@ import SwiftUI
                 self.voicePeerPriority.observe(state)
                 self.voiceStatusRefresh.observe(state.presence, at: state.observedAt)
                 self.scheduleObservedVoiceEnd()
+                self.applyPendingModelBarSpeed()
                 if self.endFeedback.observe(state.presence, callIdentifier: state.callIdentifier) {
                     self.feedback.play(PhraseSlot.sleepPhrase.cue)
                 }
@@ -1714,12 +1734,44 @@ import SwiftUI
             finishCommand(receipt, .confirmed)
             microphone = openedMicrophone == nil ? nil : .listening; voiceText = "Chat is on"; status = "Chat on"
             detail = openedMicrophone == nil ? "Chat is open. Check the microphone in Codex." : "Say \(spokenEndPhrase) to end chat."; lastEvent = trigger
+            if modelBarLaunch.pending != nil {
+                lastEvent = CodexChatSpeed.Result(status: "unconfirmed", thread: nil, speed: nil, model: nil).message
+            }
         } catch {
             Diagnostics.shared.failure("voice.open.failed", error)
             await voice.recoverFromStartFailure(error, context: context)
             guard generation == token, enabled || !requiresListening else { return }
             showListening()
             if !(error is CancellationError) { self.error = error.localizedDescription }
+        }
+    }
+    // Ethan's AFTER-launch Ultrafast handoff is separate from starting Voice. Reuse the
+    // existing identity observer, never infer the target from whichever chat is in front.
+    // The previous shortcut-only launch omitted this step. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+    private func applyPendingModelBarSpeed() {
+        guard !quitting, modelBarLaunch.pending != nil, modelBarLaunchTask == nil else { return }
+        modelBarLaunchTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.modelBarLaunchTask = nil }
+            let state = await Task.detached { VoicePeerControl.localStatus() }.value
+            guard !Task.isCancelled, !self.quitting, let started = state.startedAtMilliseconds,
+                  let call = self.modelBarLaunch.take(state, at: Date()) else { return }
+            self.modelBarLaunchExpiry?.cancel(); self.modelBarLaunchExpiry = nil
+            // Finish the launch's existing defaults receipt before acquiring the speed lease.
+            // This recovery changes no call state and cannot send a shortcut. — GPT-6.1 Sol
+            do { try await CodexVoiceSpeed.shared.observedSessionStart(Date(timeIntervalSince1970: Double(started) / 1000),
+                                                                       executable: CodexVoiceSpeed.executable(pid: call.pid)) }
+            catch {
+                self.lastEvent = CodexChatSpeed.Result(status: "defaultsUnconfirmed", thread: call.thread, speed: nil, model: nil).message
+                Diagnostics.shared.failure("voice.model_bar.defaults_restore_failed", error)
+                return
+            }
+            guard !Task.isCancelled, !self.quitting else { return }
+            let result = await ModelBarVoiceSpeed.perform(call: call)
+            guard !Task.isCancelled, !self.quitting else { return }
+            self.lastEvent = result.message
+            Diagnostics.shared.record("voice.model_bar.after_launch", info: ["outcome": result.status,
+                "selected": result.speed?.rawValue ?? "unverified", "effective_first_turn": "unverified"])
         }
     }
     private func muteVoice(event: String, feedbackAlreadyPlayed: Bool = false, reserved: Bool = false, force: Bool = false, receipt: UUID? = nil) async {
@@ -2070,6 +2122,8 @@ import SwiftUI
         quitting = true
         await notificationReplies.shutdown()
         showVoiceTask?.cancel()
+        let pendingModelBar = modelBarLaunchTask
+        modelBarLaunch.cancel(); pendingModelBar?.cancel(); modelBarLaunchExpiry?.cancel()
         let pendingDot = Array(dotTasks.values)
         pendingDot.forEach { $0.cancel() }
         voiceStatusTask?.cancel(); voiceStatusTask = nil
@@ -2081,6 +2135,7 @@ import SwiftUI
         stopLocal()
         await voicePeerPriority.shutdown()
         await previous?.value
+        await pendingModelBar?.value
         for operation in pendingDot { _ = await operation.value }
         do { try await CodexVoiceSpeed.shared.shutdown() }
         catch { Diagnostics.shared.failure("voice.defaults.restore_failed", error) }

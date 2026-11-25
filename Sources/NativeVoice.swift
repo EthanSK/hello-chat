@@ -15,6 +15,8 @@ import Foundation
     var sentAt: Date?
     var defaultsExecutable: URL?
     private(set) var requestedNewCall = false
+    private(set) var requestedPID: Int32?
+    private var handedToModelBar = false
     init(remoteOwner: (request: UUID, generation: UUID)? = nil) { self.remoteOwner = remoteOwner }
     func matches(request: UUID, generation: UUID) -> Bool {
         remoteOwner?.request == request && remoteOwner?.generation == generation
@@ -24,7 +26,12 @@ import Foundation
         preserveCallOnCancellation = true
         remoteCancelled = true
     }
-    func didRequestNewCall() { requestedNewCall = true }
+    func didRequestNewCall(pid: Int32? = nil) { requestedNewCall = true; requestedPID = pid }
+    func takeNewCallHandoff() -> Bool {
+        guard requestedNewCall, !handedToModelBar, requestedPID != nil, sentAt != nil else { return false }
+        handedToModelBar = true
+        return true
+    }
 }
 
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
@@ -120,6 +127,7 @@ import Foundation
     private let endConfirmationTimeout: TimeInterval
     private(set) var connected = false
     private(set) var lastError: String?
+    var onNewCall: ((VoiceStartContext) -> Void)?
     private var pendingUntil: Date?
     private var pendingOpeningID: UUID?
     private var lastVoicePID: Int32?
@@ -143,6 +151,7 @@ import Foundation
             throw error
         }
         if !opening.requestedNewCall { try await transport.finishLaunchDefaults?(opening, nil) }
+        else if opening.takeNewCallHandoff() { onNewCall?(opening) }
         return result
     }
 
@@ -291,7 +300,7 @@ import Foundation
                         try await transport.send(VoiceBridge.startCommand, pid)
                     }
                     lastVoicePID = pid
-                    opening.didRequestNewCall()
+                    opening.didRequestNewCall(pid: pid)
                     // Release is now armed at the successful native dispatch, before
                     // another AX read can delay confirmation. The existing session
                     // observer/finite expiry owns cleanup, never a call-ending action. — GPT-6.1 Sol
