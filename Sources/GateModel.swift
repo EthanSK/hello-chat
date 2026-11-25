@@ -894,7 +894,7 @@ import SwiftUI
         appCommandDetector.usesEditableShortForms = UserDefaults.standard.bool(forKey: PhraseList.editableShortFormsKey)
         updatePhrases()
         if enableSpotifyControl {
-            voice.onNewCall = { [weak self] context in
+            self.voice.onNewCall = { [weak self] context in
                 guard let self, !self.quitting, let pid = context.requestedPID, let sent = context.sentAt,
                       UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true else { return }
                 self.modelBarLaunch.arm(sent: sent, pid: pid)
