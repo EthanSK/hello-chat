@@ -167,7 +167,7 @@ import CoreGraphics
             var none = PhraseMatcher()
             check(none.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "Keep two recognizable command parts: \(phrase)")
         }
-        // Ethan explicitly restored this exact dictionary spelling on 25 November.
+        // Ethan explicitly restored this exact dictionary spelling on 25 November. — GPT-6.1 Sol
         var cat = PhraseMatcher()
         check(cat.consume("Hello cat", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake,
               "The requested hello cat spelling wakes with alternate spellings enabled")
