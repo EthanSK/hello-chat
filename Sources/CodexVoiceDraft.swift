@@ -33,15 +33,14 @@ struct DraftChoices: Codable, Equatable {
     // Some models (e.g. Opus 5.5 in Codex) show no speed control at all. This label never matches a
     // selectable speed, so a launch from such a model switches the model first and then reads the real speed.
     static let speedUnavailable = "Unavailable"
-    // The open picker owns the current selection; a closed pill can lag behind it.
+    // Read the open Select model row, not the power slider's marketing label:
+    // Codex says "Standard, 2 of 6" there while its real reasoning is Medium.
+    // A closed pill can also lag, so both values must come from this live row.
     // Found by Claude Opus 5.5. Fixed by GPT-6.1 Sol. — GPT-6.1 Sol
-    static func readoutSelection(_ text: String) -> (model: String, effort: String, index: Int, count: Int)? {
-        let text = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-        guard let suffix = text.range(of: #", \d+ of \d+\.$"#, options: .regularExpression),
-              let pair = modelAndEffort(String(text[..<suffix.lowerBound])) else { return nil }
-        let numbers = text[suffix].split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
-        guard numbers.count == 2, numbers[0] > 0, numbers[0] <= numbers[1], numbers[1] <= 16 else { return nil }
-        return (pair.0, pair.1, numbers[0], numbers[1])
+    static func modelMenuSelection(_ texts: [String]) -> (model: String, effort: String)? {
+        let texts = texts.map { $0.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ") }
+        guard texts.count == 2, !texts[0].isEmpty, efforts.contains(texts[1]) else { return nil }
+        return (texts[0], texts[1])
     }
 }
 
@@ -196,6 +195,19 @@ final class CodexVoiceDraft: VoiceDraftPicker {
             self.named(kAXGroupRole, "Select effort") == nil && self.named(kAXPopUpButtonRole, "Select effort") == nil ? true : nil
         }
     }
+    private func modelMenuSelection(in group: AXUIElement) -> (model: String, effort: String)? {
+        guard let row = find(kAXMenuItemRole, from: group, matching: { Self.label($0) == "Select model" }) else { return nil }
+        var stack = Array(Self.children(row).reversed()), texts: [String] = [], visited = 0
+        while let element = stack.popLast() {
+            visited += 1
+            guard visited <= 32 else { return nil }
+            if Self.string(kAXRoleAttribute, element) == kAXStaticTextRole {
+                let value = Self.string(kAXValueAttribute, element)
+                if !value.isEmpty { texts.append(value) }
+            } else { stack.append(contentsOf: Self.children(element).reversed()) }
+        }
+        return DraftChoices.modelMenuSelection(texts)
+    }
     func choices() throws -> DraftChoices {
         try owned()
         _ = try menu()
@@ -204,9 +216,7 @@ final class CodexVoiceDraft: VoiceDraftPicker {
             // Model changes replace this group. Re-find it on every read instead of
             // polling an obsolete AX element. Found by Claude Opus 5.5. Fixed by GPT-6.1 Sol.
             guard let group = self.named(kAXGroupRole, "Select effort"),
-                  let readout = self.find(kAXStaticTextRole, from: group, matching: {
-                      DraftChoices.readoutSelection(Self.string(kAXValueAttribute, $0)) != nil
-                  }), let pair = DraftChoices.readoutSelection(Self.string(kAXValueAttribute, readout)) else { return nil }
+                  let pair = self.modelMenuSelection(in: group) else { return nil }
             let speed: String
             if let item = self.find(kAXMenuItemRole, from: group, matching: { DraftChoices.speed(Self.label($0)) != nil }) {
                 guard let value = DraftChoices.speed(Self.label(item)) else { return nil }
@@ -260,9 +270,7 @@ final class CodexVoiceDraft: VoiceDraftPicker {
             _ = try Self.wait("Codex didn’t confirm the reasoning change.") { () -> String? in
                 try self.owned()
                 guard let group = self.named(kAXGroupRole, "Select effort"),
-                      let readout = self.find(kAXStaticTextRole, from: group, matching: {
-                          DraftChoices.readoutSelection(Self.string(kAXValueAttribute, $0)) != nil
-                      }), let pair = DraftChoices.readoutSelection(Self.string(kAXValueAttribute, readout)),
+                      let pair = self.modelMenuSelection(in: group),
                       pair.model == before.model, pair.effort != before.effort else { return nil }
                 return pair.effort
             }
