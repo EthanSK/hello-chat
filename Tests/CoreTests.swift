@@ -161,12 +161,19 @@ import CoreGraphics
                        "how are you", "buy a chart", "by chance", "bye chance", "UI settings", "just chat",
                        // Ethan's 1 Nov cleanup: "Hey Chat" is his name for the app, and
                        // non-ch names made ordinary speech match (orange "UI shit").
-                       "Hey Chat", "hey chat", "HeyChat", "hay chat", "Hello cat", "Hello hat", "Hello that",
+                       "Hey Chat", "hey chat", "HeyChat", "hay chat", "Hello hat", "Hello that",
                        "Hello shat", "Hello shut", "Hellow shot", "UI shit", "some UI shit sends a key",
                        "why is UI shit coming up", "bye what", "by what", "hi what", "Bye shad", "bye hat", "buy cats"] {
             var none = PhraseMatcher()
             check(none.consume(phrase, wake: "Hello Chat", sleep: "Bye Chat", similar: true) == nil, "Keep two recognizable command parts: \(phrase)")
         }
+        // Ethan explicitly restored this exact dictionary spelling on 25 November.
+        var cat = PhraseMatcher()
+        check(cat.consume("Hello cat", wake: "Hello Chat", sleep: "Bye Chat", similar: true) == .wake,
+              "The requested hello cat spelling wakes with alternate spellings enabled")
+        var exactOnly = PhraseMatcher()
+        check(exactOnly.consume("Hello cat", wake: "Hello Chat", sleep: "Bye Chat", similar: false) == nil,
+              "Turning alternate spellings off still requires the configured wake phrase")
         check(PhraseMatcher.equivalent("high at", to: "High At", similar: false),
               "Ordinary-word exclusions must not override an exact custom wake phrase")
         var nested = PhraseMatcher()
