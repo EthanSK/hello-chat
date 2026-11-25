@@ -8,10 +8,14 @@ import Foundation
     struct Operation {
         let kind: String
         let fields: Fields
+        let optionalFields: Fields
         let run: (HControlRequest) async throws -> HControlOutcome
+        init(kind: String, fields: Fields, optionalFields: Fields = [:], run: @escaping (HControlRequest) async throws -> HControlOutcome) {
+            self.kind = kind; self.fields = fields; self.optionalFields = optionalFields; self.run = run
+        }
         var schema: [String: Any] {
             ["kind": kind, "arguments": ["type": "object", "additionalProperties": false,
-                "required": fields.keys.sorted(), "properties": fields.mapValues(\.schema)] as [String: Any]]
+                "required": fields.keys.sorted(), "properties": fields.merging(optionalFields) { first, _ in first }.mapValues(\.schema)] as [String: Any]]
         }
     }
     let model: GateModel
@@ -39,9 +43,13 @@ import Foundation
 
     func handle(_ request: HControlRequest) async throws -> HControlOutcome {
         guard let operation = operations[request.operation] else { throw HControlFailure.unavailable("Unknown operation. Read capabilities on this Mac.") }
-        guard Set(operation.fields.keys) == Set(request.arguments.keys) else { throw HControlFailure.invalid("The supplied fields do not match the operation schema.") }
-        for (key, field) in operation.fields {
-            guard let value = request.arguments[key], field.accepts(value) else { throw HControlFailure.invalid("Invalid value for " + key + ".") }
+        let supplied = Set(request.arguments.keys), required = Set(operation.fields.keys)
+        guard required.isSubset(of: supplied), supplied.isSubset(of: required.union(operation.optionalFields.keys)) else {
+            throw HControlFailure.invalid("The supplied fields do not match the operation schema.")
+        }
+        for (key, field) in operation.fields.merging(operation.optionalFields, uniquingKeysWith: { first, _ in first }) {
+            guard let value = request.arguments[key] else { continue }
+            guard field.accepts(value) else { throw HControlFailure.invalid("Invalid value for " + key + ".") }
         }
         try request.checkExpiry()
         if model.quitting && operation.kind != "read" { throw HControlFailure.unavailable("H Chat is closing.") }

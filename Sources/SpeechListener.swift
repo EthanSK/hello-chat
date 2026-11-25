@@ -44,7 +44,6 @@ import CoreAudio
     private var replyFinalize: ((Double) async throws -> Void)?
     private var replyFinalizeTask: Task<Void, Never>?
     private var replyFinalizeRequested: Double?
-    private var replyFinalizeIsEnd = false
     private var replyEndFinalize: ((Double) async throws -> SpeechUpdate?)?
     private var replyUsesAnalyzer = false
     private var replyFinalizedThrough = -Double.infinity
@@ -52,16 +51,18 @@ import CoreAudio
         let mark = captureCursor.boundary()
         contextBoundary.invalidate(at: mark.capturedAt, nextSequence: mark.sequence)
     }
-    func finalizeReplyRecognition(through hostTime: Double, ending: Bool = false) {
+    func finalizeReplyRecognition(through hostTime: Double) {
         guard hostTime.isFinite, hostTime > replyFinalizedThrough else { return }
         replyFinalizeRequested = max(replyFinalizeRequested ?? -.infinity, hostTime)
-        replyFinalizeIsEnd = ending
         flushReplyFinalization()
     }
     private func flushReplyFinalization() {
-        // Neural End is finalized serially below, between actual input frames.
+        // Both notification controls use the selected neural SDK's real final result.
+        // Initial Reply previously reached its no-op generic finalizer.
+        // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+        // Neural commands are finalized serially below, between actual input frames.
         // Keep Apple's already-working analyzer callback path asynchronous.
-        guard !replyFinalizeIsEnd || replyUsesAnalyzer else { return }
+        guard replyUsesAnalyzer else { return }
         guard replyFinalizeTask == nil, let requested = replyFinalizeRequested,
               let modelTime = replySpeech.modelTime(for: requested), let finalize = replyFinalize else { return }
         let token = session, batch = replySpeech.batch
@@ -82,7 +83,7 @@ import CoreAudio
     }
     private func recognitionBoundary() {
         replyFinalizeTask?.cancel(); replyFinalizeTask = nil; replyFinalizeRequested = nil
-        replyFinalizedThrough = -.infinity; replyFinalizeIsEnd = false; replySpeech.boundary()
+        replyFinalizedThrough = -.infinity; replySpeech.boundary()
         onSession?()
     }
     private struct Frame {
@@ -99,12 +100,12 @@ import CoreAudio
             throw BridgeError.message("Allow Microphone for Hello Chat in System Settings.")
         }
     }
-    func start(recording: URL? = nil, channels: Int = 20, recoverBeforeAudio: Bool = false) async throws {
+    func start(recording: URL? = nil, channels: Int = 20, recoverBeforeAudio: Bool = false, recordedModelDirectory: URL? = nil) async throws {
         let retryDelays: [Double] = [0.5, 1, 2]
         for attempt in 0...retryDelays.count {
             do {
                 try Task.checkCancellation()
-                try await startOnce(recording: recording, channels: channels, recoverBeforeAudio: recoverBeforeAudio)
+                try await startOnce(recording: recording, channels: channels, recoverBeforeAudio: recoverBeforeAudio, recordedModelDirectory: recordedModelDirectory)
                 return
             } catch {
                 let failure = error as NSError
@@ -119,7 +120,7 @@ import CoreAudio
             }
         }
     }
-    private func startOnce(recording: URL?, channels: Int, recoverBeforeAudio: Bool) async throws {
+    private func startOnce(recording: URL?, channels: Int, recoverBeforeAudio: Bool, recordedModelDirectory: URL?) async throws {
         let selectedModel = model
         stop()
         let token = UUID(); session = token
@@ -128,7 +129,9 @@ import CoreAudio
         let captureCursor = SpeechCaptureCursor()
         self.captureCursor = captureCursor
         contextBoundary = SpeechContextBoundary()
-        guard let directory = selectedModel.directory else { throw BridgeError.message("Local speech model is missing. Reinstall Hello Chat.") }
+        // Recorded checks may use the same checksum-qualified installed models without
+        // copying them into the test host. Live capture always uses the bundle's model.
+        guard let directory = recording != nil ? recordedModelDirectory ?? selectedModel.directory : selectedModel.directory else { throw BridgeError.message("Local speech model is missing. Reinstall Hello Chat.") }
         let worker: any SpeechBackend
         if selectedModel == .appleLocal {
             if #available(macOS 26.0, *) { worker = AppleLocalSpeech(phrases: contextualPhrases) }
@@ -223,7 +226,7 @@ import CoreAudio
         }
         resultAudioSeconds = 0; resultWasFlushed = false; recordingError = nil
         replyFinalize = { try await worker.finalizeRecognition(through: $0) }
-        replyEndFinalize = { try await worker.finalizeNotificationEnd(through: $0) }
+        replyEndFinalize = { try await worker.finalizeNotificationCommand(through: $0) }
         replyUsesAnalyzer = selectedModel == .appleLocal
         diagnostics?.record("speech.capture.started", numbers: ["sample_rate": format.sampleRate, "channels": Double(format.channelCount)])
         if let capture { diagnostics?.record("speech.capture.route", numbers: ["current_device": Double(capture.currentDevice ?? 0)], info: ["engine_running": String(capture.isRunning)]) }
@@ -282,7 +285,7 @@ import CoreAudio
                         if let through = self.replySpeech.hostTime(forDecodedTime: result.audioTime) { self.onReplyProgress?(through) }
                         if let recognition { self.onReplyRecognition?(recognition) }
                         self.flushReplyFinalization()
-                        if self.replyFinalizeIsEnd, selectedModel != .appleLocal,
+                        if selectedModel != .appleLocal,
                            let requested = self.replyFinalizeRequested,
                            let modelTime = self.replySpeech.modelTime(for: requested),
                            let finalize = self.replyEndFinalize {

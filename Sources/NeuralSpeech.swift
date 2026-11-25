@@ -20,7 +20,7 @@ actor NeuralSpeech: SpeechBackend {
     private var completedUtterance = false
     private var utteranceHasText = false
     private var fedSamples = 0
-    private var resetAfterNotificationEnd = false
+    private var resetAfterNotificationCommand = false
 
     init(model: SpeechModel = .defaultModel) {
         self.model = model
@@ -69,7 +69,7 @@ actor NeuralSpeech: SpeechBackend {
         var reset = false
         // The provider's finish pads/clears its token stream. Reset before the
         // next real frame so that padding cannot shift later word clocks. — GPT-6.1 Sol
-        if resetAfterNotificationEnd { try await resetForDiscontinuity(); reset = true }
+        if resetAfterNotificationCommand { try await resetForDiscontinuity(); reset = true }
         let duration = Double(mono.frameLength) / mono.format.sampleRate
         let quiet = SpeechPCM.level(mono) < 0.02
         recentAudio.append(mono); recentSeconds += duration
@@ -136,14 +136,15 @@ actor NeuralSpeech: SpeechBackend {
         if let manager { return try await manager.finish() }
         return try await nemotron!.finish()
     }
-    // Ethan's explicit "End reply" must not depend on a whole-room quiet gap.
+    // Notification command finalization (formerly finalizeNotificationEnd) now also confirms initial Reply.
+    // Neither explicit control depends on a whole-room quiet gap.
     // Called only between consumes on the existing processing loop. Final words
     // come from the selected SDK's real final decode, never a fabricated EOU.
-    func finalizeNotificationEnd(through time: Double) async throws -> SpeechUpdate? {
+    func finalizeNotificationCommand(through time: Double) async throws -> SpeechUpdate? {
         guard time.isFinite, time >= 0, time <= Double(fedSamples) / 16000 else { return nil }
         let inputTime = Double(fedSamples) / 16000
         let decodedTime = await currentAudioTime()
-        resetAfterNotificationEnd = true
+        resetAfterNotificationCommand = true
         let text: String
         let timings: [(word: String, start: Double, end: Double)]
         if let nemotron {
@@ -170,7 +171,7 @@ actor NeuralSpeech: SpeechBackend {
         if let nemotron { await nemotron.reset() }
         resampler.reset()
         fedSamples = 0
-        resetAfterNotificationEnd = false
+        resetAfterNotificationCommand = false
         if let manager { await manager.setUtteranceEndDebounce(milliseconds: .max) }
         try await prime()
         rollover = SpeechRollover(); previousText = ""
@@ -179,7 +180,7 @@ actor NeuralSpeech: SpeechBackend {
     func close() async {
         resampler.reset()
         fedSamples = 0
-        resetAfterNotificationEnd = false
+        resetAfterNotificationCommand = false
         if let manager { await manager.cleanup() }
         if let nemotron { await nemotron.cleanup() }
         recentAudio.removeAll(); recentSeconds = 0; previousText = ""

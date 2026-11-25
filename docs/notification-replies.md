@@ -25,9 +25,28 @@ During preparing, each valid status call renews a ten-second liveness lease, wit
 180-second setup bound. This permits the existing speaker's bounded rendering/bridge startup
 without moving the spoken opportunity: that still begins at the actual successful audio exit.
 
+New clients opt into `manualFinish:true` only when their calling queue and all existing watchdogs
+support the app-owned composing lease. Missing/false retains the legacy bounded reply policy.
+The app echoes `manualFinish`, `ownerLeaseSeconds:10` and `ownerLeaseExpiresUptime` (null outside
+manual composition). A genuine timely initial Reply remains visibly confirming through its real
+native final decode. Once accepted, ordinary pauses and the legacy idle/total values do not end
+manual capture: End reply sends; Cancel reply discards. These controls use the same selected
+recognizer, native timed-prefix confirmation and shared spelling editor. The original exact
+notification reference remains in every displayed phase, with End/Cancel hints after Reply starts.
+
+The existing instance-bound status requests renew one app lease, never beyond current uptime+10.
+The app checks expiry BEFORE renewal; a late call or cached receipt cannot revive an attempt.
+The client relays only confirmed exact-event/instance status into its private owner-lease file.
+Native hold, metadata watch, visual join and speaker parent consume that same expiry, replacing
+the old fixed deadline only after manual composing is observed. Missing owner renewal, genuine
+recognition loss, Voice priority, disabled listening, stale origin or dismissal still cancels.
+No new listener/poller is introduced. End/Cancel/guard decisions stop renewal and get one finite
+seven-second cleanup allowance from that first decision, followed by actual FIFO finalization.
+Legacy/no-feature deadlines and the finite five-second initial opportunity stay unchanged.
+
 Operations, all scoped to one notification UUID:
 
-- `notificationReply.prepare`: `eventID`, `threadID`, `turnID`, `questionID`, `spokenText`.
+- `notificationReply.prepare`: `eventID`, `threadID`, `turnID`, `questionID`, `spokenText`, optional Boolean `manualFinish`.
   IDs are strings; optional turn/question IDs use an empty string. The thread UUID is mandatory.
   H Chat captures the exact origin's new-user-message boundary and validates an open question.
   It returns its authoritative settings, maximum post-audio hold, current disposition, app-instance

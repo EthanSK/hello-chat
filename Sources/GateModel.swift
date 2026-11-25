@@ -521,7 +521,7 @@ import SwiftUI
     @Published var phraseDictionaries = UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]] ?? [:] {
         didSet {
             UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); updatePhrases()
-            let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey]
+            let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey, NotificationReplyCore.Commands.cancelReplySpellingKey]
             if keys.contains(where: { oldValue[$0] != phraseDictionaries[$0] }) { notificationReplies.interrupted("settings-changed") }
         }
     }
@@ -841,6 +841,7 @@ import SwiftUI
             guard let self else { return .init() }
             return .init(replySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.replySpellingKey],
                          endReplySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey],
+                         cancelReplySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.cancelReplySpellingKey],
                          alternateSpellings: self.similarPhrases)
         }
         notificationReplies.resetRecognition = { [weak self] in
@@ -848,7 +849,7 @@ import SwiftUI
             self.repetitions.cancelPending(); self.endPhrase.reset(); self.standaloneWake.reset(); self.resetAudioPhrases()
             self.listener.discardPendingRecognition()
         }
-        notificationReplies.finalizeRecognition = { [weak self] time, ending in self?.listener.finalizeReplyRecognition(through: time, ending: ending) }
+        notificationReplies.finalizeRecognition = { [weak self] time in self?.listener.finalizeReplyRecognition(through: time) }
         notificationReplies.showPresentation = { [weak self] in self?.notificationHUD.show($0) }
         notificationHUD.onDismiss = { [weak self] in self?.notificationReplies.dismiss(event: $0) }
         notificationReplies.acceptedReply = { [weak self] in self?.feedback.play(.notificationReplyAccepted) }
@@ -1262,7 +1263,7 @@ import SwiftUI
         rebuildSpeakerCommands()
         if cancelPendingApps { cancelAppCommands() }
         listener.contextualPhrases = PhraseSlot.allCases.flatMap { patterns(for: $0).map(\.text) } + activeSpeakerCommands.map { $0.pattern.text }
-            + [NotificationReplyCore.Commands.replyPhrase, NotificationReplyCore.Commands.endReplyPhrase]
+            + [NotificationReplyCore.Commands.replyPhrase, NotificationReplyCore.Commands.endReplyPhrase, NotificationReplyCore.Commands.cancelReplyPhrase]
         endPhrase.reset()
         standaloneWake.reset()
         resetAudioPhrases()

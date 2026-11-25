@@ -35,7 +35,7 @@ import Foundation
 @MainActor final class NotificationReplyCoordinator: ObservableObject {
     enum Readiness: String { case ready, disabled, listeningOff, listenerUnavailable, voiceActive, voiceUnknown, desktopUnavailable, codexUnavailable }
     enum Failure: String, Error { case invalidEvent, busy, differentInstance, unavailable }
-    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = ""; var commandSeconds = NotificationReplyCore.Limits().commandSeconds }
+    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = ""; var commandSeconds = NotificationReplyCore.Limits().commandSeconds; var confirmingReply = false }
     let settings: NotificationReplySettings
     let instance = UUID()
     @Published private(set) var lastPhase: NotificationReplyCore.Phase?
@@ -43,7 +43,7 @@ import Foundation
     var currentReadiness: () -> Readiness = { .listenerUnavailable }
     var commandForms: () -> NotificationReplyCore.Commands = { .init() }
     var resetRecognition: (() -> Void)?
-    var finalizeRecognition: ((Double, Bool) -> Void)?
+    var finalizeRecognition: ((Double) -> Void)?
     var acceptedReply: (() -> Void)?
     var showPresentation: ((Presentation?) -> Void)?
     var outcome: ((UUID, NotificationReplyCore.Phase, String, Bool) -> Void)?
@@ -90,16 +90,17 @@ import Foundation
         self.settings.changed = { [weak self] in self?.cancelAll("settings-changed") }
     }
 
-    func prepare(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String) async throws -> [String: Any] {
+    func prepare(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, manualFinish: Bool = false) async throws -> [String: Any] {
         guard !spokenText.isEmpty, spokenText.count <= 2048, question.count <= 160 else { throw Failure.invalidEvent }
         if let existing = sessions[event] {
             guard existing.thread == thread, existing.turn == turn, existing.question == question,
+                  existing.core.manualFinish == manualFinish,
                   existing.spokenFingerprint == Data(SHA256.hash(data: Data(spokenText.utf8))) else { throw Failure.invalidEvent }
             return snapshot(existing)
         }
         guard !interceptsSpeech else { throw Failure.busy }
         prune()
-        let session = Session(event: event, thread: thread, turn: turn, question: question, spokenText: spokenText, at: now, limits: settings.limits, commands: commandForms())
+        let session = Session(event: event, thread: thread, turn: turn, question: question, spokenText: spokenText, at: now, limits: settings.limits, commands: commandForms(), manualFinish: manualFinish)
         let admitted = readiness
         sessions[event] = session; startTimer()
         if admitted == .ready { active = event; resetRecognition?() }
@@ -175,7 +176,9 @@ import Foundation
     }
     func status(event: UUID, instance: UUID) throws -> [String: Any] {
         let session = try selected(event, instance)
+        if session.core.interceptsSpeech, readiness != .ready { cancelSession(session, reason: readiness.rawValue) }
         session.core.ownerSeen(at: now)
+        publish(session)
         return snapshot(session)
     }
 
@@ -221,7 +224,7 @@ import Foundation
         guard let id = active, let session = sessions[id] else { return }
         guard readiness == .ready else { cancelAll(readiness.rawValue); return }
         session.core.observe(recognition, now: now)
-        if let requested = session.core.finalizeThrough { finalizeRecognition?(requested, session.core.phase == .composing) }
+        if let requested = session.core.finalizeThrough { finalizeRecognition?(requested) }
         publish(session)
     }
     func processed(through time: Double) {
@@ -269,16 +272,17 @@ import Foundation
         var presentationDismissed = false
         var cuePlayed = false
         var queuedAt: Double?
+        var releaseRequestedAt: Double?
         var replyIdentity: NotificationReplyOrigin.ReplyIdentity?
         var navigationAttempted = false
         var revision = 0, signature = ""
         var presentedTextRevision = -1
         var observers: [DispatchSourceFileSystemObject] = []
         let lease = NotificationReplyLease()
-        init(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, at: Double, limits: NotificationReplyCore.Limits, commands: NotificationReplyCore.Commands) {
+        init(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, at: Double, limits: NotificationReplyCore.Limits, commands: NotificationReplyCore.Commands, manualFinish: Bool) {
             self.event = event; self.thread = thread; self.turn = turn; self.question = question; self.spokenText = spokenText
             spokenFingerprint = Data(SHA256.hash(data: Data(spokenText.utf8)))
-            core = .init(at: at, limits: limits, commands: commands)
+            core = .init(at: at, limits: limits, commands: commands, manualFinish: manualFinish)
         }
         deinit { observers.forEach { $0.cancel() } }
     }
@@ -296,6 +300,9 @@ import Foundation
         return ["protocolVersion": 1, "eventID": session.event.uuidString.lowercased(), "threadID": session.thread.uuidString.lowercased(),
                 "instance": instance.uuidString.lowercased(), "statusFile": files.path(session.event).path,
                 "phase": session.core.phase.rawValue, "reason": session.core.reason, "releaseRequested": session.core.releaseRequested,
+                "manualFinish": session.core.manualFinish,
+                "ownerLeaseSeconds": NotificationReplyCore.ownerLeaseSeconds,
+                "ownerLeaseExpiresUptime": session.core.ownerLeaseExpiresUptime as Any? ?? NSNull(),
                 "opportunityKind": session.fallback != nil ? "visual" : session.core.audioEndedAt != nil ? "audio" : "none",
                 "opportunityUptime": session.core.opportunityAt as Any? ?? NSNull(),
                 "visualDeliveredUptime": session.fallback?.uptime as Any? ?? NSNull(),
@@ -308,11 +315,12 @@ import Foundation
                            "commandDrainSeconds": limits.commandDrainSeconds, "maxHoldSeconds": limits.maxHoldSeconds]]
     }
     private func publish(_ session: Session) {
+        if session.core.releaseRequested, session.releaseRequestedAt == nil { session.releaseRequestedAt = now }
         if session.core.acceptedCount > 0, !session.cuePlayed { session.cuePlayed = true; acceptedReply?() }
         if session.core.releaseRequested, active == session.event {
             active = nil; resetRecognition?()
         }
-        let signature = session.core.phase.rawValue + ":" + session.core.reason
+        let signature = session.core.phase.rawValue + ":" + session.core.reason + ":" + String(session.core.confirmingReply)
         guard session.signature != signature else {
             if session.core.phase == .composing, session.presentedTextRevision != session.core.textRevision {
                 present(session)
@@ -323,17 +331,22 @@ import Foundation
         session.signature = signature; session.revision += 1
         lastPhase = session.core.phase; lastReason = session.core.reason
         files.write(snapshot(session), event: session.event, revision: session.revision)
-        Diagnostics.shared.record("notification.reply.phase", info: ["notification_event": session.event.uuidString, "phase": session.core.phase.rawValue, "reason": session.core.reason])
+        Diagnostics.shared.record("notification.reply.phase", info: ["notification_event": session.event.uuidString, "phase": session.core.phase.rawValue, "reason": session.core.reason,
+            "confirming_start": String(session.core.confirmingReply)])
         outcome?(session.event, session.core.phase, session.core.reason, first)
         present(session)
-        if session.core.phase == .queued { session.queuedAt = now; session.spokenText = "" }
+        if session.core.phase == .queued {
+            session.queuedAt = now
+            if session.releaseAcknowledged { session.spokenText = "" }
+        }
         if [.cancelled, .unavailable, .delivered].contains(session.core.phase) { retireHeavyState(session) }
     }
     private func present(_ session: Session) {
         guard !session.releaseAcknowledged, !session.presentationDismissed, active == nil || active == session.event else { return }
         session.presentedTextRevision = session.core.textRevision; shown = session.event
         showPresentation?(.init(event: session.event, phase: session.core.phase, reason: session.core.reason,
-            spokenText: session.spokenText, replyText: session.core.phase == .composing ? session.core.draftText : "", commandSeconds: session.core.limits.commandSeconds))
+            spokenText: session.spokenText, replyText: session.core.phase == .composing ? session.core.draftText : "", commandSeconds: session.core.limits.commandSeconds,
+            confirmingReply: session.core.confirmingReply))
     }
     private func startTimer() {
         guard timer == nil else { return }
@@ -349,10 +362,11 @@ import Foundation
                 if shown == session.event { shown = nil; showPresentation?(nil) }
             }
             if let queuedAt = session.queuedAt, now - queuedAt >= 60 { retireHeavyState(session) }
-            let audioBound = session.core.opportunityAt ?? session.started.map { $0 + NotificationReplyCore.maxAnnouncementSeconds }
+            let audioBound = session.core.manualFinish ? session.releaseRequestedAt ?? now : session.core.opportunityAt ?? session.started.map { $0 + NotificationReplyCore.maxAnnouncementSeconds }
                 ?? session.core.preparedAt + NotificationReplyCore.maxSetupSeconds
+            let releaseBound = session.core.manualFinish ? 7 : session.core.limits.maxHoldSeconds
             if session.core.releaseRequested, !session.releaseAcknowledged,
-               now - audioBound > session.core.limits.maxHoldSeconds {
+               now - audioBound > releaseBound {
                 session.releaseAcknowledged = true; session.lease.cancel()
                 if shown == session.event { shown = nil; showPresentation?(nil) }
             }

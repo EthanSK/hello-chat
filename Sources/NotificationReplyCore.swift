@@ -9,28 +9,35 @@
  ============================================================ */
 import Foundation
 
-/// One notification's bounded reply, driven only by the existing listener. — GPT-6.1 Sol
+/// One notification's owner-bound reply, driven only by the existing listener. — GPT-6.1 Sol
 struct NotificationReplyCore {
     /// Frozen configured spellings for one attempt; nil uses built-ins, empty uses only the main phrase. — GPT-6.1 Sol
     struct Commands: Equatable {
-        static let replyPhrase = "Reply", endReplyPhrase = "End reply"
+        static let replyPhrase = "Reply", endReplyPhrase = "End reply", cancelReplyPhrase = "Cancel reply"
         static let replySpellingKey = "notificationReply", endReplySpellingKey = "notificationEndReply"
+        static let cancelReplySpellingKey = "notificationCancelReply"
+        static let finishHint = "Say \(endReplyPhrase) to send · \(cancelReplyPhrase) to discard."
         static let defaultReplySpellings: [String] = []
         static let defaultEndReplySpellings = ["And reply"]
+        static let defaultCancelReplySpellings: [String] = []
         fileprivate static let canonicalEndForm = NotificationReplyCore.tokens(endReplyPhrase).map(\.word)
-        let replyForms: [[String]], endReplyForms: [[String]]
+        fileprivate static let canonicalCancelForm = NotificationReplyCore.tokens(cancelReplyPhrase).map(\.word)
+        let replyForms: [[String]], endReplyForms: [[String]], cancelReplyForms: [[String]]
         fileprivate let replyWordCounts: [Int], endWordCounts: [Int]
-        private let replyIndex: [Int: Set<[String]>], endIndex: [Int: Set<[String]>]
+        private let replyIndex: [Int: Set<[String]>], endIndex: [Int: Set<[String]>], cancelIndex: [Int: Set<[String]>]
 
-        init(replySpellings: [String]? = nil, endReplySpellings: [String]? = nil, alternateSpellings: Bool = true) {
+        init(replySpellings: [String]? = nil, endReplySpellings: [String]? = nil, cancelReplySpellings: [String]? = nil, alternateSpellings: Bool = true) {
             replyForms = Self.forms(Self.replyPhrase, alternateSpellings ? replySpellings ?? Self.defaultReplySpellings : [])
             endReplyForms = Self.forms(Self.endReplyPhrase, alternateSpellings ? endReplySpellings ?? Self.defaultEndReplySpellings : [])
+            cancelReplyForms = Self.forms(Self.cancelReplyPhrase, alternateSpellings ? cancelReplySpellings ?? Self.defaultCancelReplySpellings : [])
             replyIndex = Dictionary(grouping: replyForms, by: \.count).mapValues { Set($0) }
             endIndex = Dictionary(grouping: endReplyForms, by: \.count).mapValues { Set($0) }
-            replyWordCounts = replyIndex.keys.sorted(by: >); endWordCounts = endIndex.keys.sorted(by: >)
+            cancelIndex = Dictionary(grouping: cancelReplyForms, by: \.count).mapValues { Set($0) }
+            replyWordCounts = replyIndex.keys.sorted(by: >); endWordCounts = Set(endIndex.keys).union(cancelIndex.keys).sorted(by: >)
         }
         fileprivate func matchesReply(_ words: [String]) -> Bool { replyIndex[words.count]?.contains(words) == true }
         fileprivate func matchesEnd(_ words: [String]) -> Bool { endIndex[words.count]?.contains(words) == true }
+        fileprivate func matchesCancel(_ words: [String]) -> Bool { cancelIndex[words.count]?.contains(words) == true }
         private static func forms(_ main: String, _ additions: [String]) -> [[String]] {
             var seen = Set<[String]>()
             return ([main] + additions).compactMap {
@@ -41,6 +48,7 @@ struct NotificationReplyCore {
     }
     static let maxSetupSeconds: Double = 180
     static let maxAnnouncementSeconds: Double = 45
+    static let ownerLeaseSeconds: Double = 10
     enum Phase: String, Codable {
         case preparing, announcing, waiting, composing, releasing, cancelled, unavailable, queued, delivered
     }
@@ -72,6 +80,7 @@ struct NotificationReplyCore {
         var confirmedStartWords = 0
     }
     let limits: Limits
+    let manualFinish: Bool
     private static let retiredCommands = Commands(alternateSpellings: false)
     private var commands: Commands
     let preparedAt: Double
@@ -87,21 +96,29 @@ struct NotificationReplyCore {
     private(set) var textRevision = 0
     private var batches: [Recognition] = []
     private var activation: CommandSpan?
+    private var startCandidate: CommandSpan?
+    private var startCandidatePrefix: [BatchPrefix] = []
+    private var startCandidateSeenAt: Double?
     private var endCandidateSeenAt: Double?
     private var endCandidate: CommandSpan?
+    private var cancelCandidate = false
     private var endCandidatePrefix: [BatchPrefix] = []
     private var windowProcessedAt: Double?
     private var ownerSeenAt: Double?
     private var announcementStartedAt: Double?
 
-    init(at now: Double, limits: Limits = .init(), commands: Commands = .init()) {
-        preparedAt = now; self.limits = limits; self.commands = commands
+    init(at now: Double, limits: Limits = .init(), commands: Commands = .init(), manualFinish: Bool = false) {
+        preparedAt = now; self.limits = limits; self.commands = commands; self.manualFinish = manualFinish
     }
 
     var interceptsSpeech: Bool {
         [.preparing, .announcing, .waiting, .composing, .releasing].contains(phase)
     }
     var releaseRequested: Bool { [.releasing, .cancelled, .unavailable, .queued, .delivered].contains(phase) }
+    var confirmingReply: Bool { phase == .waiting && startCandidate != nil }
+    var ownerLeaseExpiresUptime: Double? {
+        manualFinish && phase == .composing ? ownerSeenAt.map { $0 + Self.ownerLeaseSeconds } : nil
+    }
     var canDispatch: Bool { phase == .releasing && reason == "end-reply" && body?.isEmpty == false }
 
     mutating func audioStarted(at time: Double? = nil) {
@@ -111,7 +128,11 @@ struct NotificationReplyCore {
     }
     // Only the instance-bound client that received prepare can acknowledge its bounded pre-audio setup. — GPT-6.1 Sol
     mutating func ownerSeen(at time: Double) {
-        if phase == .preparing, time.isFinite { ownerSeenAt = time }
+        guard time.isFinite else { return }
+        if manualFinish, phase == .composing {
+            if let expiry = ownerLeaseExpiresUptime, time >= expiry { cancel("owner-lost"); return }
+            ownerSeenAt = time
+        } else if phase == .preparing { ownerSeenAt = time }
     }
     mutating func audioEnded(at time: Double, completed: Bool, now: Double) {
         guard phase == .preparing || phase == .announcing else { return }
@@ -135,6 +156,7 @@ struct NotificationReplyCore {
     /// Revisions replace their own batch; stable prefixes and timed controls are never counted twice. — GPT-6.1 Sol
     mutating func observe(_ value: Recognition, now: Double) {
         guard interceptsSpeech, phase != .releasing else { return }
+        if let expiry = ownerLeaseExpiresUptime, now >= expiry { cancel("owner-lost"); return }
         let tokens = Self.tokens(value.text)
         guard value.words.count == tokens.count,
               zip(value.words, tokens).allSatisfy({ $0.text == $1.word && $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start }),
@@ -177,18 +199,24 @@ struct NotificationReplyCore {
         if phase == .announcing, let started = announcementStartedAt, now - started > Self.maxAnnouncementSeconds {
             cancel("announcement-limit"); return
         }
-        if let ended = opportunityAt, now - ended > limits.maxHoldSeconds { cancel("session-limit"); return }
+        if !(manualFinish && phase == .composing), let ended = opportunityAt,
+           now - ended > limits.maxHoldSeconds { cancel("session-limit"); return }
         evaluate(now: now)
-        if phase == .waiting, let passed = windowProcessedAt,
-           now - passed >= limits.confirmationSeconds { cancel("no-command") }
+        if phase == .waiting {
+            if let seen = startCandidateSeenAt {
+                if now - seen >= limits.confirmationSeconds { cancel("reply-command-unconfirmed") }
+            } else if let passed = windowProcessedAt,
+                      now - passed >= limits.confirmationSeconds { cancel("no-command") }
+        }
         if phase == .composing, let accepted = acceptedAt {
+            if let expiry = ownerLeaseExpiresUptime, now >= expiry { cancel("owner-lost"); return }
             if let firstSeen = endCandidateSeenAt, now - firstSeen > limits.endConfirmationSeconds {
-                cancel("end-command-unconfirmed"); return
+                cancel(cancelCandidate ? "cancel-command-unconfirmed" : "end-command-unconfirmed"); return
             }
-            if now - accepted >= limits.replySeconds,
+            if !manualFinish, now - accepted >= limits.replySeconds,
                endCandidateSeenAt == nil { cancel("reply-limit"); return }
             let last = flattened().drop { !isAfterActivation($0.position) }.map { $0.word.end }.max() ?? accepted
-            if now - max(accepted, last) >= limits.idleSeconds { cancel("idle-safety-limit") }
+            if !manualFinish, now - max(accepted, last) >= limits.idleSeconds { cancel("idle-safety-limit") }
         }
     }
 
@@ -211,12 +239,31 @@ struct NotificationReplyCore {
     // Terminal records keep their outcome, not the active attempt's compiled dictionary or word spans. — GPT-6.1 Sol
     private mutating func retireRecognition() {
         commands = Self.retiredCommands; batches.removeAll(); activation = nil; finalizeThrough = nil
+        startCandidate = nil; startCandidatePrefix.removeAll(); startCandidateSeenAt = nil
         endCandidatePrefix.removeAll(); endCandidate = nil; endCandidateSeenAt = nil
     }
 
     private mutating func evaluate(now: Double) {
         let all = flattened()
         if phase == .waiting, let ended = opportunityAt {
+            if let candidate = startCandidate {
+                let unchanged = startCandidatePrefix.allSatisfy { prefix in
+                    guard let batch = batches.first(where: { $0.batch == prefix.batch }) else { return false }
+                    return batch.words.count >= prefix.words.count && Array(batch.words.prefix(prefix.words.count).map(\.text)) == prefix.words
+                }
+                guard unchanged, let current = currentSpan(candidate, in: all), current.contiguous,
+                      current.tokens.map({ $0.word.text }) == candidate.tokens.map({ $0.word.text }) else {
+                    cancel("reply-command-unconfirmed"); return
+                }
+                for length in commands.endWordCounts where length <= all.count {
+                    let cancelling = CommandSpan(tokens: Array(all.suffix(length)))
+                    if cancelling.first.word.start > candidate.last.word.end, cancelling.contiguous,
+                       commands.matchesCancel(cancelling.tokens.map({ $0.word.text })), cancelling.tokens.allSatisfy(\.stable),
+                       finishContextAllowed(cancelling, in: all) {
+                        cancel("cancel-reply"); return
+                    }
+                }
+            }
             for (index, item) in all.enumerated() {
                 let word = item.word
                 guard word.start >= ended - 0.05, word.start <= ended + limits.commandSeconds else { continue }
@@ -227,7 +274,15 @@ struct NotificationReplyCore {
                 if span.tokens.allSatisfy({ $0.stable || $0.confirmedStart }) {
                     activation = span; acceptedAt = span.last.word.end; acceptedCount += 1
                     phase = .composing; finalizeThrough = nil
-                } else { finalizeThrough = span.last.word.end + 0.15 }
+                    if manualFinish { ownerSeenAt = now }
+                    startCandidate = nil; startCandidatePrefix.removeAll(); startCandidateSeenAt = nil
+                } else {
+                    if startCandidate == nil {
+                        startCandidate = span; startCandidateSeenAt = now; startCandidatePrefix = prefixes(for: span)
+                        textRevision += 1
+                    }
+                    finalizeThrough = span.last.word.end + 0.15
+                }
                 break
             }
         }
@@ -243,12 +298,13 @@ struct NotificationReplyCore {
             }
             // "And reply" may be ordinary sentence text. Unlike the canonical End,
             // an alias must remain at the end of current recognition. — GPT-6.1 Sol
-            let stillEnds = candidate.canonicalEnd || candidate.last.position == content.last?.position
+            let stillEnds = candidate.canonicalControl || candidate.last.position == content.last?.position
             if prefixMatches && stillEnds,
                let current = currentSpan(candidate, in: content), current.contiguous {
                 if current.tokens.allSatisfy(\.stable), let through = finalizeThrough,
                    current.last.word.end <= through {
-                    finishReply(at: current.first.position)
+                    if cancelCandidate { cancel("cancel-reply") }
+                    else { finishReply(at: current.first.position) }
                 }
                 return
             }
@@ -259,19 +315,19 @@ struct NotificationReplyCore {
         for length in commands.endWordCounts where length <= content.count {
             let span = CommandSpan(tokens: Array(content.suffix(length)))
             let first = span.first
-            guard commands.matchesEnd(span.tokens.map { $0.word.text }), span.contiguous,
-                  first.word.start <= accepted + limits.replySeconds else { continue }
-            let preceding = content.prefix { $0.position != first.position }.suffix(2).map { $0.word.text }
-            if !beginsSentence(first.position) {
-                guard !preceding.suffix(1).contains(where: { ["not", "never", "say", "saying", "phrase", "command"].contains($0) }),
-                      Array(preceding) != ["don", "t"] else { continue }
-            }
+            let words = span.tokens.map { $0.word.text }
+            let cancelling = commands.matchesCancel(words)
+            guard cancelling || commands.matchesEnd(words), span.contiguous,
+                  manualFinish || first.word.start <= accepted + limits.replySeconds else { continue }
+            guard finishContextAllowed(span, in: content) else { continue }
             if span.tokens.allSatisfy(\.stable) {
-                finishReply(at: first.position)
+                if cancelling { cancel("cancel-reply") }
+                else { finishReply(at: first.position) }
                 return
             }
             if endCandidate?.first.position != span.first.position || endCandidate?.last.position != span.last.position {
                 endCandidate = span; endCandidateSeenAt = now
+                cancelCandidate = cancelling
                 endCandidatePrefix = prefixes(for: span)
                 textRevision += 1
             }
@@ -287,6 +343,12 @@ struct NotificationReplyCore {
             if commands.matchesReply(span.tokens.map { $0.word.text }) && span.contiguous { return span }
         }
         return nil
+    }
+    private func finishContextAllowed(_ span: CommandSpan, in content: [TimedToken]) -> Bool {
+        if beginsSentence(span.first.position) { return true }
+        let preceding = content.prefix { $0.position != span.first.position }.suffix(2).map { $0.word.text }
+        return !preceding.suffix(1).contains(where: { ["not", "never", "say", "saying", "phrase", "command"].contains($0) })
+            && Array(preceding) != ["don", "t"]
     }
     private func currentSpan(_ candidate: CommandSpan, in content: [TimedToken]) -> CommandSpan? {
         guard let first = content.firstIndex(where: { $0.position == candidate.first.position }),
@@ -316,7 +378,10 @@ struct NotificationReplyCore {
         let tokens: [TimedToken]
         var first: TimedToken { tokens[0] }
         var last: TimedToken { tokens[tokens.count - 1] }
-        var canonicalEnd: Bool { tokens.map { $0.word.text } == Commands.canonicalEndForm }
+        var canonicalControl: Bool {
+            let words = tokens.map { $0.word.text }
+            return words == Commands.canonicalEndForm || words == Commands.canonicalCancelForm
+        }
         var contiguous: Bool { zip(tokens, tokens.dropFirst()).allSatisfy { $1.word.start - $0.word.end <= 0.6 } }
     }
     private func beginsSentence(_ position: Position) -> Bool {

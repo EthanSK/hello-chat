@@ -21,68 +21,78 @@ struct NotificationReplySettingsSection: View {
     @ObservedObject var settings: NotificationReplySettings
     @Binding var replySpellings: [String]?
     @Binding var endReplySpellings: [String]?
+    @Binding var cancelReplySpellings: [String]?
     let similar: Bool
     let readiness: () -> NotificationReplyCoordinator.Readiness
-    @State private var editingReply: Bool?
+    private enum Control: CaseIterable { case reply, end, cancel
+        var phrase: String {
+            switch self {
+            case .reply: return NotificationReplyCore.Commands.replyPhrase
+            case .end: return NotificationReplyCore.Commands.endReplyPhrase
+            case .cancel: return NotificationReplyCore.Commands.cancelReplyPhrase
+            }
+        }
+        var builtIn: [String] {
+            switch self {
+            case .reply: return NotificationReplyCore.Commands.defaultReplySpellings
+            case .end: return NotificationReplyCore.Commands.defaultEndReplySpellings
+            case .cancel: return NotificationReplyCore.Commands.defaultCancelReplySpellings
+            }
+        }
+        var identifier: String {
+            switch self {
+            case .reply: return "notificationReplySpellings"
+            case .end: return "notificationEndReplySpellings"
+            case .cancel: return "notificationCancelReplySpellings"
+            }
+        }
+    }
+    @State private var editing: Control?
     var body: some View {
         Section("Notification Replies") {
             Toggle("Enabled", isOn: $settings.enabled).accessibilityIdentifier("notificationRepliesEnabled")
-            Text("Say Reply within \(Int(settings.limits.commandSeconds)) seconds after a notification finishes, or when Say Reply appears if speech was skipped. Say End reply to send. Pauses keep listening.")
+            Text("Say Reply within \(Int(settings.limits.commandSeconds)) seconds after a notification finishes, or when Say Reply appears if speech was skipped. \(NotificationReplyCore.Commands.finishHint) Pauses keep listening.")
                 .foregroundStyle(.secondary)
-            spellingRow(reply: true)
-            spellingRow(reply: false)
-            number("Cancel after silence (seconds)", value: $settings.idleSeconds, id: "notificationReplyIdleSeconds")
-            number("Maximum reply (seconds)", value: $settings.replySeconds, id: "notificationReplySeconds")
+            ForEach(Control.allCases, id: \.self) { spellingRow($0) }
             Text(readiness().message).foregroundStyle(.secondary).accessibilityIdentifier("notificationReplyReadiness")
         }
-        .sheet(isPresented: Binding(get: { editingReply != nil }, set: { if !$0 { editingReply = nil } })) {
-            if let reply = editingReply {
-                PhraseDictionaryEditor(slot: nil, phrase: reply ? NotificationReplyCore.Commands.replyPhrase : NotificationReplyCore.Commands.endReplyPhrase,
-                    dictionary: reply ? $replySpellings : $endReplySpellings,
-                    builtIn: reply ? NotificationReplyCore.Commands.defaultReplySpellings : NotificationReplyCore.Commands.defaultEndReplySpellings,
-                    similar: similar, validate: { spellingConflict($0, reply: reply) })
+        .sheet(isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+            if let control = editing {
+                PhraseDictionaryEditor(slot: nil, phrase: control.phrase, dictionary: dictionary(control),
+                    builtIn: control.builtIn, similar: similar, validate: { spellingConflict($0, control: control) })
             }
         }
     }
-    private func spellingRow(reply: Bool) -> some View {
-        let phrase = reply ? NotificationReplyCore.Commands.replyPhrase : NotificationReplyCore.Commands.endReplyPhrase
-        let listed = reply ? replySpellings ?? NotificationReplyCore.Commands.defaultReplySpellings
-            : endReplySpellings ?? NotificationReplyCore.Commands.defaultEndReplySpellings
-        let forms = NotificationReplyCore.Commands(replySpellings: replySpellings, endReplySpellings: endReplySpellings, alternateSpellings: similar)
-        let main = PhraseMatcher.words(phrase).joined(separator: " ")
-        let recognized = Set((reply ? forms.replyForms : forms.endReplyForms).map { $0.joined(separator: " ") }).subtracting([main])
+    private func dictionary(_ control: Control) -> Binding<[String]?> {
+        switch control { case .reply: return $replySpellings; case .end: return $endReplySpellings; case .cancel: return $cancelReplySpellings }
+    }
+    private func spellingRow(_ control: Control) -> some View {
+        let listed = dictionary(control).wrappedValue ?? control.builtIn
+        let forms = NotificationReplyCore.Commands(replySpellings: replySpellings, endReplySpellings: endReplySpellings,
+            cancelReplySpellings: cancelReplySpellings, alternateSpellings: similar)
+        let used: [[String]] = switch control { case .reply: forms.replyForms; case .end: forms.endReplyForms; case .cancel: forms.cancelReplyForms }
+        let main = PhraseMatcher.words(control.phrase).joined(separator: " ")
+        let recognized = Set(used.map { $0.joined(separator: " ") }).subtracting([main])
         let unused = similar ? listed.filter { !recognized.contains(PhraseMatcher.words($0).joined(separator: " ")) }.count : 0
         return HStack {
-            Text(phrase)
+            Text(control.phrase)
             Spacer()
-            SpellingCountButton(count: listed.count, unused: unused, identifier: reply ? "notificationReplySpellings" : "notificationEndReplySpellings") {
-                editingReply = reply
-            }
+            SpellingCountButton(count: listed.count, unused: unused, identifier: control.identifier) { editing = control }
         }
     }
-    private func spellingConflict(_ entries: [String], reply: Bool) -> String? {
-        let forms = NotificationReplyCore.Commands(replySpellings: reply ? entries : replySpellings,
-            endReplySpellings: reply ? endReplySpellings : entries)
-        let starts = Set(forms.replyForms.map { $0.joined(separator: " ") })
-        if forms.endReplyForms.contains(where: { starts.contains($0.joined(separator: " ")) }) {
-            return "Reply and End reply need different spellings."
+    private func spellingConflict(_ entries: [String], control: Control) -> String? {
+        let forms = NotificationReplyCore.Commands(replySpellings: control == .reply ? entries : replySpellings,
+            endReplySpellings: control == .end ? entries : endReplySpellings,
+            cancelReplySpellings: control == .cancel ? entries : cancelReplySpellings)
+        let starts = Set(forms.replyForms), ends = Set(forms.endReplyForms), cancels = Set(forms.cancelReplyForms)
+        if !starts.isDisjoint(with: ends) || !starts.isDisjoint(with: cancels) || !ends.isDisjoint(with: cancels) {
+            return "Reply, End reply and Cancel reply need different spellings."
         }
         let sorted = forms.replyForms.sorted { $0.lexicographicallyPrecedes($1) }
         if zip(sorted, sorted.dropFirst()).contains(where: { $1.starts(with: $0) }) {
             return "One Reply spelling can’t start with another."
         }
         return nil
-    }
-    private func number(_ title: String, value: Binding<Int>, id: String) -> some View {
-        let binding = value.changes(in: 10...180)
-        return HStack {
-            Text(title)
-            Spacer()
-            TextField("Seconds", value: binding, format: .number)
-                .labelsHidden().multilineTextAlignment(.trailing).frame(width: 48)
-                .accessibilityLabel(title).accessibilityIdentifier(id)
-            Stepper(title, value: binding, in: 10...180).labelsHidden()
-        }.disabled(!settings.enabled)
     }
 }
 
@@ -213,7 +223,7 @@ struct NotificationReplyHUDContent: View {
     var replyHeight: CGFloat = 60
     var dismiss: (() -> Void)?
     private var title: String {
-        Self.statusTitle(presentation.phase, reason: presentation.reason)
+        presentation.confirmingReply ? "Confirming Reply…" : Self.statusTitle(presentation.phase, reason: presentation.reason)
     }
     static func statusTitle(_ phase: NotificationReplyCore.Phase, reason: String) -> String {
         switch phase {
@@ -235,8 +245,8 @@ struct NotificationReplyHUDContent: View {
         switch presentation.phase {
         case .preparing: return "Getting the original chat ready."
         case .announcing: return "Wait for the notification to finish."
-        case .waiting: return "Start within \(Int(presentation.commandSeconds)) seconds."
-        case .composing: return "Say End reply to send."
+        case .waiting: return presentation.confirmingReply ? "" : "Start within \(Int(presentation.commandSeconds)) seconds."
+        case .composing: return ""
         case .releasing: return "Finishing notification cleanup."
         case .queued: return "Waiting for your reply to appear in the original chat."
         case .delivered: return "Saved in the original chat."
@@ -256,7 +266,7 @@ struct NotificationReplyHUDContent: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
                 HStack(spacing: 10) {
-                    if [.preparing, .announcing, .releasing].contains(presentation.phase) { ProgressView().controlSize(.small) }
+                    if presentation.confirmingReply || [.preparing, .announcing, .releasing].contains(presentation.phase) { ProgressView().controlSize(.small) }
                     else { Image(systemName: presentation.phase == .composing ? "waveform" : "bubble.left") }
                     Text((isPreview ? "Preview · " : "") + title).font(.system(size: 15, weight: .semibold))
                     Spacer(minLength: 0)
@@ -268,7 +278,7 @@ struct NotificationReplyHUDContent: View {
                         .accessibilityIdentifier("dismissNotificationReply")
                 }
             }
-            Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !detail.isEmpty { Text(detail).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             if presentation.phase == .composing, !presentation.replyText.isEmpty {
                 ScrollViewReader { reader in
                     ScrollView {
@@ -281,13 +291,17 @@ struct NotificationReplyHUDContent: View {
                         .onChange(of: presentation.replyText) { _, _ in reader.scrollTo("reply-end", anchor: .bottom) }
                 }.accessibilityIdentifier("notificationReplyLiveText")
             }
-            if presentation.phase == .composing, !presentation.spokenText.isEmpty {
+            if !presentation.spokenText.isEmpty {
                 Divider()
                 Text("Notification").font(.system(size: 11)).foregroundStyle(.secondary)
                 ScrollView {
                     Text(presentation.spokenText).font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true).padding(.trailing, 6)
                 }.frame(height: referenceHeight).scrollIndicators(.visible)
+            }
+            if presentation.confirmingReply || presentation.phase == .composing {
+                Text(NotificationReplyCore.Commands.finishHint).font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("notificationReplyControlHint")
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityIdentifier("notificationReplyHUD")
