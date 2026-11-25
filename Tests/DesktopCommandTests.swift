@@ -138,9 +138,9 @@ private final class Probe {
 
         // Slots: four new canonical preferences after the unchanged Voice and Browser fields.
         check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase], "Existing fields are intact")
-        check(PhraseSlot.desktopSlots == [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase], "Desktop fields follow them")
-        check(PhraseSlot.desktopSlots.map(\.rawValue) == ["switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase", "showVoicePhrase"], "Canonical preference names")
-        check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Switch app", "Open app", "Zoom in", "Zoom out", "Show voice"], "Defaults")
+        check(PhraseSlot.desktopSlots == [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase, .setSpeedPhrase], "Desktop fields follow them")
+        check(PhraseSlot.desktopSlots.map(\.rawValue) == ["switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase", "showVoicePhrase", "setSpeedPhrase"], "Canonical preference names")
+        check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Switch app", "Open app", "Zoom in", "Zoom out", "Show voice", "Set speed"], "Defaults")
         check(PhraseSlot.switchAppPhrase.example != nil && PhraseSlot.openAppPhrase.example == nil && PhraseSlot.zoomInPhrase.example == nil,
               "The combined app setting carries one example")
         check(PhraseSlot.switchAppPhrase.label.hasSuffix("prefix") && PhraseSlot.openAppPhrase.label.hasSuffix("prefix"), "App commands are labelled as prefixes")
@@ -151,6 +151,25 @@ private final class Probe {
         let combined = ["Switch app", "Open app", "Switch up", "Switch to", "Switch"].map {
             PhrasePattern(slot: .switchAppPhrase, text: $0, similar: true, dictionaries: .init())
         }
+        for phrase in ["Switch app Chrome", "Switch Chrome", "Switch Google Chrome", "Switch app Google Chrome"] {
+            var d = AppCommandDetector(usesEditableShortForms: true)
+            d.audio(level: 0.2, seconds: 0.1, at: 1)
+            d.update(phrase, at: 1)
+            let result = d.poll(switchPrefixes: combined, openPrefixes: [], immediateSwitchNames: ["Google Chrome", "Chrome"])
+            check(result.count == 1, "Exact requested Chrome form needs no silence: " + phrase)
+            let actualChrome = AppCandidate(id: "com.google.Chrome", names: ["Google Chrome"], pid: 11)
+            check(AppCommandPlanner.decide(result[0], running: [actualChrome], installed: [], spellings: .init()) == .activate(actualChrome), "Each form resolves the installed browser")
+            check(d.poll(switchPrefixes: combined, openPrefixes: [], immediateSwitchNames: ["Google Chrome", "Chrome"]).isEmpty, "Same hypothesis cannot switch twice")
+        }
+        for text in ["Don't switch Chrome", "I said switch app Chrome", "The phrase switch Google Chrome", "Switch app Chrome tomorrow", "Switch Chrome settings", "Can you add switch Chrome"] {
+            var d = AppCommandDetector()
+            d.audio(level: 0.2, seconds: 0.1, at: 1); d.update(text, at: 1)
+            check(d.poll(switchPrefixes: combined, openPrefixes: [], immediateSwitchNames: ["Google Chrome", "Chrome"]).isEmpty, "Immediate Chrome keeps mention/negation/qualification guards: " + text)
+        }
+        var narration = AppCommandDetector()
+        narration.audio(level: 0.2, seconds: 0.1, at: 1)
+        narration.update("the documentary continues switch Google Chrome being very critical for safety", at: 1)
+        check(narration.poll(switchPrefixes: combined, openPrefixes: [], immediateSwitchNames: ["Google Chrome", "Chrome"]).map(\.name) == ["google chrome"], "Exact Chrome request interrupts continuous narration without taking its following words as an app name")
         let speakerPrefixes = ["Switch speakers", "Switch speaker", "Switch audio"].map { PhrasePattern(text: $0, similar: false) }
         var incompleteSpeaker = AppCommandDetector()
         incompleteSpeaker.audio(level: 0.2, seconds: 0.1)

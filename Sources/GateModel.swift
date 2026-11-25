@@ -36,6 +36,16 @@ import SwiftUI
         init(_ value: Int) { self.value = value }
     }
     private var spotifyVolumeRequests: [UUID: SpotifySpokenVolume] = [:]
+    private final class SpokenSpeed {
+        var value: CodexSpeed
+        let call: VoicePeerCall?
+        var root: UUID?
+        var cuePlayed = false
+        var valid = true
+        init(_ value: CodexSpeed, call: VoicePeerCall?) { self.value = value; self.call = call }
+    }
+    private var speedRequests: [UUID: SpokenSpeed] = [:]
+    private var speedTail: Task<Void, Never>?
     private var finalValueFrame = false
     @Published private(set) var lastCommandMessage: String?
     @Published private(set) var lastCommandDetail: String?
@@ -122,7 +132,7 @@ import SwiftUI
                 Diagnostics.shared.record("command.history", numbers: ["spoken_at": now - age],
                                           info: ["receipt": id.uuidString, "command": title, "result": "Heard", "summary": summary])
                 var reserving = true
-                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(command), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true || action == PhraseSlot.spotifyVolumePhrase.rawValue, valueArgument: action == PhraseSlot.spotifyVolumePhrase.rawValue, discard: discard, command: command) { [weak self] step in
+                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(command), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true || action == PhraseSlot.spotifyVolumePhrase.rawValue, valueArgument: [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.setSpeedPhrase.rawValue].contains(action), discard: discard, command: command) { [weak self] step in
                     if reserving { return } // The unqueued first action stays immediate; queued first actions use this callback later.
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -228,6 +238,32 @@ import SwiftUI
                 self.finishCommand(id, phase, detail: detail)
                 Diagnostics.shared.failure("spotify.volume.command_failed", error)
             }
+        }
+    }
+    // “Set speed” binds to the call heard at admission. Serial native work cannot retarget
+    // a revised phrase to a replacement call, and one cue follows confirmed readback. — GPT-6.1 Sol
+    private func requestChatSpeed(_ request: SpokenSpeed, receipt id: UUID) {
+        let previous = speedTail
+        speedTail = Task { [weak self] in
+            await previous?.value
+            guard let self, !self.quitting, self.repetitions.shouldRun(id), request.valid,
+                  self.commandAvailability.isEnabled(.setSpeedPhrase) else {
+                self?.finishCommand(id, .superseded); return
+            }
+            let speed = request.value
+            guard let call = request.call else {
+                self.finishCommand(id, .failedBeforeDispatch, detail: "Open a Codex Voice chat, then try again."); return
+            }
+            let result = await ModelBarVoiceSpeed.perform(call: call, speed: speed, valid: {
+                !self.quitting && self.enabled && request.valid
+                    && self.commandAvailability.isEnabled(.setSpeedPhrase) && self.repetitions.shouldRun(id)
+            })
+            self.finishCommand(id, result.succeeded ? .confirmed : .unknown, detail: result.message)
+            if result.succeeded, request.valid, request.value == speed, !request.cuePlayed {
+                request.cuePlayed = true
+                self.feedback.play(PhraseSlot.setSpeedPhrase.cue)
+            }
+            Diagnostics.shared.record("voice.speed.command", info: ["requested": speed.relayValue, "status": result.status])
         }
     }
     private let voicePeerPriority = VoicePeerPriority()
@@ -401,6 +437,9 @@ import SwiftUI
         updatePhrases(cancelPendingApps: command.slots.contains(.switchAppPhrase))
         Diagnostics.shared.record("command.availability", info: ["command": command.id, "enabled": String(value)])
     }
+    @Published var setSpeedPhrase = PhraseSlot.setSpeedPhrase.savedValue() {
+        didSet { UserDefaults.standard.set(setSpeedPhrase, forKey: "setSpeedPhrase"); updatePhrases() }
+    }
     // Mac app and zoom commands don't depend on a connected Voice call.
     @Published var appNameSpellings = AppNameSpellings.load(from: .standard) { // Applies new built-ins to saved lists once.
         didSet { UserDefaults.standard.set(appNameSpellings.overrides, forKey: AppNameSpellings.defaultsKey) }
@@ -409,6 +448,7 @@ import SwiftUI
     @Published private(set) var speakerOutputStatus: String?
     private var showVoiceDetector = StandaloneWake()
     private var spotifyVolumeDetector = SpotifyVolumePhrase()
+    private var speedDetector = ChatSpeedPhrase()
     private var dotPhraseDetectors = CommandPhraseDetectors<DotCallCommand.Action>()
     private var dotTasks: [UUID: Task<DotCallCommand.Result, Never>] = [:]
     private var dotTail: Task<DotCallCommand.Result, Never>?
@@ -648,6 +688,7 @@ import SwiftUI
         case .switchAppPhrase: return \.switchAppPhrase
         case .openAppPhrase: return \.openAppPhrase
         case .showVoicePhrase: return \.showVoicePhrase
+        case .setSpeedPhrase: return \.setSpeedPhrase
         case .zoomInPhrase: return \.zoomInPhrase
         case .zoomOutPhrase: return \.zoomOutPhrase
         }
@@ -787,6 +828,7 @@ import SwiftUI
             self?.musicPhraseDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.showVoiceDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.spotifyVolumeDetector.audio(level: level, seconds: seconds, at: audioTime)
+            self?.speedDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.dotPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.speakerOutputDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
@@ -1239,6 +1281,7 @@ import SwiftUI
     private func resetAudioPhrases() {
         repetitions.boundary()
         spotifyVolumeRequests.removeAll()
+        speedRequests.values.forEach { $0.valid = false }; speedRequests.removeAll()
         finalValueFrame = false
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
         videoPhraseDetectors.reset()
@@ -1246,6 +1289,7 @@ import SwiftUI
         musicPhraseDetector.reset()
         showVoiceDetector.reset()
         spotifyVolumeDetector.reset()
+        speedDetector.reset()
         dotPhraseDetectors.reset()
         speakerOutputDetector.reset()
         appCommandDetector.reset()
@@ -1837,6 +1881,7 @@ import SwiftUI
         musicPhraseDetector.update(text, at: Diagnostics.now, timings: timings)
         showVoiceDetector.update(text, at: Diagnostics.now, timings: timings)
         spotifyVolumeDetector.update(text, at: Diagnostics.now, timings: timings)
+        speedDetector.update(text, at: Diagnostics.now, timings: timings)
         dotPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         speakerOutputDetector.update(text, at: Diagnostics.now, timings: timings)
         appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
@@ -1866,7 +1911,7 @@ import SwiftUI
     private func checkStandaloneWake(utteranceEnded: Bool = false) {
         guard enabled, detectionRunning, !notificationReplies.interceptsSpeech else { return }
         defer {
-            if finalValueFrame { spotifyVolumeDetector.endUtterance(); finalValueFrame = false }
+            if finalValueFrame { spotifyVolumeDetector.endUtterance(); speedDetector.endUtterance(); finalValueFrame = false }
         }
         // Every listed phrase for a command shares its detector, occurrence count and sound.
         // A phrase listed for different commands keeps its first owner in PhraseConfiguration.
@@ -1881,6 +1926,7 @@ import SwiftUI
             musicPhraseDetector.cancelPending(patterns: musicPatterns.map(\.pattern), endPatterns: endPatterns)
             showVoiceDetector.cancelPending(patterns: patterns(for: .showVoicePhrase), endPatterns: endPatterns)
             spotifyVolumeDetector.cancelPending(prefixes: patterns(for: .spotifyVolumePhrase), endPatterns: endPatterns)
+            speedDetector.cancelPending(prefixes: patterns(for: .setSpeedPhrase), endPatterns: endPatterns)
             dotPhraseDetectors.cancelPending(aliases: dotPatterns, endPatterns: endPatterns)
             speakerOutputDetector.cancelPending(patterns: activeSpeakerCommands.map(\.pattern), endPatterns: endPatterns)
             appCommandDetector.consumeAll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
@@ -1961,6 +2007,30 @@ import SwiftUI
                 }
             }
         }
+        for command in speedDetector.poll(at: Diagnostics.now, prefixes: patterns(for: .setSpeedPhrase)) {
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: [command.pattern])
+            if command.revised {
+                guard let request = speedRequests[command.id], let root = request.root else { continue }
+                if command.invalid {
+                    request.valid = false; repetitionDetails[root] = nil; repetitions.invalidateValue(root); continue
+                }
+                _ = repetitions.reviseValue(root, range: command.range, reapply: request.value != command.value, finishingUtterance: finalValueFrame) {
+                    guard receipts.retarget(root, to: command.value.relayValue, revisingValue: true) else { return false }
+                    request.value = command.value; repetitionDetails[root] = nil; return true
+                }
+            } else {
+                let call = receiptSession.flatMap { session in
+                    VoiceBridge.currentApplication().flatMap { VoicePeerCall(token: session + ":\($0.processIdentifier)") }
+                }
+                let request = SpokenSpeed(command.value, call: call)
+                speedRequests[command.id] = request
+                if let id = reserveSpeech(PhraseSlot.setSpeedPhrase.rawValue, target: command.value.relayValue, range: command.range,
+                    onReserved: { request.root = $0 },
+                    repeatAction: { [weak self] id in self?.requestChatSpeed(request, receipt: id) }) {
+                    requestChatSpeed(request, receipt: id)
+                }
+            }
+        }
         if let first = showPatterns.first,
            showVoiceDetector.poll(at: Diagnostics.now, phrase: first.text, similar: first.similar,
                                   rejectNegated: true, patterns: showPatterns, directOnly: true) {
@@ -1994,6 +2064,7 @@ import SwiftUI
         let appCommands = appCommandDetector.poll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase),
             reserved: patterns(for: .showVoicePhrase) + activeSpeakerCommands.map(\.pattern),
             reservedSwitchPrefixes: activeSpeakerPrefixes,
+            immediateSwitchNames: DesktopCommands.runningApps().filter { $0.id == "com.google.Chrome" }.flatMap { $0.names + appNameSpellings.spellings(for: $0.id) },
             onDecision: { command, decision, evidence in
                 // Counts and timing only, never words: separates a missed pause from discussion.
                 var numbers = ["left_words": Double(evidence.leftWords), "name_words": Double(evidence.nameWords)]
@@ -2135,6 +2206,7 @@ import SwiftUI
         quitting = true
         await notificationReplies.shutdown()
         showVoiceTask?.cancel()
+        let pendingSpeed = speedTail; pendingSpeed?.cancel()
         let pendingModelBar = modelBarLaunchTask
         modelBarLaunch.cancel(); pendingModelBar?.cancel(); modelBarLaunchExpiry?.cancel()
         let pendingDot = Array(dotTasks.values)
@@ -2149,6 +2221,7 @@ import SwiftUI
         await voicePeerPriority.shutdown()
         await previous?.value
         await pendingModelBar?.value
+        await pendingSpeed?.value
         for operation in pendingDot { _ = await operation.value }
         do { try await CodexVoiceSpeed.shared.shutdown() }
         catch { Diagnostics.shared.failure("voice.defaults.restore_failed", error) }

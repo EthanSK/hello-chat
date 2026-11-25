@@ -404,9 +404,9 @@ struct StandaloneWake {
 
     // Value commands retain their prefix's occurrence while ASR completes the
     // argument. Recheck the same context rules for the whole revised value.
-    func permitsDirectCommand(in range: Range<Int>) -> Bool {
+    func permitsDirectCommand(in range: Range<Int>, allowEmbedded: Bool = false) -> Bool {
         guard range.lowerBound >= 0, range.upperBound <= context.count, !range.isEmpty else { return false }
-        return isDirectCommand(start: range.lowerBound, end: range.upperBound)
+        return isDirectCommand(start: range.lowerBound, end: range.upperBound, allowEmbedded: allowEmbedded)
             && !isMention(start: range.lowerBound, end: range.upperBound, rejectNegated: true, directOnly: true)
     }
 }

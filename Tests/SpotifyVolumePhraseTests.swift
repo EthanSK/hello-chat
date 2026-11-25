@@ -6,6 +6,43 @@ import Foundation
     @MainActor static func main() {
         var checks = 0
         func check(_ condition: Bool, _ message: String) { precondition(condition, message); checks += 1 }
+        let speedConfiguration = PhraseConfiguration(rows: [.setSpeedPhrase: ["Set speed"]])
+        let speedPrefix = PhrasePattern(slot: .setSpeedPhrase, text: "Set speed", similar: true,
+            dictionaries: PhraseDictionaries(savedByTrigger: [:], active: speedConfiguration))
+        func speeds(_ text: String, prefixes: [PhrasePattern]? = nil) -> [ChatSpeedPhrase.Command] {
+            var detector = ChatSpeedPhrase()
+            detector.audio(level: 0.2, seconds: 0.1, at: 0)
+            detector.update(text, at: 1, timings: nil)
+            return detector.poll(at: 1, prefixes: prefixes ?? [speedPrefix])
+        }
+        for speed in CodexSpeed.allCases {
+            for prefix in ["Set speed", "Set speed to", "Set the speed", "Set the speed to"] {
+                check(speeds(prefix + " " + speed.rawValue).map(\.value) == [speed], "Exact named speed: " + prefix + " " + speed.rawValue)
+            }
+        }
+        for spelling in ["ultra-fast", "ultra fast", "ultrafast"] {
+            check(speeds("Set speed " + spelling).map(\.value) == [.ultrafast], "Spoken Ultra spelling: " + spelling)
+        }
+        for text in ["Set speed", "Set speed ultra", "Set speed turbo", "Set speed fast tomorrow", "Don't set speed fast", "I said set speed fast", "The phrase set speed fast", "Can you add set speed fast"] {
+            check(speeds(text).isEmpty, "Incomplete/unsupported/mentioned/planned speed: " + text)
+        }
+        let customSpeed = PhrasePattern(text: "Chat pace", similar: false)
+        check(speeds("Chat pace Fast", prefixes: [customSpeed]).map(\.value) == [.fast], "Shared editable prefix")
+        check(speeds("Set speed Fast", prefixes: [customSpeed]).isEmpty, "Deleted speed prefix stays deleted")
+        check(speeds("Set speed Fast", prefixes: []).isEmpty, "Disabled speed action has no active pattern")
+        var speedRevision = ChatSpeedPhrase()
+        speedRevision.audio(level: 0.2, seconds: 0.1, at: 0)
+        speedRevision.update("Set speed Fast", at: 1, timings: nil)
+        let firstSpeed = speedRevision.poll(at: 1, prefixes: [speedPrefix])
+        speedRevision.update("Set speed Ultrafast", at: 2, timings: nil)
+        let secondSpeed = speedRevision.poll(at: 2, prefixes: [speedPrefix])
+        check(firstSpeed.first?.value == .fast && secondSpeed.first?.value == .ultrafast && firstSpeed.first?.id == secondSpeed.first?.id && secondSpeed.first?.revised == true,
+              "A revised named speed retains one occurrence/receipt")
+        check(speedRevision.poll(at: 3, prefixes: [speedPrefix]).isEmpty, "An unchanged speed final never replays")
+        speedRevision.reset(); speedRevision.audio(level: 0.2, seconds: 0.1, at: 0)
+        speedRevision.update("Set speed Fast. Bye Chat", at: 1, timings: nil)
+        speedRevision.cancelPending(prefixes: [speedPrefix], endPatterns: [PhrasePattern(text: "Bye Chat", similar: false, ending: true)])
+        check(speedRevision.poll(at: 1, prefixes: [speedPrefix]).isEmpty, "End cancels pending speed")
         let configuration = PhraseConfiguration(rows: [.spotifyVolumePhrase: ["Spotify volume"]])
         let prefix = PhrasePattern(slot: .spotifyVolumePhrase, text: "Spotify volume", similar: true,
                                    dictionaries: PhraseDictionaries(savedByTrigger: [:], active: configuration))

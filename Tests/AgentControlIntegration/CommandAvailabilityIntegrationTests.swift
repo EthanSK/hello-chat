@@ -124,6 +124,9 @@ import SwiftUI
     func testEveryCommandEditorAndDisabledListRenderWithoutShowingWindows() async throws {
         try isolatedHome()
         _ = NSApplication.shared
+        let priorAppearance = NSApp.appearance
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+        defer { NSApp.appearance = priorAppearance }
         let original = UserDefaults.standard.object(forKey: CommandAvailability.preferenceKey)
         defer { UserDefaults.standard.set(original, forKey: CommandAvailability.preferenceKey) }
         UserDefaults.standard.removeObject(forKey: CommandAvailability.preferenceKey)
@@ -132,7 +135,8 @@ import SwiftUI
             let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             defer { window.close() }
-            let view = NSHostingView(rootView: root)
+            let view = NSHostingView(rootView: root.environment(\.colorScheme, .dark).background(Color(nsColor: .windowBackgroundColor)))
+            window.appearance = NSAppearance(named: .darkAqua)
             window.contentView = view; view.layoutSubtreeIfNeeded()
             XCTAssertFalse(window.isVisible)
             if let directory = ProcessInfo.processInfo.environment["HCHAT_COMMAND_SETTINGS_CAPTURE_DIR"] {
@@ -156,7 +160,7 @@ import SwiftUI
             }
         }
         for command in HomeCommand.all { model.setCommandEnabled(false, command: command) }
-        XCTAssertEqual(model.disabledCommands.count, 19)
+        XCTAssertEqual(model.disabledCommands.count, 20)
         try capture(Form { DisabledCommandsSection(model: model) }.formStyle(.grouped), name: "disabled-all", height: 900)
         let zoom = try XCTUnwrap(HomeCommand.containing(.zoomInPhrase))
         try capture(CommandPhrasesView(model: model, slots: zoom.slots), name: "editor-disabled-zoom", width: 520, height: 600)

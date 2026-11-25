@@ -186,3 +186,24 @@ extension SpokenValuePhrase where Value == Int {
         return (number.value, end)
     }
 }
+
+
+typealias ChatSpeedPhrase = SpokenValuePhrase<CodexSpeed>
+
+extension SpokenValuePhrase where Value == CodexSpeed {
+    // “Set speed” takes a named choice, never a model change or an implicit default.
+    // Revisions share the original command receipt just like Spotify volume. — GPT-6.1 Sol
+    init() { self.init { _, words, start in
+        var at = start
+        if ["to", "two", "too"].contains(words[safe: at] ?? "") { at += 1 }
+        let speed: CodexSpeed, end: Int
+        switch words[safe: at] {
+        case "standard": speed = .standard; end = at + 1
+        case "fast": speed = .fast; end = at + 1
+        case "ultrafast": speed = .ultrafast; end = at + 1
+        case "ultra" where words[safe: at + 1] == "fast": speed = .ultrafast; end = at + 2
+        default: return nil
+        }
+        return (speed, end)
+    } }
+}

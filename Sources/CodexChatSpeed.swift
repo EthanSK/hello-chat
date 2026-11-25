@@ -8,9 +8,7 @@ import Foundation
 import SQLite3
 
 enum CodexChatSpeed {
-    enum Speed: String, Codable, CaseIterable {
-        case standard = "Standard", fast = "Fast", ultrafast = "Ultrafast"
-    }
+    typealias Speed = CodexSpeed
     struct Selection: Equatable {
         let model: String
         let speed: Speed
@@ -24,17 +22,17 @@ enum CodexChatSpeed {
         var error: String? = nil
         var succeeded: Bool { ["observed", "unchanged", "confirmed"].contains(status) }
         var message: String {
-            if succeeded { return "Ultrafast selected for the next turn." }
+            if succeeded, let speed { return "\(speed.rawValue) selected for the next turn." }
             if status == "inactive" { return "Codex Voice is off." }
             if status == "changed" { return "The Voice call changed. Try again in the current call." }
             switch status {
             case "ambiguousChat": return "The Voice chat needs a unique title in Codex."
             case "multiplePanes": return "Open the Voice chat in one Codex pane, then try again."
             case "busy": return "Another Codex settings action is running. Try again when it finishes."
-            case "unsupported": return "Ultrafast isn’t available for this model."
+            case "unsupported": return "That speed isn’t available for this model."
             case "interrupted": return "Stopped because the Codex selection changed."
             case "defaultsUnconfirmed": return "Couldn’t restore the previous new-chat defaults."
-            default: return "Codex didn’t confirm Ultrafast. Try again after the Voice chat loads."
+            default: return "Codex didn’t confirm the speed. Try again after the Voice chat loads."
             }
         }
     }

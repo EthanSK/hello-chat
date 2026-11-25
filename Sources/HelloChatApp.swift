@@ -66,7 +66,7 @@ import Darwin
             let action = arguments[6], supplied = arguments[7]
             let supported = Set(PhraseSlot.allCases.map(\.rawValue) + VoiceAudioAction.allCases.map(\.rawValue) + ["app", "speakerOutput"])
             guard supported.contains(action), supplied.count <= 160,
-                  (action == "app" || action == "speakerOutput" || action == PhraseSlot.spotifyVolumePhrase.rawValue) == !supplied.isEmpty else { print("invalid"); exit(2) }
+                  (action == "app" || action == "speakerOutput" || [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.setSpeedPhrase.rawValue].contains(action)) == !supplied.isEmpty else { print("invalid"); exit(2) }
             let target: String
             switch action {
             case "app": target = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)).commandTarget(supplied)
@@ -76,6 +76,9 @@ import Darwin
             case PhraseSlot.spotifyVolumePhrase.rawValue:
                 guard let volume = Int(supplied), (0...100).contains(volume) else { print("invalid"); exit(2) }
                 target = String(volume)
+            case PhraseSlot.setSpeedPhrase.rawValue:
+                guard let speed = CodexSpeed.allCases.first(where: { $0.relayValue == supplied.lowercased() }) else { print("invalid"); exit(2) }
+                target = speed.relayValue
             default: target = ""
             }
             let callKey = thread.uuidString.lowercased() + ":" + session.uuidString.lowercased()
@@ -405,7 +408,9 @@ struct HelloChatApp: App {
     @StateObject private var zoom: InterfaceZoom
     @StateObject private var updater: AppUpdater
     private let agentControl: HAgentControl
+    private let initialHomeFrame: String?
     init() {
+        initialHomeFrame = UserDefaults.standard.string(forKey: "NSWindow Frame main")
         let model = GateModel()
         let zoom = InterfaceZoom()
         let updater = AppUpdater()
@@ -423,7 +428,7 @@ struct HelloChatApp: App {
         Window("Hello Chat · \(AppVersion.display)", id: "main") {
             MainView(model: model, zoom: zoom, updater: updater)
                 .modifier(HControlWindow(control: agentControl))
-                .background(InitialWindowPlacement(savedFrameName: "main", windowFound: model.phraseWindow.attach))
+                .background(InitialWindowPlacement(savedFrameName: "main", initialSavedFrame: initialHomeFrame, windowFound: model.phraseWindow.attach))
                 .onAppear {
                     delegate.model = model
                     model.initializeListening()
@@ -1032,6 +1037,7 @@ private extension PhraseSlot {
         case .zoomInPhrase: return "Sends Zoom In to the app you’re using."
         case .zoomOutPhrase: return "Sends Zoom Out to the app you’re using."
         case .showVoicePhrase: return "Opens the current Voice chat in Codex, or your last Voice chat if the call has ended."
+        case .setSpeedPhrase: return "Sets Standard, Fast or Ultrafast in the current Codex Voice chat through Model Bar. Your model, reasoning and ordinary new-chat defaults stay the same. Without a speed name, it does nothing."
         case .callDotPhrase: return "Opens Your dot in ChatGPT and starts a call. It won’t start while Codex Voice is active or its status is unknown. A Dot call that’s already active or opening is left alone."
         case .hangUpDotPhrase: return "Ends the Dot call shown in ChatGPT. If Dot call controls aren’t available, it does nothing."
         case .spotifyVolumePhrase: return "Sets Spotify’s volume to the number you say, from 0 to 100. Spotify must already be running. Without a number, it does nothing. Your Maximum volume setting, system volume and playback aren’t changed."
@@ -1248,7 +1254,7 @@ struct CommandPhrasesView: View {
             if slots.contains(.rewindVideoPhrase) {
                 RewindAmountField(seconds: $model.rewindVideoSeconds)
             }
-            if let slot = slots.first(where: { $0 == .switchAppPhrase || $0 == .spotifyVolumePhrase }), let example = slot.example {
+            if let slot = slots.first(where: { $0 == .switchAppPhrase || $0 == .spotifyVolumePhrase || $0 == .setSpeedPhrase }), let example = slot.example {
                 Text(example).font(.caption).foregroundStyle(.secondary)
             }
             ScrollViewReader { reader in
@@ -1314,6 +1320,7 @@ struct CommandPhrasesView: View {
         let main = phrase.isEmpty ? slot.defaultText : phrase
         if slot == .switchAppPhrase { return main + " Chrome" }
         if slot == .spotifyVolumePhrase { return main + " forty percent" }
+        if slot == .setSpeedPhrase { return main + " Ultrafast" }
         return main
     }
     private func add(to slot: PhraseSlot) {
@@ -2001,9 +2008,11 @@ struct MenuView: View {
 // left to macOS; scrolling handles content larger than the chosen window.
 struct InitialWindowPlacement: NSViewRepresentable {
     var savedFrameName: String? = nil
+    var initialSavedFrame: String? = nil
     var windowFound: ((NSWindow) -> Void)? = nil
     final class Host: NSView {
         var savedFrameName: String?
+        var initialSavedFrame: String?
         var windowFound: ((NSWindow) -> Void)?
         private var placed = false
         override func viewDidMoveToWindow() {
@@ -2012,6 +2021,12 @@ struct InitialWindowPlacement: NSViewRepresentable {
             guard let window, !placed, let screen = WindowDisplay.preferredScreen else { return }
             placed = true
             DispatchQueue.main.async {
+                // Native window creation can save its temporary centred frame before this
+                // callback. Restore the launch snapshot through AppKit, not that overwritten
+                // preference. Settings has no Home snapshot. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+                if self.savedFrameName != nil, let frame = self.initialSavedFrame {
+                    window.setFrame(from: frame); return
+                }
                 if let name = self.savedFrameName, window.setFrameUsingName(name) { return }
                 let bounds = screen.visibleFrame.insetBy(dx: screen.visibleFrame.width * 0.1, dy: screen.visibleFrame.height * 0.1)
                 let size = NSSize(width: min(window.frame.width, bounds.width), height: min(window.frame.height, bounds.height))
@@ -2022,11 +2037,13 @@ struct InitialWindowPlacement: NSViewRepresentable {
     func makeNSView(context: Context) -> Host {
         let host = Host()
         host.savedFrameName = savedFrameName
+        host.initialSavedFrame = initialSavedFrame
         host.windowFound = windowFound
         return host
     }
     func updateNSView(_ nsView: Host, context: Context) {
         nsView.savedFrameName = savedFrameName
+        nsView.initialSavedFrame = initialSavedFrame
         nsView.windowFound = windowFound
         if let window = nsView.window { windowFound?(window) }
     }

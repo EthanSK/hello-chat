@@ -44,6 +44,12 @@ enum VoiceAudioAction: String, CaseIterable, Hashable {
         return snapshot.microphone.map { $0 == .muted }
     }
 }
+// Ethan's “set speed” uses the same three names as Codex's native Speed menu. — GPT-6.1 Sol
+enum CodexSpeed: String, Codable, CaseIterable {
+    case standard = "Standard", fast = "Fast", ultrafast = "Ultrafast"
+    var relayValue: String { rawValue.lowercased() }
+}
+
 enum PhraseCommand: Equatable { case wake, sleep }
 
 struct MicrophoneOwnership {
@@ -63,7 +69,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     case pauseVideoPhrase, playVideoPhrase, rewindVideoPhrase, rewindFivePhrase, rewindTenPhrase
     case pauseMusicPhrase, playMusicPhrase, spotifyVolumePhrase
     case callDotPhrase, hangUpDotPhrase
-    case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase
+    case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase, setSpeedPhrase
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -88,6 +94,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .zoomInPhrase: return "Zoom in phrase"
         case .zoomOutPhrase: return "Zoom out phrase"
         case .showVoicePhrase: return "Show Voice phrase"
+        case .setSpeedPhrase: return "Set speed phrase"
         }
     }
     // Shown under the field. App prefixes are followed by an app name; both bring an app forward,
@@ -97,6 +104,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .switchAppPhrase: return "Say a phrase followed by an app name."
         case .rewindVideoPhrase: return "A phrase with a duration uses that duration."
         case .spotifyVolumePhrase: return "Say a phrase followed by a volume from 0 to 100."
+        case .setSpeedPhrase: return "Say a phrase followed by Standard, Fast or Ultrafast."
 
         default: return nil
         }
@@ -125,6 +133,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .zoomInPhrase: return "Zoom in"
         case .zoomOutPhrase: return "Zoom out"
         case .showVoicePhrase: return "Show voice"
+        case .setSpeedPhrase: return "Set speed"
         }
     }
     // Browser-video phrases go through Agent Flow Bridge and never reach Codex Voice.
@@ -140,7 +149,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     // Desktop phrases act on Mac apps and never reach Codex Voice either.
     var controlsDot: Bool { [.callDotPhrase, .hangUpDotPhrase].contains(self) }
     static let dotSlots = allCases.filter(\.controlsDot)
-    var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase].contains(self) }
+    var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase, .setSpeedPhrase].contains(self) }
     static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop && !$0.controlsDot }
     static let videoSlots = allCases.filter(\.controlsVideo)
     static let musicSlots = allCases.filter(\.controlsMusic)
@@ -202,6 +211,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
                              "Show me": ["Show mee"]],
             .zoomInPhrase: ["Zoom in": ["Zoom inn", "Zoom it in"]],
             .zoomOutPhrase: ["Zoom out": ["Zoom it out", "Zoom back out"]],
+            .setSpeedPhrase: ["Set speed": ["Set speed to", "Set the speed", "Set the speed to"]],
             .showVoicePhrase: ["Show voice": ["Show the voice chat", "Show voice chat", "Show Codex Voice",
                                               "Sho voice"]],
         ]
@@ -247,12 +257,13 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .zoomInPhrase: return .zoomIn
         case .zoomOutPhrase: return .zoomOut
         case .showVoicePhrase: return .showVoice
+        case .setSpeedPhrase: return .setSpeed
         }
     }
 }
 
 enum PhraseAction: String, CaseIterable {
-    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, callDot, hangUpDot, app, zoomIn, zoomOut, showVoice
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, callDot, hangUpDot, app, zoomIn, zoomOut, showVoice, setSpeed
     // Ethan’s “brackets Codex” identifies the four call audio rows in Home and their phrase editors.
     var settingsTitle: String {
         switch self {
@@ -275,6 +286,7 @@ enum PhraseAction: String, CaseIterable {
         case .zoomIn: return "Zoom in"
         case .zoomOut: return "Zoom out"
         case .showVoice: return "Show Voice"
+        case .setSpeed: return "Set speed (Codex Voice)"
         }
     }
     var slots: [PhraseSlot] { PhraseSlot.allCases.filter { $0.action == self } }

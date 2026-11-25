@@ -18,7 +18,7 @@ import Foundation
             return .init(status: "observed", thread: self.call.thread, speed: self.selected,
                          model: self.badReply == "changed-model" && self.reads > 1 ? "Another model" : self.model)
         }
-        e.transact = { _, apply in
+        e.transact = { _, _, apply in
             self.transactions += 1
             let result = await apply()
             return self.restoreWorks ? result : .init(status: "defaultsUnconfirmed", thread: self.call.thread, speed: nil, model: nil)
@@ -26,13 +26,13 @@ import Foundation
         e.relay = { r in
             self.requests.append(r)
             if self.badReply == "no-receipt" { return nil }
-            if !r.verifyOnly { self.selected = .ultrafast }
+            if !r.verifyOnly { self.selected = CodexSpeed.allCases.first { $0.relayValue == r.speed }! }
             if self.badReply == "changed-call" { self.current = false }
             return .init(requestId: self.badReply == "wrong-id" ? UUID() : r.requestId,
                          callToken: self.badReply == "wrong-call" ? "\(UUID()):\(UUID()):123" : r.callToken,
                          expiresAtMs: self.badReply == "wrong-expiry" ? r.expiresAtMs + 1 : r.expiresAtMs,
-                         result: r.verifyOnly ? "already-selected" : "applied", selectedSpeed: "ultrafast",
-                         displaySpeed: self.badReply == "wrong-display" ? "fast" : "ultrafast",
+                         result: r.verifyOnly ? "already-selected" : "applied", selectedSpeed: r.speed,
+                         displaySpeed: self.badReply == "wrong-display" ? "wrong" : r.speed,
                          model: "gpt-6.1-sol", reasoning: "xhigh", reason: nil)
         }
         return e
@@ -50,6 +50,15 @@ import Foundation
         check(!good.requests[0].verifyOnly && good.requests[1].verifyOnly && good.requests[0].requestId != good.requests[1].requestId,
               "Post-restore observation is explicitly read-only, never a mutation replay")
         check(good.requests.allSatisfy { VoicePeerCall(token: $0.callToken) == good.call && $0.chatTitle == "Exact test Voice" }, "Both operations retain exact call and composer title")
+        for speed in CodexSpeed.allCases {
+            let f = Fixture(); f.selected = speed == .standard ? .fast : .standard
+            let result = await ModelBarVoiceSpeed.perform(call: f.call, speed: speed, environment: f.environment)
+            check(result.succeeded && result.speed == speed && f.requests.count == 2, "Requested \(speed) confirms both native and bar state")
+            check(f.requests.allSatisfy { $0.speed == speed.relayValue }, "Apply and post-restore verification keep the exact requested tier")
+        }
+        let invalidated = Fixture()
+        check(!(await ModelBarVoiceSpeed.perform(call: invalidated.call, valid: { false }, environment: invalidated.environment)).succeeded
+              && invalidated.requests.isEmpty, "An obsolete recognition occurrence cannot navigate or change speed")
         let already = Fixture(); already.selected = .ultrafast
         check(await ModelBarVoiceSpeed.perform(call: already.call, environment: already.environment).succeeded
               && already.transactions == 0 && already.requests.count == 2 && already.requests.allSatisfy(\.verifyOnly),
