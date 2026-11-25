@@ -85,39 +85,51 @@ enum SpotifyVolumeControl {
     private var presence: VoiceCallPresence = .unknown
     private var callIdentifier: String?
     private var microphoneMuted: Bool?
+    private var outputSilenced: Bool?
+    private var microphoneIntentAt = -Double.infinity
+    private var outputIntentAt = -Double.infinity
     // Why the observer last changed presence: metadata only, for diagnostics.
     private var evidence: String?
     private(set) var callEpoch = 0
     private var generation = 0
     private var spotifyLaunchObserver: NSObjectProtocol?
 
-    init(monitor: VoiceCallMonitor, receiptURL: URL = AppPaths.support.appendingPathComponent("SpotifyVolume/restore.json")) {
+    init(monitor: VoiceCallMonitor, receiptURL: URL = AppPaths.support.appendingPathComponent("SpotifyVolume/restore.json"),
+         access: SpotifyVolumeSession.Access? = nil) {
         self.monitor = monitor
         let receipt = SpotifyVolumeReceipt(url: receiptURL)
-        session = SpotifyVolumeSession(access: .init(read: SpotifyVolumeControl.read, write: SpotifyVolumeControl.write,
+        session = SpotifyVolumeSession(access: access ?? .init(read: SpotifyVolumeControl.read, write: SpotifyVolumeControl.write,
             load: receipt.load, save: receipt.save))
     }
 
     func observe(_ state: VoiceCallObservation) {
         guard enabled else { return }
         let nextIdentifier = state.presence == .inactive ? nil : state.callIdentifier ?? callIdentifier
-        guard state.presence != presence || nextIdentifier != callIdentifier else { return }
-        if state.presence == .inactive || (callIdentifier != nil && nextIdentifier != callIdentifier) {
+        let replaced = callIdentifier != nil && nextIdentifier != callIdentifier
+        if (state.presence == .inactive && presence != .inactive) || replaced {
             microphoneMuted = nil
+            outputSilenced = nil; microphoneIntentAt = -.infinity; outputIntentAt = -.infinity
             callEpoch += 1
         }
+        let boundAudio = state.verifiedCallIdentifier != nil && state.verifiedCallIdentifier == nextIdentifier
+        let nativeMic = boundAudio && (state.observedAt ?? -.infinity) >= microphoneIntentAt ? state.microphoneMuted : nil
+        let nativeOutput = boundAudio && (state.observedAt ?? -.infinity) >= outputIntentAt ? state.outputSilenced : nil
+        guard state.presence != presence || nextIdentifier != callIdentifier
+            || nativeMic.map({ $0 != microphoneMuted }) == true || nativeOutput.map({ $0 != outputSilenced }) == true else { return }
         presence = state.presence
         callIdentifier = nextIdentifier
+        if let nativeMic { microphoneMuted = nativeMic }
+        if let nativeOutput { outputSilenced = nativeOutput }
         evidence = state.evidence
         reconcile()
     }
 
-    // Only H Chat's confirmed microphone commands control this override.
-    // Agent Flow recording and speaker silence can change native audio state
-    // independently, so generic accessibility reads never set it.
+    // Both native Voice controls and H Chat's admitted audio commands feed the same
+    // reversible lease. A read started before an explicit command cannot undo it. — GPT-6.1 Sol
     func confirmMicrophoneMute(_ muted: Bool, in epoch: Int) {
         guard enabled, epoch == callEpoch else { return }
         microphoneMuted = muted
+        microphoneIntentAt = Diagnostics.now
         if presence == .active { reconcile() }
         else { monitor.refresh() }
     }
@@ -127,15 +139,23 @@ enum SpotifyVolumeControl {
     func microphonePhraseSent(_ requestedMuted: Bool, in epoch: Int) {
         guard enabled, epoch == callEpoch, presence == .active else { return }
         microphoneMuted = requestedMuted
+        microphoneIntentAt = Diagnostics.now
+        reconcile()
+    }
+    func outputPhraseSent(_ requestedSilenced: Bool, in epoch: Int) {
+        guard enabled, epoch == callEpoch, presence == .active else { return }
+        outputSilenced = requestedSilenced; outputIntentAt = Diagnostics.now
         reconcile()
     }
 
     func setEnabled(_ value: Bool) {
         observeSpotifyLaunch()
         enabled = value; generation += 1; callEpoch += 1
+        monitor.observesAudioState = value
         presence = value ? .unknown : .inactive
         callIdentifier = nil
         microphoneMuted = nil
+        outputSilenced = nil; microphoneIntentAt = -.infinity; outputIntentAt = -.infinity
         evidence = nil
         if !value { reconcile() }
     }
@@ -200,16 +220,18 @@ enum SpotifyVolumeControl {
         let state = enabled ? presence : .inactive
         let callIdentifier = self.callIdentifier
         let microphoneMuted = self.microphoneMuted
+        let outputSilenced = self.outputSilenced
         let evidence = enabled ? self.evidence ?? "none" : "disabled"
         generation += 1
         let generation = self.generation
         let session = self.session
         queue.async { [weak self] in
             do {
-                let result = try session.reconcile(state, callIdentifier: callIdentifier, microphoneMuted: microphoneMuted, limit: limit, limitEdited: limitEdited)
+                let result = try session.reconcile(state, callIdentifier: callIdentifier, microphoneMuted: microphoneMuted, outputSilenced: outputSilenced, limit: limit, limitEdited: limitEdited)
                 Diagnostics.shared.record("spotify.volume.reconciled", info: [
                     "result": result.rawValue, "call": state.rawValue,
                     "microphone_volume_request": microphoneMuted.map { $0 ? "mute" : "unmute" } ?? "none",
+                    "output_volume_request": outputSilenced.map { $0 ? "silence" : "audible" } ?? "none",
                     "evidence": evidence
                 ])
                 Task { @MainActor [weak self] in
@@ -235,6 +257,9 @@ enum SpotifyVolumeControl {
                 }
             }
         }
+    }
+    func waitForPendingChanges() async {
+        await withCheckedContinuation { continuation in queue.async { continuation.resume() } }
     }
 
     func shutdown(preservingVolume: Bool) async {

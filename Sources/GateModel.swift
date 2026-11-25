@@ -1536,7 +1536,8 @@ import SwiftUI
                     let sent = try await voice.setAudio(audio, beforeShortcut: remoteGuard.map { target in { try target.check() } }, onRecognized: { if playFeedback { self.feedback.play(.microphoneDetected) } })
                     guard generation == token else { return }
                     guard sent else { throw BridgeError.message("Open Codex, then try again.") }
-                    if !audio.controlsSpeakers { spotifyVolume.microphonePhraseSent(audio.targetMuted, in: call) }
+                    if audio.controlsSpeakers { spotifyVolume.outputPhraseSent(audio.targetMuted, in: call) }
+                    else { spotifyVolume.microphonePhraseSent(audio.targetMuted, in: call) }
                     if playFeedback, let slot = audio.slots.first { feedback.play(slot.cue) }
                     showListening()
                     lastEvent = audio.shortcutSentMessage
@@ -1982,7 +1983,8 @@ import SwiftUI
                         guard sent else { finishCommand(id, .failedBeforeDispatch); continue }
                         finishCommand(id, .submitted)
                         error = nil
-                        if !action.controlsSpeakers { spotifyVolume.microphonePhraseSent(action.targetMuted, in: spotifyCall) }
+                        if action.controlsSpeakers { spotifyVolume.outputPhraseSent(action.targetMuted, in: spotifyCall) }
+                        else { spotifyVolume.microphonePhraseSent(action.targetMuted, in: spotifyCall) }
                         feedback.play(slot.cue) // Acknowledge dispatch; the native mute state remains unknown.
                         showListening()
                         lastEvent = action.shortcutSentMessage

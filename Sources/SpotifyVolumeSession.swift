@@ -31,6 +31,8 @@ struct VoiceCallObservation: Equatable {
     // Monotonic start time of the native observation; UI must not apply a read
     // begun before its own newer Start/End confirmation. Other consumers ignore it.
     var observedAt: TimeInterval? = nil
+    var microphoneMuted: Bool? = nil
+    var outputSilenced: Bool? = nil
 }
 
 // Saved boundaries read after the current Codex process launched. `ended`
@@ -88,6 +90,8 @@ struct VoiceCallRead {
     var ledger: VoiceLedgerSessions?
     var ledgerResolved = true
     var accessibilityAllowed = true
+    var microphoneMuted: Bool? = nil
+    var outputSilenced: Bool? = nil
 }
 
 // Combine native controls with saved boundaries for the same Codex process.
@@ -126,8 +130,11 @@ struct VoiceCallTracker {
         let active = read.ledger?.active
         let verified = read.controlsPresent && read.accessibilityAllowed && read.process != nil
             && active?.count == 1 ? active?.first : nil
+        let audioConfirmed = verified != nil && read.controlsComplete && read.microphoneMuted != nil && read.outputSilenced != nil
         observations.append(.init(presence: decision.presence, callIdentifier: boundaries.callIdentifier,
-                                  verifiedCallIdentifier: verified, evidence: evidence))
+                                  verifiedCallIdentifier: verified, evidence: evidence,
+                                  microphoneMuted: audioConfirmed ? read.microphoneMuted : nil,
+                                  outputSilenced: audioConfirmed ? read.outputSilenced : nil))
         return (observations, readAgain)
     }
 
@@ -154,9 +161,12 @@ struct SpotifyVolumeLease: Codable, Equatable {
     var callIdentifier: String?
     let cap: Int?
     var previousApplied: Int? // Original expected slider position during an in-call cap edit.
-    // Optional for receipts written before the spoken microphone controls
-    // affected Spotify. A call can have a restore receipt even while muted.
+    // Optional for older receipts. Ethan's "muted or silenced" uses one saved
+    // baseline for either reason, including overlapping controls and recovery. — GPT-6.1 Sol
     var mutePhase: MutePhase?
+    // One existing restore receipt owns both reasons, including restart recovery. — GPT-6.1 Sol
+    var microphoneMuted: Bool?
+    var outputSilenced: Bool?
 
     init(original: Int, applied: Int, confirmed: Bool = false, callIdentifier: String? = nil,
          cap: Int = SpotifyVolumePolicy.maximumVolume) {
@@ -250,7 +260,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     // Save BEFORE sending the volume change. A crash between the event and its
     // reply must not lose the original value or save the cap as the next original.
     func reconcile(_ call: VoiceCallPresence, preservingManualOverride: Bool = false,
-                   callIdentifier: String? = nil, microphoneMuted: Bool? = nil,
+                   callIdentifier: String? = nil, microphoneMuted: Bool? = nil, outputSilenced: Bool? = nil,
                    limit: Int = SpotifyVolumePolicy.maximumVolume, limitEdited: Bool = false) throws -> Result {
         try load()
         guard call != .unknown else { return .uncertain }
@@ -271,21 +281,30 @@ final class SpotifyVolumeSession: @unchecked Sendable {
                     try keep(saved)
                 }
                 if saved.mutePhase == .manualOverride { return .manualChange }
-                if microphoneMuted ?? (saved.mutePhase != nil) {
+                var changed = saved
+                if let microphoneMuted { changed.microphoneMuted = microphoneMuted }
+                if let outputSilenced { changed.outputSilenced = outputSilenced }
+                if changed != saved { try keep(changed); saved = changed }
+                let knownAudio = saved.microphoneMuted != nil || saved.outputSilenced != nil
+                let muted = saved.microphoneMuted == true || saved.outputSilenced == true
+                    || (!knownAudio && saved.mutePhase != nil)
+                if muted {
                     return try restoreWhileMuted(saved, current: current)
                 }
                 if limitEdited, saved.confirmed, saved.owns(current), saved.mutePhase == nil, saved.appliedCap != limit {
                     var updated = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, limit),
                                                     callIdentifier: saved.callIdentifier, cap: limit)
+                    updated.microphoneMuted = saved.microphoneMuted; updated.outputSilenced = saved.outputSilenced
                     updated.previousApplied = current
                     try keep(updated)
                     return try apply(updated)
                 }
                 return try lowerWhileListening(saved, current: current, limit: limit)
             }
-            let saved = SpotifyVolumeLease(original: current, applied: min(current, limit),
+            var saved = SpotifyVolumeLease(original: current, applied: min(current, limit),
                                            callIdentifier: callIdentifier, cap: limit)
-            if microphoneMuted == true {
+            saved.microphoneMuted = microphoneMuted; saved.outputSilenced = outputSilenced
+            if microphoneMuted == true || outputSilenced == true {
                 var restored = saved
                 restored.mutePhase = .restored
                 try keep(restored)
@@ -337,8 +356,9 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     private func lowerWhileListening(_ saved: SpotifyVolumeLease, current: Int, limit: Int) throws -> Result {
         if saved.mutePhase == .restored || (saved.mutePhase == .restoring && current == saved.original) {
             guard current == saved.original else { return try preserveManualChange(saved) }
-            let next = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, limit),
+            var next = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, limit),
                                           callIdentifier: saved.callIdentifier, cap: limit)
+            next.microphoneMuted = saved.microphoneMuted; next.outputSilenced = saved.outputSilenced
             try keep(next)
             return try apply(next)
         }
@@ -370,8 +390,10 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     }
 
     private func confirm(_ saved: SpotifyVolumeLease, applied: Int) throws {
-        try keep(SpotifyVolumeLease(original: saved.original, applied: applied, confirmed: true,
-                                    callIdentifier: saved.callIdentifier, cap: saved.appliedCap))
+        var confirmed = SpotifyVolumeLease(original: saved.original, applied: applied, confirmed: true,
+                                          callIdentifier: saved.callIdentifier, cap: saved.appliedCap)
+        confirmed.microphoneMuted = saved.microphoneMuted; confirmed.outputSilenced = saved.outputSilenced
+        try keep(confirmed)
     }
 }
 

@@ -284,7 +284,7 @@ Release workflows invoke the signing host's versioned Sparkle copy at `~/.local/
 
 ## Spotify volume and microphone phrases
 
-- A confirmed microphone mute phrase restores the original slider level while keeping the same call's receipt. Confirmed unmute, including waking an existing muted call, reapplies the normal cap. Agent Flow's recording controls and H Chat's speaker phrases do not set this Spotify state. Keep End, a replacement call and a manual slider change distinct from a temporary restore.
+- The earlier microphone-only policy is superseded by Ethan's 25 November "muted or silenced" request: either confirmed native microphone mute or Voice-output silence restores the saved baseline, and the cap returns only after both clear. H Chat's admitted directional commands feed the same receipt without adding control reads or waits to their key dispatch. Agent Flow recording is a separate state. Keep End, a replacement call and a manual slider change distinct from a temporary restore.
 - Save the pending restore before writing the original volume. A restart between that write and its readback must recognize both the cap and the original, while a manual change during the restored phase must never reacquire old ownership.
 
 ## 2026-11-14 — Call evidence and delayed command hypotheses
