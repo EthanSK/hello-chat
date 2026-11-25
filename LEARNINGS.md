@@ -391,3 +391,7 @@ Fresh qualification exposed two separate compatibility assumptions. The feedback
 [Hosted Release 45434014607](https://github.com/EthanSK/hello-chat/actions/runs/45434014607) completed every gate. Its notarization/signing step succeeded at 16:24:58 UTC, publication succeeded and downloaded bytes passed verification at 16:26:33 UTC. Public [v1.5.7](https://github.com/EthanSK/hello-chat/releases/tag/v1.5.7) is bound to the selected source and immutable release receipt. A successful credential setup or unrelated green workflow is not equivalent to this full result.
 
 - 24 November2026: notification Reply may coexist with Agent Flow recording using H Chat’s existing selected listener. TTS suppression remains owned by the speaker. Definitive pre-audio Agent Flow denial or provider-render failure plus exact native delivery can open one first visual opportunity at HUD readiness; retain old delivery clocks separately. Never fabricate audio, reopen a stale/answered origin, or use visual fallback after any audio start. Both routes use the same five-second app-owned limit, native End and real FIFO cleanup; active/unknown Voice and genuine frame loss still cancel.
+
+## CLI run loop
+
+The M1 change helper trapped because `dispatchMain` can move main-queue work off the real thread. Keep that thread alive. A port is used here. The normal app loop is unchanged.

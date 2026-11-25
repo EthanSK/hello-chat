@@ -49,7 +49,11 @@ import Darwin
                 if let speed { emit(await CodexVoiceSpeed.shared.existingChatSpeed(thread: thread, speed: speed)) }
                 emit(await CodexVoiceSpeed.shared.observe(thread: thread))
             }
-            dispatchMain()
+            // dispatchMain can run this on another pthread; AppKit then recurses.
+            // Keep the actual main thread live. — GPT-6.1 Sol
+            RunLoop.main.add(Port(), forMode: .default)
+            RunLoop.main.run()
+            exit(1)
         }
         if arguments.first == "--voice-command-receipt" {
             // The skill supplies the real session and input frame time. Only a live local call can
