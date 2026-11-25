@@ -43,6 +43,7 @@ import SwiftUI
         coordinator.captureOrigin = { _, _, _ in origin }
         coordinator.currentDesktop = { (URL(fileURLWithPath: "/fixture/codex"), getpid()) }
         coordinator.queueCommand = { calls.append($0); return 0 }
+        coordinator.openOrigin = { _, _ in false } // Never open a real app in coordinator tests.
         addTeardownBlock { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
         return .init(coordinator: coordinator, origin: origin, clock: clock, calls: calls, root: root)
     }
@@ -65,6 +66,113 @@ import SwiftUI
         try await f.coordinator.fallbackReady(event: event, instance: f.coordinator.instance,
             deliveredUptime: delivery, deliveredWall: f.clock.wallBase + delivery,
             skipReason: "agent-flow-speech-denied", expiresAt: f.clock.wallBase + f.clock.time + 3)
+    }
+    func testAcceptedReplyOpensExactOriginOnceWithoutWaitingForArrival() async throws {
+        let f = try fixture(), event = UUID()
+        var opened: [(Int32, UUID)] = []
+        f.coordinator.openOrigin = { opened.append(($0, $1)); return true }
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        XCTAssertTrue(opened.isEmpty)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        await f.coordinator.waitForPendingDelivery()
+        XCTAssertEqual(f.calls.count, 1)
+        XCTAssertEqual(opened.count, 1)
+        XCTAssertEqual(opened.first?.0, getpid()); XCTAssertEqual(opened.first?.1, f.origin.thread)
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued", "Opening does not claim saved arrival")
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        XCTAssertEqual(opened.count, 1); XCTAssertEqual(f.calls.count, 1)
+        await f.coordinator.shutdown()
+    }
+    func testOwnExactArrivalBeforeQueueReturnsStillOpens() async throws {
+        let f = try fixture(), event = UUID()
+        let entered = DispatchSemaphore(value: 0), observed = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        var opens = 0
+        f.coordinator.openOrigin = { _, thread in XCTAssertEqual(thread, f.origin.thread); opens += 1; return true }
+        f.coordinator.validateSubmittedOrigin = { origin, reply in try origin.validate(reply: reply); observed.signal() }
+        f.coordinator.queueCommand = { command in
+            f.calls.append(command)
+            let message = String(command.last!.dropFirst("--message=".count))
+            let handle = try FileHandle(forWritingTo: f.origin.rollout); defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: JSONSerialization.data(withJSONObject: ["type":"event_msg", "payload":["type":"user_message", "message":message, "images":[], "local_images":[]]]) + Data([10]))
+            entered.signal()
+            guard release.wait(timeout: .now() + 4) == .success else { return 1 }
+            return 0
+        }
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        let queued = await Task.detached { entered.wait(timeout: .now() + 3) == .success }.value
+        XCTAssertTrue(queued)
+        let checked = await Task.detached { observed.wait(timeout: .now() + 3) == .success }.value
+        XCTAssertTrue(checked, "The actual origin watcher must inspect our own arrival while the runner is still in flight")
+        XCTAssertEqual(opens, 0)
+        release.signal(); await f.coordinator.waitForPendingDelivery()
+        XCTAssertEqual(opens, 1); XCTAssertEqual(f.calls.count, 1)
+        await f.coordinator.shutdown()
+    }
+    func testNavigationFailureNeverResendsOrChangesAcceptedOutcome() async throws {
+        let f = try fixture(), event = UUID()
+        var opens = 0
+        f.coordinator.openOrigin = { _, _ in opens += 1; return false }
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        await f.coordinator.waitForPendingDelivery()
+        XCTAssertEqual(opens, 1); XCTAssertEqual(f.calls.count, 1)
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        XCTAssertEqual(opens, 1); XCTAssertEqual(f.calls.count, 1)
+        await f.coordinator.shutdown()
+    }
+    func testCancellationNewerInputAndDesktopReplacementPreventNavigationAfterAcceptance() async throws {
+        for reason in ["settings-changed", "recognition-audio-gap", "voiceActive", "new-user-input", "desktop-replaced", "desktop-pid", "submission-unknown", "user-dismissed"] {
+            let f = try fixture(), event = UUID()
+            let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+            var opens = 0
+            f.coordinator.openOrigin = { _, _ in opens += 1; return true }
+            f.coordinator.queueCommand = { command in
+                f.calls.append(command); entered.signal()
+                guard release.wait(timeout: .now() + 3) == .success else { return 1 }
+                return reason == "submission-unknown" ? 1 : 0
+            }
+            _ = try await prepare(f, event: event); try finish(f, event: event)
+            _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+            let running = await Task.detached { entered.wait(timeout: .now() + 2) == .success }.value
+            XCTAssertTrue(running)
+            if reason == "new-user-input" {
+                let handle = try FileHandle(forWritingTo: f.origin.rollout); defer { try? handle.close() }
+                try handle.seekToEnd(); try handle.write(contentsOf: Data("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"A genuinely newer instruction\"}}\n".utf8))
+            } else if reason == "desktop-replaced" {
+                f.coordinator.currentDesktop = { (URL(fileURLWithPath: "/other/codex"), getpid()) }
+            } else if reason == "desktop-pid" {
+                f.coordinator.currentDesktop = { (URL(fileURLWithPath: "/fixture/codex"), getpid() + 1) }
+            } else if reason == "user-dismissed" { f.coordinator.dismiss(event: event) }
+            else if reason != "submission-unknown" { f.coordinator.interrupted(reason) }
+            release.signal(); await f.coordinator.waitForPendingDelivery()
+            XCTAssertEqual(opens, 0, reason); XCTAssertEqual(f.calls.count, 1, reason)
+            XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String,
+                reason == "submission-unknown" ? "unavailable" : "queued", "Accepted sends remain accepted even if focus is cancelled")
+            await f.coordinator.shutdown()
+        }
+    }
+    func testCancellationDuringPostAcceptanceValidationSuppressesOnlyNavigation() async throws {
+        let f = try fixture(), event = UUID()
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        var opens = 0
+        f.coordinator.openOrigin = { _, _ in opens += 1; return true }
+        f.coordinator.validateSubmittedOrigin = { origin, reply in
+            try origin.validate(reply: reply); entered.signal()
+            guard release.wait(timeout: .now() + 3) == .success else { throw NotificationReplyOrigin.Failure.originUnavailable }
+        }
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        let validating = await Task.detached { entered.wait(timeout: .now() + 2) == .success }.value
+        XCTAssertTrue(validating)
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        f.coordinator.interrupted("recognition-audio-gap")
+        release.signal(); await f.coordinator.waitForPendingDelivery()
+        XCTAssertEqual(opens, 0); XCTAssertEqual(f.calls.count, 1)
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        await f.coordinator.shutdown()
     }
     func testVisualFallbackStartsAtNewHUDAndFinalizesOnce() async throws {
         let f = try fixture(), event = UUID()

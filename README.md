@@ -162,7 +162,9 @@ Enable **Settings → Notification Replies** with the shared Codex notification-
 
 Edit the notification controls’ alternate spellings in the same Settings section. **And reply** is a built-in alternate for **End reply**. An empty spelling list keeps only the main phrase; **Recognize alternate spellings** applies to these controls too. A send spelling must finish the command: ordinary wording such as “read that and reply tomorrow” stays in the answer.
 
-This uses H Chat's existing microphone and selected local speech model. It adds no second recognizer and saves no audio. Codex Voice, manual Agent Flow recording, disabled listening and newer input in the original chat cancel an unsent reply. The reply body cannot execute ambient H Chat commands. The ordinary Save transcripts preference still applies to the shared listener.
+After Codex accepts the reply, H Chat brings its exact originating chat forward. A failed or cancelled reply does not open a chat. Opening failure never resends an accepted reply.
+
+This uses H Chat's existing microphone and selected local speech model. It adds no second recognizer and saves no audio. Active or unknown Codex Voice, disabled listening and newer input in the original chat cancel an unsent reply. Agent Flow recording can continue while H Chat listens for Reply; notification speech keeps its separate suppression check. The reply body cannot execute ambient H Chat commands. The ordinary Save transcripts preference still applies to the shared listener.
 
 The app reads the exact originating chat's saved user-message boundary and optional open-question state to reject stale replies, then sends once through the running Codex Desktop's supported `queue --thread` command. It never pastes into the foreground or resumes a second writer. The shared notification integration keeps its own speech provider, voice, queue and media ownership. See the [app/client contract](docs/notification-replies.md) for installation and verification boundaries.
 

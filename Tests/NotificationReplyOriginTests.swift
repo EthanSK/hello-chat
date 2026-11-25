@@ -42,7 +42,9 @@ import SQLite3
         check(calls[0].last?.contains("Reply to Sunny.") == true, "genuine leading reply preserved")
         fails("same event cannot dispatch twice") { try origin.dispatch(event: event, spokenText: "The task is ready.", body: "again", executable: URL(fileURLWithPath: "/unused"), claims: claims, valid: { true }, run: { calls.append($0); return 0 }) }
         check(calls.count == 1, "duplicate claim sends no command")
-        let beforeArrival = try origin.hasArrived(event: event)
+        let identity = try origin.replyIdentity(event: event, spokenText: "The task is ready.", body: "Reply to Sunny.")
+        let message = String(calls[0].last!.dropFirst("--message=".count))
+        let beforeArrival = try origin.hasArrived(reply: identity)
         check(!beforeArrival, "queue acceptance is not arrival")
         let unknown = UUID()
         fails("unknown submission remains claimed") { try origin.dispatch(event: unknown, spokenText: "Ready", body: "yes", executable: URL(fileURLWithPath: "/unused"), claims: claims, valid: { true }, run: { _ in 1 }) }
@@ -52,10 +54,27 @@ import SQLite3
 
         try append(["type":"response_item", "payload":["role":"assistant", "content":[["type":"output_text", "text":"Not a user reply"]]]], to: file)
         try origin.validate(); checks += 1
-        try append(["type":"response_item", "payload":["role":"user", "content":[["type":"input_text", "text":"[H CHAT NOTIFICATION REPLY \(event.uuidString.lowercased())]"]]]], to: file)
-        let afterArrival = try origin.hasArrived(event: event)
-        check(afterArrival, "only exact saved user marker establishes arrival")
+        try append(["type":"response_item", "payload":["role":"user", "content":[["type":"input_text", "text":message]]]], to: file)
+        let afterArrival = try origin.hasArrived(reply: identity)
+        check(afterArrival, "only the complete exact submitted message establishes arrival")
+        try origin.validate(reply: identity); checks += 1
         fails("new user input cancels pending capture") { try origin.validate() }
+        for payload: [String: Any] in [
+            ["type":"user_message", "message":"I mentioned [H CHAT NOTIFICATION REPLY \(event.uuidString.lowercased())]"],
+            ["type":"user_message", "message":message + "\nNow do something else."],
+            ["type":"user_message", "message":message, "images":["new-image"]]
+        ] {
+            let fresh = try NotificationReplyOrigin.capture(thread: thread, turn: turn, question: "", home: home)
+            try append(["type":"event_msg", "payload":payload], to: file)
+            fails("new or mixed user input cannot impersonate our exact arrival") { try fresh.validate(reply: identity) }
+            let arrived = try fresh.hasArrived(reply: identity)
+            check(!arrived, "Quoted markers and attachments are not arrival")
+        }
+        let mixed = try NotificationReplyOrigin.capture(thread: thread, turn: turn, question: "", home: home)
+        try append(["type":"response_item", "payload":["role":"user", "content":[["type":"input_text", "text":message], ["type":"input_text", "text":"new instruction"]]]], to: file)
+        fails("mixed content stays newer input") { try mixed.validate(reply: identity) }
+        let mixedArrival = try mixed.hasArrived(reply: identity)
+        check(!mixedArrival, "Only one exact text part is our arrival")
         print("Notification reply origin: \(checks) checks passed")
     }
 }

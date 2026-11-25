@@ -71,10 +71,18 @@ After the speaker exits and its cleanup is complete AND the original FIFO turn h
 the client sends mediaReleased once. The existing speech hook's finish callback is inside that FIFO
 turn, so finish alone cannot acknowledge release. Register the acknowledgement with the existing
 FIFO finalizer. A forced kill or a still-live original child cannot report released:true. H Chat
-then revalidates origin, question, desktop and recording/call priority immediately before reserving
+then revalidates origin, question, desktop and Voice priority immediately before reserving
 one dispatch through the running Desktop's supported `codex queue --thread`. Unknown submission
 is never retried. Queue acceptance is reported as queued, not proof of arrival. Exact-chat arrival
 is checked separately against the originating chat's subsequent saved event.
+
+After a confirmed queue acceptance, H Chat requests the exact originating chat once through the
+existing native Codex deep-link route, bound to the same Desktop process. It does not wait for
+saved arrival. Cancelled, stale, failed or uncertain sends never navigate. New input, a dismissed
+attempt, changed Desktop or revoked capture lease suppresses pending navigation. Navigation failure
+cannot retry the send or change its accepted outcome. Only the complete exact app-generated reply
+message may be excluded from newer-input checks; a quoted marker, extra text or mixed content is
+still newer input. A private digest identifies that message without retaining another body copy.
 
 H Chat admits at most one listening/composing notification at a time. After its decision, it freezes
 the old event's body/origin and stops feeding it speech; the old event may await release acknowledgement

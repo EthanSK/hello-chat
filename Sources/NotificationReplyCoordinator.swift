@@ -66,6 +66,12 @@ import Foundation
         try await Task.detached(priority: .utility) { try NotificationReplyOrigin.capture(thread: thread, turn: turn, question: question) }.value
     }
     var validateOrigin: (NotificationReplyOrigin) throws -> Void = { try $0.validate() }
+    var validateSubmittedOrigin: (NotificationReplyOrigin, NotificationReplyOrigin.ReplyIdentity) throws -> Void = { try $0.validate(reply: $1) }
+    // Reuse ShowVoiceCommand's verified native deep-link route; never navigate by current selection. — GPT-6.1 Sol
+    var openOrigin: (Int32, UUID) async -> Bool = { pid, thread in
+        guard let link = URL(string: "codex://threads/" + thread.uuidString.lowercased()) else { return false }
+        return await VoiceBridge.openChat(pid, link)
+    }
     private var now: Double { clock() }
     var interceptsSpeech: Bool { active.flatMap { sessions[$0]?.core.interceptsSpeech } ?? false }
     var isComposing: Bool { active.flatMap { sessions[$0]?.core.phase } == .composing }
@@ -186,6 +192,7 @@ import Foundation
         let claims = files.directory.appendingPathComponent("dispatch-claims"), lease = session.lease
         let executable = desktop.executable, pid = desktop.pid
         let spokenText = session.spokenText, run = queueCommand, validate = validateOrigin, wall = wallClock
+        session.replyIdentity = try origin.replyIdentity(event: event, spokenText: spokenText, body: body)
         // No body leaves the app before the exact speaker/FIFO has released and a durable claim is reserved. — GPT-6.1 Sol
         deliveryTasks[event] = Task { [weak self, weak session] in
             let result: Result<Void, Error> = await Task.detached(priority: .utility) {
@@ -196,11 +203,14 @@ import Foundation
                 }
             }.value
             guard let self, let session, self.sessions[event] === session else { return }
-            self.deliveryTasks[event] = nil
             switch result {
-            case .success: session.core.queued()
+            case .success:
+                session.core.queued()
+                self.publish(session) // Queue acceptance is authoritative even if navigation fails.
+                await self.openAcceptedOrigin(session, origin: origin, desktop: desktop)
             case .failure(let error): session.core.cancel(Self.reason(error), unavailable: true)
             }
+            self.deliveryTasks[event] = nil
             self.publish(session)
             self.checkOrigin(session)
         }
@@ -227,7 +237,7 @@ import Foundation
         if deliveryTasks[event] == nil, session.core.interceptsSpeech { cancelSession(session, reason: "user-dismissed") }
     }
     func cancelAll(_ reason: String) {
-        for session in sessions.values where session.core.interceptsSpeech || session.core.canDispatch {
+        for session in sessions.values where session.core.interceptsSpeech || session.core.canDispatch || deliveryTasks[session.event] != nil {
             cancelSession(session, reason: reason)
         }
     }
@@ -259,6 +269,8 @@ import Foundation
         var presentationDismissed = false
         var cuePlayed = false
         var queuedAt: Double?
+        var replyIdentity: NotificationReplyOrigin.ReplyIdentity?
+        var navigationAttempted = false
         var revision = 0, signature = ""
         var presentedTextRevision = -1
         var observers: [DispatchSourceFileSystemObject] = []
@@ -374,20 +386,42 @@ import Foundation
         guard originTasks[session.event] == nil else { originAgain.insert(session.event); return }
         let queued = session.core.phase == .queued
         let event = session.event
+        let reply = session.replyIdentity, validate = validateSubmittedOrigin
         originTasks[session.event] = Task { [weak self, weak session] in
             let result: Result<Bool, Error> = await Task.detached(priority: .utility) {
-                Result { if queued { return try origin.hasArrived(event: event) }; try origin.validate(); return false }
+                Result {
+                    if queued, let reply { return try origin.hasArrived(reply: reply) }
+                    if let reply { try validate(origin, reply) } else { try origin.validate() }
+                    return false
+                }
             }.value
             guard let self, let session else { return }
             self.originTasks[session.event] = nil
             switch result {
             case .success(let arrived): if arrived { session.core.delivered() }
             case .failure(let error):
+                // A pre-dispatch check may finish after our own exact message arrives.
+                // Recheck with its new digest; do not revoke another cancellation reason. — GPT-6.1 Sol
+                if reply == nil, session.replyIdentity != nil, self.deliveryTasks[event] != nil {
+                    self.originAgain.remove(event); self.checkOrigin(session); return
+                }
                 if session.core.phase != .queued && session.core.phase != .delivered { self.cancelSession(session, reason: Self.reason(error)) }
             }
             self.publish(session)
             if self.originAgain.remove(session.event) != nil { self.checkOrigin(session) }
         }
+    }
+    private func openAcceptedOrigin(_ session: Session, origin: NotificationReplyOrigin,
+                                    desktop: (executable: URL, pid: Int32)) async {
+        guard !session.navigationAttempted, let reply = session.replyIdentity else { return }
+        session.navigationAttempted = true
+        let validate = validateSubmittedOrigin
+        let valid = await Task.detached(priority: .utility) { (try? validate(origin, reply)) != nil }.value
+        guard valid, session.lease.valid, !session.presentationDismissed, readiness == .ready, !Task.isCancelled,
+              let current = currentDesktop(), current.pid == desktop.pid, current.executable == desktop.executable else { return }
+        let opened = await openOrigin(desktop.pid, session.thread)
+        Diagnostics.shared.record("notification.reply.navigation", info: ["notification_event": session.event.uuidString,
+            "thread": session.thread.uuidString, "opened": String(opened)])
     }
     private func prune() {
         let completed = sessions.values.filter { $0.releaseAcknowledged && deliveryTasks[$0.event] == nil }
@@ -400,7 +434,7 @@ import Foundation
     private func retireHeavyState(_ session: Session) {
         session.observers.forEach { $0.cancel() }; session.observers.removeAll()
         originTasks[session.event]?.cancel(); originTasks[session.event] = nil; originAgain.remove(session.event)
-        session.spokenText = ""; session.origin = nil
+        session.spokenText = ""; session.origin = nil; session.replyIdentity = nil
     }
     nonisolated private static func reason(_ error: Error) -> String {
         (error as? NotificationReplyOrigin.Failure)?.rawValue ?? "origin-unavailable"

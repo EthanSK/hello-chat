@@ -8,6 +8,7 @@
  Port/provenance comments — GPT-6.1 Sol
  ============================================================ */
 import Foundation
+import CryptoKit
 import SQLite3
 import Darwin
 
@@ -21,6 +22,31 @@ struct NotificationReplyOrigin {
     let inode: UInt64
     let offset: UInt64
     let home: URL
+
+    /// Retain only a digest of the exact app-generated message, not another copy of reply text.
+    /// A marker mentioned inside a human message or mixed content is never our own arrival. — GPT-6.1 Sol
+    struct ReplyIdentity: Equatable {
+        fileprivate let digest: Data
+        fileprivate let bytes: Int
+        fileprivate init(message: String) {
+            let data = Data(message.utf8)
+            digest = Data(SHA256.hash(data: data)); bytes = data.count
+        }
+        fileprivate func matches(_ row: [String: Any]) -> Bool {
+            guard let payload = row["payload"] as? [String: Any],
+                  ["images", "local_images", "text_elements"].allSatisfy({ payload[$0] == nil || (payload[$0] as? [Any])?.isEmpty == true }) else { return false }
+            let text: String?
+            if row["type"] as? String == "event_msg", payload["type"] as? String == "user_message" {
+                text = payload["message"] as? String
+            } else if row["type"] as? String == "response_item", payload["role"] as? String == "user",
+                      let content = payload["content"] as? [[String: Any]], content.count == 1,
+                      content[0]["type"] as? String == "input_text" {
+                text = content[0]["text"] as? String
+            } else { return false }
+            guard let text, text.utf8.count == bytes else { return false }
+            return Data(SHA256.hash(data: Data(text.utf8))) == digest
+        }
+    }
 
     static func capture(thread: UUID, turn: UUID?, question: String, home: URL = FileManager.default.homeDirectoryForCurrentUser,
                         database: URL? = nil) throws -> Self {
@@ -68,12 +94,14 @@ struct NotificationReplyOrigin {
         return origin
     }
 
-    func validate() throws {
+    func validate(reply: ReplyIdentity? = nil) throws {
         try validateQuestion()
         for row in try appendedRows() {
             guard let payload = row["payload"] as? [String: Any] else { continue }
             if (row["type"] as? String == "event_msg" && payload["type"] as? String == "user_message") ||
-                (row["type"] as? String == "response_item" && payload["role"] as? String == "user") { throw Failure.originStale }
+                (row["type"] as? String == "response_item" && payload["role"] as? String == "user") {
+                guard reply?.matches(row) == true else { throw Failure.originStale }
+            }
         }
     }
 
@@ -89,17 +117,11 @@ struct NotificationReplyOrigin {
     }
 
     /// Queue acknowledgement and saved arrival are deliberately separate results. — GPT-6.1 Sol
-    func hasArrived(event: UUID) throws -> Bool {
-        let marker = Self.marker(event)
-        return try appendedRows().contains { row in
-            guard let payload = row["payload"] as? [String: Any] else { return false }
-            if row["type"] as? String == "event_msg", payload["type"] as? String == "user_message" {
-                return (payload["message"] as? String)?.contains(marker) == true
-            }
-            guard row["type"] as? String == "response_item", payload["role"] as? String == "user",
-                  let content = payload["content"] as? [[String: Any]] else { return false }
-            return content.contains { ($0["text"] as? String)?.contains(marker) == true }
-        }
+    func hasArrived(reply: ReplyIdentity) throws -> Bool {
+        try appendedRows().contains(where: reply.matches)
+    }
+    func replyIdentity(event: UUID, spokenText: String, body: String) throws -> ReplyIdentity {
+        .init(message: try candidateMessage(event: event, spokenText: spokenText, body: body))
     }
 
     func dispatch(event: UUID, spokenText: String, body: String, executable: URL, claims: URL,
