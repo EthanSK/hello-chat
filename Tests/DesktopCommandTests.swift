@@ -161,6 +161,28 @@ private final class Probe {
             check(AppCommandPlanner.decide(result[0], running: [actualChrome], installed: [], spellings: .init()) == .activate(actualChrome), "Each form resolves the installed browser")
             check(d.poll(switchPrefixes: combined, openPrefixes: [], immediateSwitchNames: ["Google Chrome", "Chrome"]).isEmpty, "Same hypothesis cannot switch twice")
         }
+        for name in ["Safari", "Notion", "Visual Studio Code", "Live 12", "My Entire Installed Application Name", "coding room"] {
+            for prefix in ["Switch app", "Switch", "Open app"] {
+                var detector = AppCommandDetector(usesEditableShortForms: true)
+                detector.audio(level: 0.2, seconds: 0.1, at: 1)
+                detector.update(prefix + " " + name, at: 1)
+                let found = detector.poll(switchPrefixes: combined, openPrefixes: [openPrefix], immediateSwitchNames: [name])
+                check(found.count == 1 && found[0].name == PhraseMatcher.words(name).joined(separator: " "), "Any exact app name or override works without silence: " + prefix + " " + name)
+                check(detector.poll(switchPrefixes: combined, openPrefixes: [openPrefix], immediateSwitchNames: [name]).isEmpty, "All-app completion remains once-only")
+            }
+        }
+        var catalogArrival = AppCommandDetector(usesEditableShortForms: true)
+        catalogArrival.audio(level: 0.2, seconds: 0.1, at: 1)
+        catalogArrival.update("Switch app My New App", at: 1)
+        catalogArrival.audio(level: 0, seconds: 2, at: 3)
+        check(catalogArrival.poll(switchPrefixes: combined, openPrefixes: [], nameLookupPending: true).isEmpty, "A catalog lookup completing after speech keeps its candidate without guessing")
+        catalogArrival.recheckNames()
+        check(catalogArrival.poll(switchPrefixes: combined, openPrefixes: [], immediateSwitchNames: ["My New App"]).map(\.name) == ["my new app"], "Actual catalog completion rechecks unchanged input without another audio frame")
+        for text in ["Don't switch Safari", "I said switch app Notion", "The phrase switch Visual Studio Code", "Switch app Safari tomorrow", "Switch Live settings"] {
+            var detector = AppCommandDetector(usesEditableShortForms: true)
+            detector.audio(level: 0.2, seconds: 0.1, at: 1); detector.update(text, at: 1)
+            check(detector.poll(switchPrefixes: combined, openPrefixes: [], immediateSwitchNames: ["Safari", "Notion", "Visual Studio Code", "Live"]).isEmpty, "Generic names preserve command context guards: " + text)
+        }
         for text in ["Don't switch Chrome", "I said switch app Chrome", "The phrase switch Google Chrome", "Switch app Chrome tomorrow", "Switch Chrome settings", "Can you add switch Chrome"] {
             var d = AppCommandDetector()
             d.audio(level: 0.2, seconds: 0.1, at: 1); d.update(text, at: 1)
@@ -745,6 +767,26 @@ private final class Probe {
         let restoredResult = await spellingCommands.perform(command(.openApp, "coding room", bare: true))
         check(restoredResult.diagnostic == "ignored" && spellingActivations.count == 1, "A later restored configuration cannot reuse the previous alias")
         check(spellingScans == 1, "The editor and commands share one bounded app catalog cache")
+
+        var discoveryScans = 0, discoveryLoaded = 0, discoveryActions = 0
+        let discovered = DesktopCommands(environment: .init(running: { [code] }, activate: { _ in discoveryActions += 1; return true }, installed: { discoveryScans += 1; return [safari] }))
+        let initialNames = discovered.commandNames(spellings: customNames) { discoveryLoaded += 1 }
+        check(initialNames.contains { AppResolver.key($0) == "codingroom" } && discoveryScans == 0, "Running app names and existing overrides are available before catalog work")
+        _ = discovered.commandNames(spellings: customNames) { discoveryLoaded += 1 }
+        while discoveryLoaded == 0 { await Task.yield() }
+        let names = discovered.commandNames(spellings: customNames) { discoveryLoaded += 1 }
+        check(names.contains("Safari") && discoveryScans == 1 && discoveryLoaded == 1 && discoveryActions == 0, "One demand-loaded shared catalog makes every installed name available without launching anything")
+        check(!discovered.commandNames(spellings: .init()) {}.contains { AppResolver.key($0) == "codingroom" }, "Edited overrides are read from the same current store, not a stale second dictionary")
+
+        var reveals = 0
+        var covered = environment
+        covered.activate = { _ in true }
+        covered.sleep = { _ in }
+        covered.isFrontmost = { _ in true }
+        covered.reveal = { _ in reveals += 1; return true }
+        check(await DesktopCommands(environment: covered).perform(command(.switchApp, "chrome")).diagnostic == "frontmost" && reveals == 1, "A foreground app must also be revealed above Home before confirming")
+        covered.reveal = { _ in false }
+        check(await DesktopCommands(environment: covered).perform(command(.switchApp, "chrome")).diagnostic == "dispatched", "Focus alone cannot confirm a covered target")
 
         var result = await commands.perform(command(.switchApp, "chrome"))
         check(result == DesktopCommandResult(message: "Switched to Google Chrome", diagnostic: "frontmost"), "Switch confirms the front app")

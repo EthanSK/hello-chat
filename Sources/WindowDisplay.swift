@@ -57,4 +57,28 @@ struct WindowDisplaySettings: View {
         window.orderFrontRegardless()
         return true
     }
+
+    // A detected app command first raises Home. If its target was already active, macOS can
+    // accept activation without changing window order, leaving Home over the requested app.
+    // Yield only our window to that verified foreground app; keep its placement and focus.
+    // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+    @discardableResult func yield(to app: AppCandidate) -> Bool {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.bundleIdentifier == app.id,
+              app.pid == nil || app.pid == front.processIdentifier,
+              app.url == nil || app.url?.resolvingSymlinksInPath() == front.bundleURL?.resolvingSymlinksInPath() else { return false }
+        guard let window, window.isVisible else { return true }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        guard let target = windows.first(where: {
+            ($0[kCGWindowOwnerPID as String] as? Int32) == front.processIdentifier &&
+            ($0[kCGWindowLayer as String] as? Int) == 0 &&
+            ($0[kCGWindowAlpha as String] as? Double ?? 1) > 0
+        }), let number = target[kCGWindowNumber as String] as? Int else { return false }
+        window.order(.below, relativeTo: number)
+        let ordered = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let own = ordered.firstIndex { ($0[kCGWindowNumber as String] as? Int) == window.windowNumber }
+        guard let other = ordered.firstIndex(where: { ($0[kCGWindowNumber as String] as? Int) == number }) else { return false }
+        return NSWorkspace.shared.frontmostApplication?.processIdentifier == front.processIdentifier &&
+            (own.map { $0 > other } ?? true)
+    }
 }

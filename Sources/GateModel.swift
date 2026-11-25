@@ -486,7 +486,11 @@ import SwiftUI
         updatePhrases()
         return true
     }
-    let desktopCommands = DesktopCommands()
+    lazy var desktopCommands: DesktopCommands = {
+        var environment = DesktopCommands.Environment()
+        environment.reveal = { [weak self] in self?.phraseWindow.yield(to: $0) ?? false }
+        return DesktopCommands(environment: environment)
+    }()
     func appSpellingChoices() async -> [AppCandidate] { await desktopCommands.spellingChoices() }
     private var zoomPhraseDetectors = CommandPhraseDetectors<ZoomDirection>()
     // Both music phrases are one hardware action. Sharing the detector prevents a revised
@@ -1931,7 +1935,12 @@ import SwiftUI
         let appCommands = appCommandDetector.poll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase),
             reserved: patterns(for: .showVoicePhrase) + activeSpeakerCommands.map(\.pattern),
             reservedSwitchPrefixes: activeSpeakerPrefixes,
-            immediateSwitchNames: DesktopCommands.runningApps().filter { $0.id == "com.google.Chrome" }.flatMap { $0.names + appNameSpellings.spellings(for: $0.id) },
+            immediateSwitchNames: desktopCommands.commandNames(spellings: appNameSpellings) { [weak self] in
+                guard let self, !self.quitting, self.enabled, !self.notificationReplies.interceptsSpeech else { return }
+                self.appCommandDetector.recheckNames()
+                self.checkStandaloneWake()
+            },
+            nameLookupPending: desktopCommands.nameLookupPending,
             onDecision: { command, decision, evidence in
                 // Counts and timing only, never words: separates a missed pause from discussion.
                 var numbers = ["left_words": Double(evidence.leftWords), "name_words": Double(evidence.nameWords)]

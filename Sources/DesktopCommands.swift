@@ -96,6 +96,7 @@ struct DesktopCommandResult: Equatable {
         var running: () -> [AppCandidate] = DesktopCommands.runningApps
         var activate: (AppCandidate) async -> Bool = DesktopCommands.activateRunning
         var isFrontmost: (AppCandidate) -> Bool = DesktopCommands.isFrontmost
+        var reveal: (AppCandidate) -> Bool = { _ in true }
         var frontmostName: () -> String? = { NSWorkspace.shared.frontmostApplication?.localizedName }
         var installed: () async -> [AppCandidate] = DesktopCommands.scanInstalled
         var verify: (AppCandidate) -> Bool = DesktopCommands.verifyInstalled
@@ -109,8 +110,30 @@ struct DesktopCommandResult: Equatable {
     static let confirmationInterval = 0.1
     private let environment: Environment
     private var catalog: (apps: [AppCandidate], at: Date)?
+    private var catalogTask: Task<[AppCandidate], Never>?
+    private var commandNamesTask: Task<Void, Never>?
 
     init(environment: Environment = Environment()) { self.environment = environment }
+    var nameLookupPending: Bool { commandNamesTask != nil }
+
+    // Ethan wants every installed app recognized automatically, with the same spelling overrides.
+    // Read the existing catalog only on an actual app prefix, then recheck that same transcript.
+    // No idle scan, recognizer, polling timer or post-keyword delay. — GPT-6.1 Sol
+    func commandNames(spellings: AppNameSpellings, loaded: @escaping () -> Void) -> [String] {
+        if !(catalog.map { Date().timeIntervalSince($0.at) < Self.catalogLifetime } ?? false) {
+            if commandNamesTask == nil {
+                commandNamesTask = Task { [weak self] in
+                    guard let self else { return }
+                    _ = await self.installedApps()
+                    self.commandNamesTask = nil
+                    loaded()
+                }
+            }
+        }
+        return AppCommandPlanner.merged(running: environment.running(), installed: catalog?.apps ?? []).flatMap {
+            $0.names + spellings.spellings(for: $0.id)
+        }
+    }
 
     // `dispatched` runs once, when macOS accepts the switch/open request or the zoom keys are sent:
     // before front-app confirmation, and never for ignored, unresolved, blocked or cancelled work.
@@ -209,7 +232,9 @@ struct DesktopCommandResult: Equatable {
     private func confirm(_ app: AppCandidate, done: String, pending: String) async -> DesktopCommandResult {
         for check in 0...Self.confirmationChecks {
             if let unavailable = unavailable() { return unavailable }
-            if environment.isFrontmost(app) { return DesktopCommandResult(message: done, diagnostic: "frontmost") }
+            if environment.isFrontmost(app), environment.reveal(app) {
+                return DesktopCommandResult(message: done, diagnostic: "frontmost")
+            }
             if check < Self.confirmationChecks { await environment.sleep(Self.confirmationInterval) }
         }
         return DesktopCommandResult(message: pending, diagnostic: "dispatched")
@@ -223,8 +248,11 @@ struct DesktopCommandResult: Equatable {
 
     private func installedApps() async -> [AppCandidate] {
         if let catalog, Date().timeIntervalSince(catalog.at) < Self.catalogLifetime { return catalog.apps }
-        let apps = await environment.installed()
+        let task = catalogTask ?? Task { await environment.installed() }
+        catalogTask = task
+        let apps = await task.value
         catalog = (apps, Date())
+        catalogTask = nil
         return apps
     }
 
