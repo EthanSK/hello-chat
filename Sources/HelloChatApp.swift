@@ -1745,9 +1745,9 @@ struct SettingsView: View {
                     Text(ultrafastResult.message).foregroundStyle(ultrafastResult.failed ? Color.red : Color.secondary)
                         .textSelection(.enabled).accessibilityIdentifier("setVoiceUltrafastResult")
                 }
-                Toggle("Prepare GPT-6.2 Sol, High and Ultrafast", isOn: $ultrafastForNewVoiceChats)
+                Toggle("Set new Voice chats to Ultrafast", isOn: $ultrafastForNewVoiceChats)
                     .accessibilityIdentifier("ultrafastForNewVoiceChats")
-                Text("H Chat restores your previous defaults after Voice opens.")
+                Text("After Voice opens, H Chat sets its speed through Model Bar. Model and reasoning stay the same. The first response may start before the speed is set.")
                     .foregroundStyle(.secondary)
             }
             NotificationReplySettingsSection(settings: model.notificationReplies.settings,

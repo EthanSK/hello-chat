@@ -53,6 +53,20 @@ protocol VoiceDraftPicker: AnyObject {
 }
 
 final class CodexVoiceDraft: VoiceDraftPicker {
+    enum OwnershipFailure: LocalizedError {
+        case inputChanged, draftChanged
+        var errorDescription: String? { CodexVoiceDraft.changed.localizedDescription }
+    }
+    // The old 'model button' catch also covered ownership cancellation. Record only
+    // these fixed causes, never AX labels, draft contents or exception text. — GPT-6.1 Sol
+    static func pickerFailureReason(_ error: Error) -> String {
+        switch error {
+        case OwnershipFailure.inputChanged: return "input-changed"
+        case OwnershipFailure.draftChanged: return "draft-changed"
+        case is CancellationError: return "cancelled"
+        default: return "native-or-readiness"
+        }
+    }
     private let app: AXUIElement
     private let window: AXUIElement
     private let pid: pid_t
@@ -172,7 +186,8 @@ final class CodexVoiceDraft: VoiceDraftPicker {
     }
     private func empty() -> Bool { emptyProblem() == nil }
     private func owned() throws {
-        guard Self.inputCounters() == originalInputCounters, empty() else { throw Self.changed }
+        guard Self.inputCounters() == originalInputCounters else { throw OwnershipFailure.inputChanged }
+        guard empty() else { throw OwnershipFailure.draftChanged }
     }
     private func pill() -> AXUIElement? {
         find(kAXPopUpButtonRole) { Self.label($0) == "Select effort" || DraftChoices.modelAndEffort(Self.label($0)) != nil }
@@ -189,7 +204,8 @@ final class CodexVoiceDraft: VoiceDraftPicker {
                 pressed = true
             })
         } catch {
-            Diagnostics.shared.record("voice.draft.picker_not_ready", info: ["check": pressed ? "open menu" : "model button"])
+            Diagnostics.shared.record("voice.draft.picker_not_ready", info: ["check": pressed ? "open menu" : "model button",
+                                                                          "reason": Self.pickerFailureReason(error)])
             throw error
         }
     }

@@ -140,7 +140,7 @@ import Foundation
         var afterLaunchCalls = 0
         mailboxVoice.onNewCall = { context in
             precondition(mailboxState.microphone == .listening && context.requestedPID == 123 && context.sentAt != nil,
-                         "Model Bar handoff is armed only after a native new-call confirmation")
+                         "Model Bar handoff is armed only after a successful native new-call dispatch")
             afterLaunchCalls += 1
         }
         _ = try await mailboxVoice.start(context: mailboxContext)
@@ -156,7 +156,9 @@ import Foundation
         precondition(afterLaunchCalls == 1, "Even an accidentally reused opening context cannot repeat its Model Bar handoff")
         // Native confirmation can suspend after a successful shortcut. Cleanup must
         // already be handed to the defaults owner, independently of that UI read. — GPT-6.1 Sol
-        var dispatched = false, cleanupArmed = false
+        precondition(NativeVoice.Transport.live.prepareNewVoiceSpeed == nil && NativeVoice.Transport.live.finishLaunchDefaults == nil,
+                     "Production Start preserves model/effort/defaults; automatic speed belongs to the exact-call Model Bar handoff")
+        var dispatched = false, cleanupArmed = false, delayedHandoffs = 0
         var resumeConfirmation: CheckedContinuation<VoiceSnapshot, Never>?
         let delayedConfirmation = NativeVoice(transport: .init(snapshot: {
             guard dispatched else { return state() }
@@ -164,12 +166,17 @@ import Foundation
             return await withCheckedContinuation { resumeConfirmation = $0 }
         }, send: { _, _ in dispatched = true }, activate: { _ in },
             finishLaunchDefaults: { _, sent in cleanupArmed = sent != nil }))
+        delayedConfirmation.onNewCall = { context in
+            precondition(dispatched && !delayedConfirmation.connected && context.requestedPID == 123 && context.sentAt != nil)
+            delayedHandoffs += 1
+        }
         let delayedStart = Task { try await delayedConfirmation.start() }
         while resumeConfirmation == nil { await Task.yield() }
-        precondition(cleanupArmed && !delayedConfirmation.connected)
+        precondition(cleanupArmed && !delayedConfirmation.connected && delayedHandoffs == 1,
+                     "A suspended native confirmation cannot lose the exact-call automatic speed handoff")
         resumeConfirmation?.resume(returning: state(.listening))
         _ = try await delayedStart.value
-        precondition(delayedConfirmation.connected)
+        precondition(delayedConfirmation.connected && delayedHandoffs == 1)
         var rollbackOnError = false
         var appeared = state()
         let appearedDuringSpeedChange = NativeVoice(transport: .init(snapshot: { appeared },
@@ -1056,6 +1063,11 @@ import Foundation
         func closeIfEmpty() { if !adopted { closed = true } }
     }
     private static func warmVoiceDefaults(executable: URL) async throws {
+        precondition(CodexVoiceDraft.pickerFailureReason(CodexVoiceDraft.OwnershipFailure.inputChanged) == "input-changed")
+        precondition(CodexVoiceDraft.pickerFailureReason(CodexVoiceDraft.OwnershipFailure.draftChanged) == "draft-changed")
+        precondition(CodexVoiceDraft.pickerFailureReason(CancellationError()) == "cancelled")
+        precondition(CodexVoiceDraft.pickerFailureReason(BridgeError.message("Private composer contents")) == "native-or-readiness",
+                     "Picker diagnostics must not copy private exception text or mislabel ownership cancellation as a missing button")
         precondition(DraftChoices.modelAndEffort("GPT-6.1 Sol Extra High")?.0 == "GPT-6.1 Sol")
         precondition(DraftChoices.modelAndEffort("Opus 5.5 Max")?.1 == "Max")
         precondition(DraftChoices.modelAndEffort("GPT-6.2\u{00a0}Sol\n High")?.0 == "GPT-6.2 Sol")

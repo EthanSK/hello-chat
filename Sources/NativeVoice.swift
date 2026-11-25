@@ -35,7 +35,7 @@ import Foundation
 }
 
 // Codex owns the conversation, audio and UI. HelloChat has no WebRTC client and
-// uses a configuration-only client for the shared speed. Start uses Codex's global "Voice chat hotkey"; the
+// applies speed to the identified call through Model Bar after Start. Start uses Codex's global "Voice chat hotkey"; the
 // composer's "Toggle voice chat" remains untouched. End stays dedicated.
 @MainActor final class NativeVoice {
     struct Transport {
@@ -104,19 +104,12 @@ import Foundation
                  }, startSession: { .current },
                  guardedShortcut: { command, pid, check in
                     try await Task.detached(priority: .userInitiated) { try VoiceBridge.post(command: command, pid: pid, beforePost: check) }.value
-                 }, audioTargetPID: { VoiceBridge.currentApplication()?.processIdentifier },
-                 prepareNewVoiceSpeed: { pid, opening in
-                    guard UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true else { return }
-                    let exe = try CodexVoiceSpeed.executable(pid: pid)
-                    opening.defaultsExecutable = exe
-                    try await CodexVoiceSpeed.shared.prepare(opening.id, executable: exe, runningPID: pid)
-                    Diagnostics.shared.record("voice.defaults.prepared", info: [
-                        "model": CodexVoiceSpeed.model, "effort": CodexVoiceSpeed.effort, "tier": CodexVoiceSpeed.tier
-                    ])
-                 }, finishLaunchDefaults: { opening, sent in
-                    guard let exe = opening.defaultsExecutable else { return }
-                    try await CodexVoiceSpeed.shared.finish(opening.id, sent: sent, executable: exe)
-                 })
+                 }, audioTargetPID: { VoiceBridge.currentApplication()?.processIdentifier })
+            // Ethan clarified that Ultrafast must be set AFTER launch through Model Bar,
+            // preserving model and reasoning. The former temporary fixed-model preset
+            // also failed its live-call defaults restoration on the M1. Do not change
+            // ordinary defaults before Start. Existing receipts retain their recovery
+            // owner in CodexVoiceSpeed; injected legacy transactions stay testable. — GPT-6.1 Sol
         }
     }
     private let transport: Transport
@@ -151,7 +144,6 @@ import Foundation
             throw error
         }
         if !opening.requestedNewCall { try await transport.finishLaunchDefaults?(opening, nil) }
-        else if opening.takeNewCallHandoff() { onNewCall?(opening) }
         return result
     }
 
@@ -301,6 +293,10 @@ import Foundation
                     }
                     lastVoicePID = pid
                     opening.didRequestNewCall(pid: pid)
+                    // Arm only after a successful dispatch, before a native confirmation
+                    // read can suspend or be cancelled. The existing observer still must
+                    // prove this exact new call before Model Bar can act. — GPT-6.1 Sol
+                    if opening.takeNewCallHandoff() { onNewCall?(opening) }
                     // Release is now armed at the successful native dispatch, before
                     // another AX read can delay confirmation. The existing session
                     // observer/finite expiry owns cleanup, never a call-ending action. — GPT-6.1 Sol

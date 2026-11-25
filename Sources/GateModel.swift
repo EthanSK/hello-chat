@@ -942,6 +942,8 @@ import SwiftUI
                 guard let self, !self.quitting, let pid = context.requestedPID, let sent = context.sentAt,
                       UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true else { return }
                 self.modelBarLaunch.arm(sent: sent, pid: pid)
+                Diagnostics.shared.record("voice.model_bar.armed", numbers: ["sent_wall": sent.timeIntervalSince1970],
+                                          info: ["pid": String(pid)])
                 self.modelBarLaunchExpiry?.cancel()
                 self.modelBarLaunchExpiry = Task { [weak self] in
                     do { try await Task.sleep(for: .seconds(30)) } catch { return }

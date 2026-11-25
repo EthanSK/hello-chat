@@ -277,7 +277,7 @@ rm ~/Library/LaunchAgents/com.ethansk.hello-chat.plist
 - Start requires an unlocked, active macOS desktop. A wake heard while locked is not queued for later. After unlocking, say the wake phrase again; old recognition and pending opening state are cleared without ending an existing call.
 - **End** sends the dedicated `realtimeVoice.endCall` shortcut after a fresh Voice-control check. A retry presses the exact End control itself. If closure cannot be confirmed, Hello Chat says the status is unknown instead of claiming the End action failed.
 - Shortcut writes are marked as saved, not proof of live registration. If Hello Chat adds bindings while Codex is running, it shows a restart message. Voice confirmation still depends on the actual call controls.
-- **Prepare GPT-6.2 Sol, High and Ultrafast** temporarily selects those defaults when H Chat opens a new Voice chat. H Chat then restores the previous values. An already-running Codex window can reuse its own cached selection. The setting prepares the launch and the first agent turn records which choices took effect.
+- **Set new Voice chats to Ultrafast** applies the speed through Model Bar after H Chat starts the exact new call. It preserves the selected model, reasoning and ordinary new-chat defaults. The first response can start before selection finishes; a confirmed selected speed is not evidence of that response's backend tier. Existing saved on/off choices are preserved.
 
 This isn't an official Codex wake-word API. A Codex update can change the shortcut or controls; Hello Chat then shows an error instead of guessing.
 
