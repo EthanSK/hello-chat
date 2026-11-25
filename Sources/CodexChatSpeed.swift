@@ -21,6 +21,7 @@ enum CodexChatSpeed {
         let thread: UUID?
         let speed: Speed?
         let model: String?
+        var error: String? = nil
         var succeeded: Bool { ["observed", "unchanged", "confirmed"].contains(status) }
         var message: String {
             if succeeded { return "Ultrafast selected for the next turn." }
@@ -64,7 +65,7 @@ enum CodexChatSpeed {
         } catch {
             try? picker.finish()
             return Result(status: (error as? Failure)?.rawValue ?? "unconfirmed", thread: thread,
-                          speed: nil, model: nil)
+                          speed: nil, model: nil, error: String(describing: error))
         }
     }
 

@@ -449,7 +449,7 @@ actor CodexVoiceSpeed {
                 catch { Diagnostics.shared.failure("voice.chat_speed.defaults_restore_failed", error) }
             }
             return .init(status: applied == nil ? "unavailable" : "defaultsUnconfirmed", thread: thread,
-                         speed: applied?.speed, model: applied?.model)
+                         speed: applied?.speed, model: applied?.model, error: String(describing: error))
         }
     }
 

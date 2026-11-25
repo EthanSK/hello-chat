@@ -2007,6 +2007,7 @@ struct InitialWindowPlacement: NSViewRepresentable {
             guard let window, !placed, let screen = WindowDisplay.preferredScreen else { return }
             placed = true
             DispatchQueue.main.async {
+                if window.setFrameUsingName("main") { return }
                 let bounds = screen.visibleFrame.insetBy(dx: screen.visibleFrame.width * 0.1, dy: screen.visibleFrame.height * 0.1)
                 let size = NSSize(width: min(window.frame.width, bounds.width), height: min(window.frame.height, bounds.height))
                 window.setFrame(NSRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2, width: size.width, height: size.height), display: true)
