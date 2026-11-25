@@ -26,7 +26,15 @@ enum CodexChatSpeed {
             if succeeded { return "Ultrafast selected for the next turn." }
             if status == "inactive" { return "Codex Voice is off." }
             if status == "changed" { return "The Voice call changed. Try again in the current call." }
-            return "Couldn’t set Ultrafast. Open the current Voice chat in a single Codex pane, then try again."
+            switch status {
+            case "ambiguousChat": return "The Voice chat needs a unique title in Codex."
+            case "multiplePanes": return "Open the Voice chat in one Codex pane, then try again."
+            case "busy": return "Another Codex settings action is running. Try again when it finishes."
+            case "unsupported": return "Ultrafast isn’t available for this model."
+            case "interrupted": return "Stopped because the Codex selection changed."
+            case "defaultsUnconfirmed": return "Couldn’t restore the previous new-chat defaults."
+            default: return "Codex didn’t confirm Ultrafast. Try again after the Voice chat loads."
+            }
         }
     }
     protocol Picker {
@@ -80,8 +88,7 @@ enum CodexChatSpeed {
         resolve: () async -> VoicePeerReceipt = { await Task.detached { VoicePeerControl.localStatus() }.value },
         open: (Int32?, URL) async -> Bool = VoiceBridge.openChat,
         apply: (VoicePeerCall) async -> Result = { call in
-            let operation = Task.detached { perform(thread: call.thread, speed: .ultrafast, expectedCall: call) }
-            return await withTaskCancellationHandler { await operation.value } onCancel: { operation.cancel() }
+            await CodexVoiceSpeed.shared.existingChatSpeed(thread: call.thread, expectedCall: call)
         }
     ) async -> Result {
         let before = await resolve()
@@ -114,12 +121,19 @@ enum CodexChatSpeed {
         }
         defer { sqlite3_close(db) }
         var statement: OpaquePointer?
-        let query = "SELECT name FROM threads WHERE lower(id)=? AND length(name)>0 AND (SELECT COUNT(*) FROM threads other WHERE other.name=threads.name)=1"
+        let query = """
+            SELECT display_title, EXISTS(SELECT 1 FROM local_thread_catalog other
+                WHERE other.host_id='local' AND other.missing_candidate=0
+                  AND other.display_title=c.display_title AND other.thread_id!=c.thread_id)
+            FROM local_thread_catalog c
+            WHERE host_id='local' AND lower(thread_id)=? AND missing_candidate=0 AND length(display_title)>0
+            """
         guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else { throw Failure.unavailable }
         defer { sqlite3_finalize(statement) }
         let id = thread.uuidString.lowercased()
         _ = id.withCString { sqlite3_bind_text(statement, 1, $0, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self)) }
-        guard sqlite3_step(statement) == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else { throw Failure.ambiguousChat }
+        guard sqlite3_step(statement) == SQLITE_ROW, let text = sqlite3_column_text(statement, 0) else { throw Failure.wrongChat }
+        guard sqlite3_column_int(statement, 1) == 0 else { throw Failure.ambiguousChat }
         let title = String(cString: text)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw Failure.ambiguousChat }
         return title
@@ -146,32 +160,34 @@ enum CodexChatSpeed {
         init(thread: UUID, expectedCall: VoicePeerCall?) throws {
             guard AXIsProcessTrusted(), DesktopSessionState.current == .interactive,
                   let running = VoiceBridge.currentApplication(), let launched = running.launchDate else { throw Failure.unavailable }
-            let home = VoiceTimeline.databaseURL().deletingLastPathComponent().deletingLastPathComponent()
-            let candidates = try FileManager.default.contentsOfDirectory(at: home, includingPropertiesForKeys: nil)
-                .filter { $0.lastPathComponent.range(of: #"^state_[0-9]+\.sqlite$"#, options: .regularExpression) != nil }
-                .sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending }
-            guard let database = candidates.first else { throw Failure.unavailable }
+            let database = VoiceTimeline.databaseURL()
             let title = try uniqueTitle(thread: thread, database: database)
             let pid = running.processIdentifier
             let app = AXUIElementCreateApplication(pid)
             AXUIElementSetMessagingTimeout(app, 0.4)
             let initialInput = Self.inputCounters()
-            let window: AXUIElement = try Self.wait {
+            // A deep-link window appears before its pane/composer. Wait for the whole
+            // owned surface inside the existing readiness bound, not only its title. — GPT-6.1 Sol
+            let surface: (AXUIElement, AXUIElement, AXUIElement, AXUIElement) = try Self.wait {
                 guard !Task.isCancelled, Self.inputCounters() == initialInput else { throw Failure.interrupted }
-                let matches = Self.children(app, key: kAXWindowsAttribute).filter {
+                let windows = Self.children(app, key: kAXWindowsAttribute).filter {
                     Self.string(kAXSubroleAttribute, $0) == kAXStandardWindowSubrole && Self.string(kAXTitleAttribute, $0) == title
                 }
-                guard matches.count <= 1 else { throw Failure.wrongChat }
-                return matches.first
+                guard windows.count <= 1 else { throw Failure.wrongChat }
+                guard let window = windows.first else { return nil }
+                let panes = try Self.search(window, stopAtPane: true) { Self.isPane($0) }
+                guard panes.count <= 1 else { throw Failure.multiplePanes }
+                guard let pane = panes.first else { return nil }
+                let rows = try Self.search(window, stopAtPane: true) { Self.string(kAXRoleAttribute, $0) == kAXButtonRole && Self.label($0) == title }
+                guard rows.count <= 1 else { throw Failure.wrongChat }
+                guard let row = rows.first, Self.string("AXARIACurrent", row) == "page" else { return nil }
+                let composers = try Self.search(pane) { Self.string(kAXRoleAttribute, $0) == kAXTextAreaRole }
+                let triggers = try Self.search(pane) { Self.string(kAXRoleAttribute, $0) == kAXPopUpButtonRole && Self.string(kAXTitleAttribute, $0).hasPrefix("GPT-") }
+                guard composers.count == 1, triggers.count == 1, let composer = composers.first, let trigger = triggers.first,
+                      (VoiceBridge.attribute("AXDOMClassList", composer) as? [String])?.contains("ProseMirror") == true else { return nil }
+                return (window, pane, composer, trigger)
             }
-            let panes = try Self.search(window, stopAtPane: true) { Self.isPane($0) }
-            guard panes.count == 1, let pane = panes.first else { throw Failure.multiplePanes }
-            let rows = try Self.search(window, stopAtPane: true) { Self.string(kAXRoleAttribute, $0) == kAXButtonRole && Self.label($0) == title }
-            guard rows.count == 1, Self.string("AXARIACurrent", rows[0]) == "page" else { throw Failure.wrongChat }
-            let composers = try Self.search(pane) { Self.string(kAXRoleAttribute, $0) == kAXTextAreaRole }
-            let triggers = try Self.search(pane) { Self.string(kAXRoleAttribute, $0) == kAXPopUpButtonRole && Self.string(kAXTitleAttribute, $0).hasPrefix("GPT-") }
-            guard composers.count == 1, triggers.count == 1, let composer = composers.first, let trigger = triggers.first,
-                  (VoiceBridge.attribute("AXDOMClassList", composer) as? [String])?.contains("ProseMirror") == true else { throw Failure.wrongChat }
+            let (window, pane, composer, trigger) = surface
             guard try Self.menuItems(app).isEmpty else { throw Failure.busy }
             self.thread = thread; self.database = database; self.title = title; self.pid = pid; self.launched = launched
             self.app = app; self.window = window; self.pane = pane; self.composer = composer; self.trigger = trigger
@@ -219,7 +235,8 @@ enum CodexChatSpeed {
         func finish() throws {
             guard ownsMenu else { return }
             defer { ownsMenu = false }
-            try owned()
+            // Cancellation still permits cleanup of our own menu; input and identity remain checked.
+            try owned(allowCancellation: true)
             let items = try Self.menuItems(app)
             if !items.isEmpty {
                 try Self.press(trigger)
@@ -227,7 +244,7 @@ enum CodexChatSpeed {
             // Opus found that the model label can settle after the menu disappears.
             // Resolve the re-rendered button and both conditions together. — GPT-6.1 Sol
             _ = try Self.wait {
-                try self.owned()
+                try self.owned(allowCancellation: true)
                 return try Self.menuItems(self.app).isEmpty && Self.string(kAXTitleAttribute, self.trigger) == self.model ? true : nil
             }
             guard Self.string(kAXTitleAttribute, trigger) == model,
@@ -244,8 +261,8 @@ enum CodexChatSpeed {
             try Self.press(trigger); ownsMenu = true
         }
 
-        private func owned() throws {
-            guard !Task.isCancelled, Self.inputCounters() == input else { throw Failure.interrupted }
+        private func owned(allowCancellation: Bool = false) throws {
+            guard (allowCancellation || !Task.isCancelled), Self.inputCounters() == input else { throw Failure.interrupted }
             if let expectedCall {
                 let current = VoicePeerControl.localStatus()
                 guard current.status == .active, current.call == expectedCall else { throw Failure.interrupted }

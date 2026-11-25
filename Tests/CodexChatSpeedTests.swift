@@ -56,14 +56,17 @@ import SQLite3
         var db: OpaquePointer?
         precondition(sqlite3_open(database.path, &db) == SQLITE_OK)
         defer { sqlite3_close(db) }
-        precondition(sqlite3_exec(db, "CREATE TABLE threads(id TEXT, name TEXT); INSERT INTO threads VALUES('\(thread.uuidString.lowercased())','Exact chat');", nil, nil, nil) == SQLITE_OK)
+        precondition(sqlite3_exec(db, "CREATE TABLE local_thread_catalog(host_id TEXT DEFAULT 'local', thread_id TEXT, display_title TEXT, missing_candidate INTEGER DEFAULT 0); INSERT INTO local_thread_catalog(thread_id,display_title) VALUES('\(thread.uuidString.lowercased())','Exact chat');", nil, nil, nil) == SQLITE_OK)
         let unique = try CodexChatSpeed.uniqueTitle(thread: thread, database: database)
         precondition(unique == "Exact chat")
-        precondition(sqlite3_exec(db, "INSERT INTO threads VALUES('\(UUID().uuidString)','Exact chat');", nil, nil, nil) == SQLITE_OK)
+        precondition(sqlite3_exec(db, "INSERT INTO local_thread_catalog(host_id,thread_id,display_title,missing_candidate) VALUES('remote','ignored','Exact chat',0),('local','missing','Exact chat',1);", nil, nil, nil) == SQLITE_OK)
+        let localUnique = try CodexChatSpeed.uniqueTitle(thread: thread, database: database)
+        precondition(localUnique == "Exact chat", "Remote and missing titles do not own the local composer")
+        precondition(sqlite3_exec(db, "INSERT INTO local_thread_catalog(thread_id,display_title) VALUES('\(UUID().uuidString)','Exact chat');", nil, nil, nil) == SQLITE_OK)
         do { _ = try CodexChatSpeed.uniqueTitle(thread: thread, database: database); preconditionFailure("Duplicate names must be rejected") }
         catch CodexChatSpeed.Failure.ambiguousChat {}
         do { _ = try CodexChatSpeed.uniqueTitle(thread: UUID(), database: database); preconditionFailure("Missing target must be rejected") }
-        catch CodexChatSpeed.Failure.ambiguousChat {}
+        catch CodexChatSpeed.Failure.wrongChat {}
         let call = VoicePeerCall(token: "\(thread):\(UUID()):123")!
         let other = VoicePeerCall(token: "\(UUID()):\(UUID()):123")!
         var opened = 0, applied = 0

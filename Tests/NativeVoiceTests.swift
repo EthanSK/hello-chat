@@ -970,10 +970,253 @@ import Foundation
         await quitBeforeTask.value
         if let cli = ProcessInfo.processInfo.environment["HELLOCHAT_TEST_CODEX_CLI"] {
             try await temporaryVoiceDefaults(executable: URL(fileURLWithPath: cli))
+            try await warmVoiceDefaults(executable: URL(fileURLWithPath: cli))
         }
         print("Passed native Voice transport checks including stale closed-call and active-call cleanup. No desktop events or real calls sent.")
     }
 
+    // The picker fixture writes its choices just like Desktop's native empty draft.
+    // Use the real configuration protocol in a private home, never the user's renderer.
+    private final class DraftFixture: VoiceDraftPicker {
+        var selection: DraftChoices
+        var closed = false
+        var rejectSpeed = false
+        var interruptEffort = false
+        var adopted = false
+        var delayedPersistence = false
+        private let writes = DispatchQueue(label: "test.native-picker.preference-writes")
+        var speedlessModel: String?
+        var adoptBeforeModelSaves = false
+        let file: URL
+        init(_ selection: DraftChoices, file: URL) { self.selection = selection; self.file = file }
+        func choices() throws -> DraftChoices {
+            guard !adopted else { throw BridgeError.message("Draft adopted") }
+            var visible = selection
+            if selection.model == speedlessModel { visible.speed = DraftChoices.speedUnavailable }
+            return visible
+        }
+        func put(_ key: String, _ value: String) throws {
+            func writeToFile() throws {
+                var lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+                    .map(String.init).filter { !$0.hasPrefix(key + " = ") }
+                lines.append(key + " = \"" + value + "\"")
+                try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+            }
+            if delayedPersistence {
+                writes.asyncAfter(deadline: .now() + 0.35) { try! writeToFile() }
+            } else { try writeToFile() }
+        }
+        func selectModel(_ value: String) throws {
+            if adoptBeforeModelSaves { selection.model = value; adopted = true; return }
+            try put("model", value.lowercased().replacingOccurrences(of: " ", with: "-")); selection.model = value
+        }
+        func selectEffort(_ value: String, beforeStep: (String, String) throws -> Void = { _, _ in }) throws {
+            if interruptEffort && value == "High" {
+                try beforeStep(selection.effort, "Extra High")
+                try put("model_reasoning_effort", "xhigh")
+                selection.effort = "Extra High"
+                throw BridgeError.message("Interrupted after one confirmed slider step")
+            }
+            try beforeStep(selection.effort, value)
+            try put("model_reasoning_effort", value == "Extra High" ? "xhigh" : value.lowercased()); selection.effort = value
+        }
+        func selectSpeed(_ value: String) throws {
+            precondition(selection.model != speedlessModel && value != DraftChoices.speedUnavailable)
+            if rejectSpeed { throw BridgeError.message("Speed choice unavailable") }
+            try put("service_tier", value == "Standard" ? "default" : value.lowercased()); selection.speed = value
+        }
+        func closeIfEmpty() { if !adopted { closed = true } }
+    }
+    private static func warmVoiceDefaults(executable: URL) async throws {
+        precondition(DraftChoices.modelAndEffort("GPT-6.1 Sol Extra High")?.0 == "GPT-6.1 Sol")
+        precondition(DraftChoices.modelAndEffort("Opus 5.5 Max")?.1 == "Max")
+        precondition(DraftChoices.modelAndEffort("GPT-6.2\u{00a0}Sol\n High")?.0 == "GPT-6.2 Sol")
+        let solReadout = DraftChoices.readoutSelection("GPT-6.1 Sol Extra High, 4 of 6.")
+        precondition(solReadout?.model == "GPT-6.1 Sol" && solReadout?.effort == "Extra High" && solReadout?.index == 4 && solReadout?.count == 6)
+        precondition(DraftChoices.readoutSelection("Opus 5.5 High, 3 of 5.")?.count == 5)
+        precondition(DraftChoices.readoutSelection("GPT-6.2 Sol High, 0 of 6.") == nil)
+        precondition(DraftChoices.readoutSelection("GPT-6.2 Sol High, 7 of 6.") == nil)
+        precondition(DraftChoices.readoutSelection("Opus 5.5 Extended, 3 of 5.") == nil, "An unexplained native label must not be mapped to a guessed effort")
+        precondition(DraftChoices.modelAndEffort("Select effort") == nil)
+        precondition(DraftChoices.speed("Speed Ultrafast") == "Ultrafast" && DraftChoices.speed("Ultrafast") == nil)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("config.toml"), receipt = dir.appendingPathComponent("launch/receipt.json")
+        let env = ["CODEX_HOME": dir.path, "HOME": dir.path, "PATH": "/usr/bin:/bin"]
+        let generation = Date()
+        let baseline = DraftChoices(model: "GPT-6.1 Sol", effort: "Extra High", speed: "Standard")
+        let config = "model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"xhigh\"\n"
+        let fixture = DraftFixture(baseline, file: file)
+        let manager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in fixture }, generation: { _ in generation })
+        try config.write(to: file, atomically: true, encoding: .utf8)
+        let id = UUID(), sent = Date()
+        try await manager.prepare(id, executable: executable, environment: env, runningPID: 57)
+        precondition(fixture.selection == .voice && !fixture.closed)
+        try await manager.finish(id, sent: sent, executable: executable, environment: env)
+        try await manager.observedSessionStart(sent.addingTimeInterval(-1), executable: executable, environment: env)
+        precondition(fixture.selection == .voice && !fixture.closed)
+        try await manager.observedSessionStart(sent.addingTimeInterval(1), executable: executable, environment: env)
+        let restored = try String(contentsOf: file, encoding: .utf8)
+        precondition(fixture.selection == baseline && fixture.closed && restored == config)
+
+        let second = UUID()
+        try await manager.prepare(second, executable: executable, environment: env, runningPID: 57)
+        try fixture.selectEffort("Medium")
+        try await manager.finish(second, sent: nil, executable: executable, environment: env)
+        precondition(fixture.selection == DraftChoices(model: baseline.model, effort: "Medium", speed: baseline.speed))
+        fixture.rejectSpeed = true
+        do {
+            try await manager.prepare(UUID(), executable: executable, environment: env, runningPID: 57)
+            preconditionFailure("A rejected picker selection must not dispatch Voice")
+        } catch { }
+        precondition(fixture.selection == DraftChoices(model: baseline.model, effort: "Medium", speed: baseline.speed))
+        precondition(!FileManager.default.fileExists(atPath: receipt.path))
+
+        fixture.rejectSpeed = false
+        try fixture.selectEffort("Max"); fixture.interruptEffort = true
+        do {
+            try await manager.prepare(UUID(), executable: executable, environment: env, runningPID: 57)
+            preconditionFailure("The second step was interrupted")
+        } catch { }
+        precondition(fixture.selection == DraftChoices(model: baseline.model, effort: "Max", speed: baseline.speed))
+        precondition(!FileManager.default.fileExists(atPath: receipt.path))
+        fixture.interruptEffort = false
+
+        // When the user adopts the window, recover settings in a new empty draft.
+        let adopted = DraftFixture(baseline, file: file)
+        let replacement = DraftFixture(.voice, file: file)
+        let reopened = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in
+            adopted.adopted ? replacement : adopted
+        }, generation: { _ in generation })
+        try config.write(to: file, atomically: true, encoding: .utf8)
+        let adoptedID = UUID()
+        try await reopened.prepare(adoptedID, executable: executable, environment: env, runningPID: 57)
+        adopted.adopted = true
+        try await reopened.finish(adoptedID, sent: nil, executable: executable, environment: env)
+        precondition(!adopted.closed && replacement.closed && replacement.selection == baseline)
+        let afterAdoption = try String(contentsOf: file, encoding: .utf8)
+        precondition(afterAdoption == config)
+
+        let stale = DraftFixture(baseline, file: file)
+        let userPick = DraftFixture(DraftChoices(model: DraftChoices.voice.model, effort: "Medium", speed: "Ultrafast"), file: file)
+        var opens = 0
+        let otherComposer = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in
+            opens += 1
+            return opens == 1 ? stale : userPick
+        }, generation: { _ in generation })
+        let third = UUID()
+        try await otherComposer.prepare(third, executable: executable, environment: env, runningPID: 57)
+        try userPick.selectEffort("Medium") // Other window edited the shared preference; original picker is stale.
+        try await otherComposer.finish(third, sent: nil, executable: executable, environment: env)
+        precondition(opens == 2 && stale.closed && userPick.closed)
+        precondition(userPick.selection == DraftChoices(model: baseline.model, effort: "Medium", speed: baseline.speed))
+
+        let originalAgain = UUID()
+        opens = 0
+        stale.selection = baseline
+        try config.write(to: file, atomically: true, encoding: .utf8)
+        try await otherComposer.prepare(originalAgain, executable: executable, environment: env, runningPID: 57)
+        userPick.selection = .voice
+        try userPick.selectEffort(baseline.effort)
+        try await otherComposer.finish(originalAgain, sent: nil, executable: executable, environment: env)
+        precondition(userPick.selection == baseline && userPick.closed, "A manual return to the ordinary setting wins")
+
+        let speedless = DraftFixture(.init(model: "Opus 5.5", effort: "High", speed: "Standard"), file: file)
+        speedless.delayedPersistence = true
+        speedless.speedlessModel = "Opus 5.5"
+        let hiddenConfig = "model = \"opus-5.5\"\nmodel_reasoning_effort = \"high\"\n"
+        try hiddenConfig.write(to: file, atomically: true, encoding: .utf8)
+        try #"{"models":[{"slug":"opus-5.5","display_name":"Opus 5.5"}]}"#.write(
+            to: dir.appendingPathComponent("models_cache.json"), atomically: true, encoding: .utf8)
+        let hidden = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in speedless }, generation: { _ in generation })
+        let fourth = UUID()
+        try await hidden.prepare(fourth, executable: executable, environment: env, runningPID: 57)
+        precondition(speedless.selection == .voice)
+        try await hidden.finish(fourth, sent: nil, executable: executable, environment: env)
+        precondition(speedless.selection == DraftChoices(model: "Opus 5.5", effort: "High", speed: "Standard"))
+        let hiddenRestored = try String(contentsOf: file, encoding: .utf8)
+        precondition(hiddenRestored.split(separator: "\n").sorted() == hiddenConfig.split(separator: "\n").sorted() && speedless.closed)
+
+        let interrupted = DraftFixture(baseline, file: file)
+        interrupted.adoptBeforeModelSaves = true
+        let recoveryPicker = DraftFixture(.init(model: DraftChoices.voice.model, effort: baseline.effort, speed: baseline.speed), file: file)
+        let pending = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in
+            interrupted.adopted ? recoveryPicker : interrupted
+        }, generation: { _ in generation })
+        try config.write(to: file, atomically: true, encoding: .utf8)
+        do {
+            try await pending.prepare(UUID(), executable: executable, environment: env, runningPID: 57)
+            preconditionFailure("User input interrupted the native selection")
+        } catch { }
+        precondition(FileManager.default.fileExists(atPath: receipt.path), "A pending native write must keep its recovery record when the user adopts the draft")
+        precondition(!interrupted.closed && !recoveryPicker.closed)
+        try interrupted.put("model", CodexVoiceSpeed.model)
+        try await pending.recover(executable: executable, environment: env)
+        precondition(recoveryPicker.selection == baseline && recoveryPicker.closed)
+        precondition(!FileManager.default.fileExists(atPath: receipt.path))
+
+        fixture.selection = .voice; fixture.closed = false
+        let same = UUID()
+        try await manager.prepare(same, executable: executable, environment: env, runningPID: 57)
+        precondition(!fixture.closed && !FileManager.default.fileExists(atPath: receipt.path))
+        try await manager.finish(same, sent: nil, executable: executable, environment: env)
+        precondition(fixture.closed && !FileManager.default.fileExists(atPath: receipt.path))
+        // Existing-chat speed must leave ordinary model, effort and inherited defaults intact.
+        for speed in CodexChatSpeed.Speed.allCases {
+            let speedFixture = DraftFixture(baseline, file: file)
+            let speedManager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in speedFixture }, generation: { _ in generation })
+            try config.write(to: file, atomically: true, encoding: .utf8)
+            let thread = UUID()
+            let action = await speedManager.preservingSpeedDefaults(thread: thread, speed: speed, pid: 57, executable: executable, environment: env) {
+                precondition(speedFixture.selection.model == baseline.model && speedFixture.selection.effort == baseline.effort,
+                             "Speed-only preparation must not touch ordinary model or effort")
+                precondition(speedFixture.selection.speed == speed.rawValue)
+                return .init(status: "confirmed", thread: thread, speed: speed, model: "Target model stays unchanged")
+            }
+            precondition(action.succeeded && speedFixture.selection == baseline && speedFixture.closed)
+            let restored = try String(contentsOf: file, encoding: .utf8)
+            precondition(restored == config, "Missing inherited tier must be removed, not saved as Standard")
+        }
+        let already = DraftFixture(.init(model: baseline.model, effort: baseline.effort, speed: "Ultrafast"), file: file)
+        let alreadyManager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in already }, generation: { _ in generation })
+        try config.write(to: file, atomically: true, encoding: .utf8)
+        let exact = UUID()
+        let selected = await alreadyManager.preservingSpeedDefaults(thread: exact, speed: .ultrafast, pid: 57, executable: executable, environment: env) {
+            try! already.put("service_tier", "ultrafast") // Existing-chat handler also saves the default.
+            return .init(status: "confirmed", thread: exact, speed: .ultrafast, model: baseline.model)
+        }
+        precondition(selected.succeeded && already.selection.speed == "Ultrafast" && already.closed)
+        let rawRestored = try String(contentsOf: file, encoding: .utf8)
+        precondition(rawRestored == config, "Keep a differing warm UI and saved inherited default exactly as found")
+        let locked = DraftFixture(baseline, file: file)
+        let lockedManager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in locked }, generation: { _ in generation })
+        try config.write(to: file, atomically: true, encoding: .utf8)
+        let firstSpeed = await lockedManager.preservingSpeedDefaults(thread: exact, speed: .ultrafast, pid: 57, executable: executable, environment: env) {
+            let secondSpeed = await lockedManager.preservingSpeedDefaults(thread: UUID(), speed: .fast, pid: 57, executable: executable, environment: env) {
+                fatalError("A second defaults owner must never act")
+            }
+            precondition(secondSpeed.status == "busy")
+            return .init(status: "unconfirmed", thread: exact, speed: nil, model: nil)
+        }
+        precondition(firstSpeed.status == "unconfirmed" && locked.selection == baseline && locked.closed)
+        let noOpManager = CodexVoiceSpeed(receipt: receipt, openDraft: { _ in fatalError("An already-selected speed must never open a draft") }, generation: { _ in generation })
+        let noOp = await noOpManager.preservingSpeedDefaults(thread: exact, speed: .ultrafast, pid: 57, executable: executable, environment: env,
+            inspect: { .init(status: "observed", thread: exact, speed: .ultrafast, model: baseline.model) }) {
+                fatalError("An already-selected speed must never dispatch a second selection")
+            }
+        precondition(noOp.status == "unchanged")
+        let lease = open(receipt.appendingPathExtension("lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        precondition(lease >= 0 && flock(lease, LOCK_EX | LOCK_NB) == 0)
+        let foreignOwner = await alreadyManager.preservingSpeedDefaults(thread: exact, speed: .ultrafast,
+            pid: 57, executable: executable, environment: env) { fatalError("A foreign defaults lease must prevent any native action") }
+        precondition(foreignOwner.status == "unavailable")
+        let blockedRead = await alreadyManager.observe(thread: exact)
+        precondition(blockedRead.status == "unavailable")
+        flock(lease, LOCK_UN); close(lease)
+        precondition(!FileManager.default.fileExists(atPath: receipt.path), "The foreign lease must not create a competing recovery record")
+        print("Passed warm native picker selection, fresh session boundary, inherited speed restore, manual overrides, partial failure, interrupted slider steps, user-adopted windows and no-op checks")
+    }
     // Real configuration protocol, isolated from all user config and login data.
     static func temporaryVoiceDefaults(executable: URL) async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1000,6 +1243,16 @@ import Foundation
         let manual = try String(contentsOf: file, encoding: .utf8).replacingOccurrences(of: CodexVoiceSpeed.model, with: "gpt-6.1-sol").replacingOccurrences(of: "\"high\"", with: "\"medium\"")
         try manual.write(to: file, atomically: true, encoding: .utf8)
         let restarted = CodexVoiceSpeed(receipt: receipt)
+        do {
+            try await restarted.recover(executable: executable, environment: env)
+            preconditionFailure("A live defaults owner must not be recovered by a second process")
+        } catch {}
+        // Simulate the persisted bytes left by a dead process, after releasing the
+        // original live test owner's native lock; no actual app/process is killed.
+        let abandoned = try Data(contentsOf: receipt)
+        try await manager.finish(next, sent: nil, executable: executable, environment: env)
+        try manual.write(to: file, atomically: true, encoding: .utf8)
+        try abandoned.write(to: receipt, options: .atomic)
         try await restarted.recover(executable: executable, environment: env)
         let after = try String(contentsOf: file, encoding: .utf8)
         precondition(after.contains("gpt-6.1-sol") && after.contains("model_reasoning_effort = \"medium\"") && !after.contains("service_tier"))

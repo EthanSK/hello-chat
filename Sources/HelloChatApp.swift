@@ -41,9 +41,15 @@ import Darwin
                   arguments[2] == "check" || CodexChatSpeed.Speed.allCases.contains(where: { $0.rawValue.lowercased() == arguments[2] })
             else { print("invalid"); exit(2) }
             let speed = CodexChatSpeed.Speed.allCases.first { $0.rawValue.lowercased() == arguments[2] }
-            let result = CodexChatSpeed.perform(thread: thread, speed: speed)
-            print(String(decoding: try! JSONEncoder().encode(result), as: UTF8.self))
-            exit(["observed", "unchanged", "confirmed"].contains(result.status) ? 0 : 1)
+            func emit(_ result: CodexChatSpeed.Result) -> Never {
+                print(String(decoding: try! JSONEncoder().encode(result), as: UTF8.self))
+                exit(result.succeeded ? 0 : 1)
+            }
+            Task {
+                if let speed { emit(await CodexVoiceSpeed.shared.existingChatSpeed(thread: thread, speed: speed)) }
+                emit(await CodexVoiceSpeed.shared.observe(thread: thread))
+            }
+            dispatchMain()
         }
         if arguments.first == "--voice-command-receipt" {
             // The skill supplies the real session and input frame time. Only a live local call can
@@ -1729,7 +1735,7 @@ struct SettingsView: View {
                 }
                 Toggle("Prepare GPT-6.2 Sol, High and Ultrafast", isOn: $ultrafastForNewVoiceChats)
                     .accessibilityIdentifier("ultrafastForNewVoiceChats")
-                Text("H Chat restores your previous defaults after Voice opens. If Codex is already running, it can use the choices saved in its window.")
+                Text("H Chat restores your previous defaults after Voice opens.")
                     .foregroundStyle(.secondary)
             }
             NotificationReplySettingsSection(settings: model.notificationReplies.settings,

@@ -102,7 +102,7 @@ import Foundation
                     guard UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true else { return }
                     let exe = try CodexVoiceSpeed.executable(pid: pid)
                     opening.defaultsExecutable = exe
-                    try await CodexVoiceSpeed.shared.prepare(opening.id, executable: exe)
+                    try await CodexVoiceSpeed.shared.prepare(opening.id, executable: exe, runningPID: pid)
                     Diagnostics.shared.record("voice.defaults.prepared", info: [
                         "model": CodexVoiceSpeed.model, "effort": CodexVoiceSpeed.effort, "tier": CodexVoiceSpeed.tier
                     ])

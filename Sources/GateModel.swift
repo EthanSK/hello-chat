@@ -1511,6 +1511,7 @@ import SwiftUI
                         catch { return .init(status: .changed) }
                     })
                 } else { result = await CodexChatSpeed.currentVoice() }
+                Diagnostics.shared.record("voice.chat_speed.result", info: ["status": result.status, "thread": result.thread?.uuidString.lowercased() ?? ""])
                 guard generation == token, !quitting else { return }
                 if result.succeeded { lastEvent = result.message }
                 else { error = result.message }
