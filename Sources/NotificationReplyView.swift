@@ -85,6 +85,7 @@ struct NotificationReplySettingsSection: View {
             endReplySpellings: control == .end ? entries : endReplySpellings,
             cancelReplySpellings: control == .cancel ? entries : cancelReplySpellings)
         let starts = Set(forms.replyForms), ends = Set(forms.endReplyForms), cancels = Set(forms.cancelReplyForms)
+        if forms.hasConflictingFinishes { return NotificationReplyCore.Commands.finishConflict }
         if !starts.isDisjoint(with: ends) || !starts.isDisjoint(with: cancels) || !ends.isDisjoint(with: cancels) {
             return "Reply, End reply and Cancel reply need different spellings."
         }
@@ -251,6 +252,7 @@ struct NotificationReplyHUDContent: View {
         case .queued: return "Waiting for your reply to appear in the original chat."
         case .delivered: return "Saved in the original chat."
         case .cancelled, .unavailable:
+            if presentation.reason == "command-spellings-conflict" { return NotificationReplyCore.Commands.finishConflict + " Edit spellings in Settings." }
             if presentation.reason == "end-command-unconfirmed" { return "End reply wasn't confirmed. Nothing sent." }
             if presentation.reason == NotificationReplyOrigin.Failure.submissionUnknown.rawValue {
                 return "Delivery is unconfirmed. It won't be sent again."

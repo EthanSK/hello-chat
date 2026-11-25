@@ -38,6 +38,11 @@ struct NotificationReplyCore {
         fileprivate func matchesReply(_ words: [String]) -> Bool { replyIndex[words.count]?.contains(words) == true }
         fileprivate func matchesEnd(_ words: [String]) -> Bool { endIndex[words.count]?.contains(words) == true }
         fileprivate func matchesCancel(_ words: [String]) -> Bool { cancelIndex[words.count]?.contains(words) == true }
+        var hasConflictingFinishes: Bool {
+            endReplyForms.contains { words in cancelIndex.contains { $0.key <= words.count && $0.value.contains(Array(words.prefix($0.key))) } }
+                || cancelReplyForms.contains { words in endIndex.contains { $0.key <= words.count && $0.value.contains(Array(words.prefix($0.key))) } }
+        }
+        static let finishConflict = "End reply and Cancel reply spellings can’t start with one another."
         private static func forms(_ main: String, _ additions: [String]) -> [[String]] {
             var seen = Set<[String]>()
             return ([main] + additions).compactMap {
@@ -97,7 +102,7 @@ struct NotificationReplyCore {
     private var batches: [Recognition] = []
     private var activation: CommandSpan?
     private var startCandidate: CommandSpan?
-    private var startCandidatePrefix: [BatchPrefix] = []
+    private var startCandidatePrefix: [TimedToken] = []
     private var startCandidateSeenAt: Double?
     private var endCandidateSeenAt: Double?
     private var endCandidate: CommandSpan?
@@ -109,6 +114,7 @@ struct NotificationReplyCore {
 
     init(at now: Double, limits: Limits = .init(), commands: Commands = .init(), manualFinish: Bool = false) {
         preparedAt = now; self.limits = limits; self.commands = commands; self.manualFinish = manualFinish
+        if commands.hasConflictingFinishes { cancel("command-spellings-conflict", unavailable: true) }
     }
 
     var interceptsSpeech: Bool {
@@ -247,14 +253,11 @@ struct NotificationReplyCore {
         let all = flattened()
         if phase == .waiting, let ended = opportunityAt {
             if let candidate = startCandidate {
-                let unchanged = startCandidatePrefix.allSatisfy { prefix in
-                    guard let batch = batches.first(where: { $0.batch == prefix.batch }) else { return false }
-                    return batch.words.count >= prefix.first + prefix.words.count && Array(batch.words.dropFirst(prefix.first).prefix(prefix.words.count).map(\.text)) == prefix.words
-                }
-                guard unchanged, let current = currentSpan(candidate, in: all), current.contiguous,
-                      current.tokens.map({ $0.word.text }) == candidate.tokens.map({ $0.word.text }) else {
+                guard let current = currentStartSpan(candidate, in: all), current.contiguous,
+                      sameTimedWords(startCandidatePrefix, startPrefix(through: current, in: all, since: ended - 0.05)) else {
                     cancel("reply-command-unconfirmed"); return
                 }
+                startCandidate = current
                 for length in commands.endWordCounts where length <= all.count {
                     let cancelling = CommandSpan(tokens: Array(all.suffix(length)))
                     if cancelling.first.word.start > candidate.last.word.end, cancelling.contiguous,
@@ -278,7 +281,7 @@ struct NotificationReplyCore {
                     startCandidate = nil; startCandidatePrefix.removeAll(); startCandidateSeenAt = nil
                 } else {
                     if startCandidate == nil {
-                        startCandidate = span; startCandidateSeenAt = now; startCandidatePrefix = prefixes(for: span, since: ended - 0.05)
+                        startCandidate = span; startCandidateSeenAt = now; startCandidatePrefix = startPrefix(through: span, in: all, since: ended - 0.05)
                         textRevision += 1
                     }
                     finalizeThrough = span.last.word.end + 0.15
@@ -356,12 +359,33 @@ struct NotificationReplyCore {
         let span = CommandSpan(tokens: Array(content[first..<(first + candidate.tokens.count)]))
         return span.last.position == candidate.last.position ? span : nil
     }
-    private func prefixes(for span: CommandSpan, since: Double? = nil) -> [BatchPrefix] {
+    private func sameTimedWords(_ lhs: [TimedToken], _ rhs: [TimedToken]) -> Bool {
+        lhs.count == rhs.count && zip(lhs, rhs).allSatisfy {
+            $0.position.batch == $1.position.batch && $0.word.text == $1.word.text
+                && abs($0.word.start - $1.word.start) < 0.05 && abs($0.word.end - $1.word.end) < 0.05
+        }
+    }
+    private func startPrefix(through span: CommandSpan, in all: [TimedToken], since: Double) -> [TimedToken] {
+        guard let last = all.firstIndex(where: { $0.position == span.last.position }) else { return [] }
+        return all.prefix(last + 1).filter { $0.word.end >= since }
+    }
+    // A native correction may retokenize completed announcement words. Bind initial Reply
+    // to its unchanged timed words and in-window context, not the obsolete earlier indices.
+    private func currentStartSpan(_ candidate: CommandSpan, in all: [TimedToken]) -> CommandSpan? {
+        var match: CommandSpan?
+        for first in all.indices where first + candidate.tokens.count <= all.count {
+            let span = CommandSpan(tokens: Array(all[first..<(first + candidate.tokens.count)]))
+            if sameTimedWords(candidate.tokens, span.tokens) {
+                guard match == nil else { return nil }
+                match = span
+            }
+        }
+        return match
+    }
+    private func prefixes(for span: CommandSpan) -> [BatchPrefix] {
         batches.compactMap { batch in
             guard let last = span.tokens.last(where: { $0.position.batch == batch.batch }) else { return nil }
-            let prefix = batch.words.prefix(last.position.index + 1)
-            let first = since.flatMap { time in prefix.firstIndex(where: { $0.end >= time }) } ?? 0
-            return BatchPrefix(batch: batch.batch, words: Array(prefix.dropFirst(first).map(\.text)), first: first)
+            return BatchPrefix(batch: batch.batch, words: Array(batch.words.prefix(last.position.index + 1).map(\.text)))
         }
     }
 
@@ -375,7 +399,7 @@ struct NotificationReplyCore {
     }
 
     private struct Position: Equatable { let batch: UUID; let index: Int }
-    private struct BatchPrefix { let batch: UUID; let words: [String]; var first = 0 }
+    private struct BatchPrefix { let batch: UUID; let words: [String] }
     private struct CommandSpan {
         let tokens: [TimedToken]
         var first: TimedToken { tokens[0] }

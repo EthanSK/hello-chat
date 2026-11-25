@@ -174,6 +174,26 @@ import Foundation
         core.observe(recognition("um Reply", times: [10.1, 10.3], stable: 0, batch: oldAnnouncement), now: 10.6)
         core.observe(recognition("say Reply", times: [10.1, 10.3], batch: oldAnnouncement), now: 10.9)
         check(core.acceptedCount == 0 && !core.canDispatch, "Changed in-window command context still prevents activation")
+        for (before, oldTimes, after, newTimes) in [
+            ("Notice Reply yes", [9.2, 10.1, 10.3], "Notice ready Reply yes", [9.0, 9.2, 10.1, 10.3]),
+            ("Notice ready Reply yes", [9.0, 9.2, 10.1, 10.3], "Ready Reply yes", [9.2, 10.1, 10.3])
+        ] {
+            core = waiting()
+            core.observe(recognition(before, times: oldTimes, stable: 0, batch: oldAnnouncement), now: 10.6)
+            core.observe(recognition(after, times: newTimes, batch: oldAnnouncement), now: 10.9)
+            check(core.phase == .composing && core.draftText == "yes", "Old announcement insertions/removals preserve unchanged timed initial Reply")
+        }
+        core = waiting()
+        core.observe(recognition("Notice Reply", times: [9.2, 10.1], stable: 0, batch: oldAnnouncement), now: 10.6)
+        core.observe(recognition("Notice Reply", times: [9.2, 11.1], batch: oldAnnouncement), now: 11.4)
+        check(core.acceptedCount == 0 && core.reason == "reply-command-unconfirmed", "A moved/replaced timed Reply is not the original candidate")
+        for commands in [NotificationReplyCore.Commands(endReplySpellings: ["Cancel"]), .init(cancelReplySpellings: ["End"]), .init(endReplySpellings: ["Finish"], cancelReplySpellings: ["Finish response"])] {
+            check(commands.hasConflictingFinishes, "Cross-control prefixes are ambiguous even if complete forms differ")
+            core = NotificationReplyCore(at: 0, commands: commands)
+            check(core.phase == .unavailable && !core.canDispatch, "Old persisted conflicting spellings fail closed before capture")
+        }
+        check(!NotificationReplyCore.Commands(endReplySpellings: ["Finish send"], cancelReplySpellings: ["Finish discard"]).hasConflictingFinishes,
+              "Different full phrases may share a starting word without an actual prefix conflict")
         core = NotificationReplyCore(at: 0, manualFinish: true)
         core.audioEnded(at: 10, completed: true, now: 10)
         core.observe(recognition("Reply yes", times: [11, 11.2]), now: 11.5)

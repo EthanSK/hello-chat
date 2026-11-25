@@ -133,7 +133,8 @@ final class NotificationReplyBackendTests: XCTestCase {
                 XCTAssertTrue(core.phase == .composing || core.canDispatch)
                 XCTAssertFalse(core.draftText.isEmpty, "Words already following Reply in that real final must remain captured")
             } else { XCTAssertTrue(core.canDispatch, "The real native final must confirm End reply.") }
-            XCTAssertFalse(core.body?.lowercased().contains("end reply") ?? true)
+            if let body = core.body { XCTAssertFalse(body.lowercased().contains("end reply")) }
+            else { XCTAssertTrue(initial, "Only the initial confirmation may still be composing without a final send body") }
             let body = core.body
             core.observe(recognition, now: base + elapsed + 0.1)
             XCTAssertEqual(core.body, body, "Duplicate finalization cannot append or replay.")

@@ -106,7 +106,7 @@ import Foundation
         if admitted == .ready { active = event; resetRecognition?() }
         if admitted != .ready { session.core.cancel(admitted.rawValue, unavailable: true) }
         publish(session)
-        if admitted == .ready {
+        if admitted == .ready, session.core.phase == .preparing {
             do {
                 let origin = try await captureOrigin(thread, turn, question)
                 guard sessions[event] === session, session.core.phase == .preparing else { return snapshot(session) }
