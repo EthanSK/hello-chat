@@ -87,24 +87,6 @@ struct DesktopCommandResult: Equatable {
     let diagnostic: String // Never contains spoken words or app names.
 }
 
-// A background speech command may be refused by AppKit's activation policy (21:33:13 UTC on 14
-// November 2026: accepted, then activate-failed). Each later route runs once, only after the
-// previous one was refused, and only while the same live process is still the target: the native
-// Accessibility frontmost attribute, then Launch Services, which handles activation for an app it
-// opens. Launch Services may reopen a window, as a Dock click does; that is now acceptable because
-// Switch app and Open app both may open apps. No retry, delay or second request of the same kind.
-enum RunningAppActivation {
-    static func request(identityMatches: () -> Bool, native: () -> Bool, accessibility: () async -> Bool,
-                        workspace: () async -> Bool = { false }) async -> Bool {
-        guard !Task.isCancelled, identityMatches() else { return false }
-        if native() { return true }
-        guard !Task.isCancelled, identityMatches() else { return false }
-        if await accessibility() { return true }
-        guard !Task.isCancelled, identityMatches() else { return false }
-        return await workspace()
-    }
-}
-
 // Carries out app and zoom commands. Every dependency is injectable; tests never switch, open
 // or type. An exact running match needs only the running apps. Anything else reads a cached
 // catalog of installed apps that is built on demand, never per audio frame or in the background.
@@ -264,38 +246,11 @@ enum RunningAppActivation {
         return front.bundleIdentifier == app.id && front.bundleURL?.resolvingSymlinksInPath() == app.url?.resolvingSymlinksInPath()
     }
 
-    // Brings the same live process forward. The Accessibility request runs off the main thread, so
-    // an unresponsive app can't stall recognition; its existing one-second messaging bound remains.
+    // Extraction of the native routes into AppActivation, also used by Codex navigation.
+    // Desktop commands retain their separate foreground result and existing dispatch policy. — GPT-6.1 Sol
     static func activateRunning(_ app: AppCandidate) async -> Bool {
-        guard let pid = app.pid else { return false }
-        func current() -> NSRunningApplication? {
-            guard let running = NSRunningApplication(processIdentifier: pid),
-                  !running.isTerminated, running.activationPolicy == .regular,
-                  (running.bundleIdentifier ?? "pid:\(pid)") == app.id, running.bundleURL == app.url else { return nil }
-            return running
-        }
-        return await RunningAppActivation.request(identityMatches: { current() != nil }, native: {
-            let accepted = current()?.activate(options: []) ?? false
-            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid)],
-                info: ["method": "appkit", "accepted": String(accepted)])
-            return accepted
-        }, accessibility: {
-            let result = await Task.detached(priority: .userInitiated) { () -> AXError? in
-                guard AXIsProcessTrusted() else { return nil }
-                let target = AXUIElementCreateApplication(pid)
-                AXUIElementSetMessagingTimeout(target, 1)
-                return AXUIElementSetAttributeValue(target, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-            }.value
-            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid), "ax_result": Double(result?.rawValue ?? 0)],
-                info: ["method": "accessibility", "trusted": String(result != nil), "accepted": String(result == .success)])
-            return result == .success
-        }, workspace: {
-            guard let url = current()?.bundleURL else { return false }
-            let opened = await openApplication(at: url)
-            Diagnostics.shared.record("desktop.app.activation", numbers: ["target_pid": Double(pid), "opened_pid": Double(opened ?? -1)],
-                info: ["method": "workspace", "accepted": String(opened != nil), "same_process": String(opened == pid)])
-            return opened != nil
-        })
+        guard let pid = app.pid, let url = app.url else { return false }
+        return await AppActivation.request(pid: pid, bundleID: app.id, url: url)
     }
 
     nonisolated static func scanInstalled() async -> [AppCandidate] {

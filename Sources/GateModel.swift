@@ -187,9 +187,12 @@ import SwiftUI
         showVoiceTask = Task { [weak self] in
             let outcome = await ShowVoiceCommand.perform()
             guard let self else { return }
+            // Completion can synchronously dispatch the next requested repetition. Clear the
+            // finished task first so the next fresh action is not superseded by it.
+            // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+            self.showVoiceTask = nil
             self.finishCommand(id, outcome.didOpen ? .submitted : .failedBeforeDispatch,
                                detail: outcome == .inactive && self.observedVoicePresence == .active ? nil : outcome.message)
-            self.showVoiceTask = nil
             guard !self.quitting else { return }
             if outcome != .inactive || self.observedVoicePresence != .active {
                 self.desktopCommandStatus = outcome.message
