@@ -103,7 +103,7 @@ import Foundation
         let session = Session(event: event, thread: thread, turn: turn, question: question, spokenText: spokenText, at: now, limits: settings.limits, commands: commandForms(), manualFinish: manualFinish)
         let admitted = readiness
         sessions[event] = session; startTimer()
-        if admitted == .ready { active = event; resetRecognition?() }
+        if admitted == .ready, session.core.phase == .preparing { active = event; resetRecognition?() }
         if admitted != .ready { session.core.cancel(admitted.rawValue, unavailable: true) }
         publish(session)
         if admitted == .ready, session.core.phase == .preparing {

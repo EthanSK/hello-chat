@@ -139,6 +139,21 @@ import SwiftUI
         XCTAssertEqual(f.calls.count, 0)
         await m.shutdown()
     }
+    func testConflictingFinishSpellingsLeaveAmbientRecognitionUntouched() async throws {
+        let f = try fixture(), m = f.coordinator
+        var resets = 0, origins = 0
+        m.resetRecognition = { resets += 1 }
+        m.captureOrigin = { _, _, _ in origins += 1; return f.origin }
+        m.commandForms = { .init(endReplySpellings: ["Cancel"]) }
+        let result = try await prepare(f, event: UUID())
+        XCTAssertEqual(result["phase"] as? String, "unavailable")
+        XCTAssertEqual(result["reason"] as? String, "command-spellings-conflict")
+        XCTAssertFalse(m.interceptsSpeech)
+        XCTAssertEqual(resets, 0, "Rejected admission cannot discard ambient input")
+        XCTAssertEqual(origins, 0)
+        XCTAssertEqual(f.calls.count, 0)
+        await m.shutdown()
+    }
     func testPrepareOptionalManualSchemaKeepsLegacyAndStrictValidation() async throws {
         let model = GateModel(enableSpotifyControl: false)
         let f = try fixture(coordinator: model.notificationReplies)
