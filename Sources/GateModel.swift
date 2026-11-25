@@ -242,7 +242,6 @@ import SwiftUI
     @Published var lowerSpotifyDuringChat = UserDefaults.standard.bool(forKey: "lowerSpotifyDuringChat") {
         didSet {
             UserDefaults.standard.set(lowerSpotifyDuringChat, forKey: "lowerSpotifyDuringChat")
-            voiceCalls.onMetadataChanged = { [weak self] in self?.applyPendingModelBarSpeed() }
             spotifyVolume.setEnabled(lowerSpotifyDuringChat)
             updateVoiceCallMonitoring()
         }
@@ -936,6 +935,7 @@ import SwiftUI
                     self.feedback.play(PhraseSlot.sleepPhrase.cue)
                 }
             }
+            voiceCalls.onMetadataChanged = { [weak self] in self?.applyPendingModelBarSpeed() }
             spotifyVolume.setEnabled(lowerSpotifyDuringChat)
             if voicePeerPriority.enabled { voicePeerMailbox.start() }
             updateVoiceCallMonitoring()
