@@ -139,10 +139,10 @@ struct ModelBarVoiceLaunch {
     private(set) var pending: (sent: Date, pid: Int32)?
     mutating func arm(sent: Date, pid: Int32) { pending = (sent, pid) }
     mutating func cancel() { pending = nil }
-    mutating func take(_ state: VoicePeerReceipt, at now: Date) -> VoicePeerCall? {
+    mutating func take(_ state: VoicePeerReceipt, at now: Date, composerReady: Bool = true) -> VoicePeerCall? {
         guard let pending else { return nil }
         guard (0...30).contains(now.timeIntervalSince(pending.sent)) else { self.pending = nil; return nil }
-        guard state.status == .active, let call = state.call,
+        guard composerReady, state.status == .active, let call = state.call,
               call.pid == pending.pid, let started = state.startedAtMilliseconds,
               Double(started) >= pending.sent.timeIntervalSince1970 * 1000 else { return nil }
         self.pending = nil

@@ -242,6 +242,7 @@ import SwiftUI
     @Published var lowerSpotifyDuringChat = UserDefaults.standard.bool(forKey: "lowerSpotifyDuringChat") {
         didSet {
             UserDefaults.standard.set(lowerSpotifyDuringChat, forKey: "lowerSpotifyDuringChat")
+            voiceCalls.onMetadataChanged = { [weak self] in self?.applyPendingModelBarSpeed() }
             spotifyVolume.setEnabled(lowerSpotifyDuringChat)
             updateVoiceCallMonitoring()
         }
@@ -445,6 +446,7 @@ import SwiftUI
     private var modelBarLaunch = ModelBarVoiceLaunch()
     private var modelBarLaunchTask: Task<Void, Never>?
     private var modelBarLaunchExpiry: Task<Void, Never>?
+    private var modelBarReadinessChanged = false
     private var speakerOutputDetector = StandaloneWake(speakerRoute: true)
     private var speakerQueue = SpeakerOutputQueue()
     private var speakerOutputTask: Task<Void, Never>?
@@ -1749,13 +1751,21 @@ import SwiftUI
     // existing identity observer, never infer the target from whichever chat is in front.
     // The previous shortcut-only launch omitted this step. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
     private func applyPendingModelBarSpeed() {
-        guard !quitting, modelBarLaunch.pending != nil, modelBarLaunchTask == nil else { return }
+        guard !quitting, modelBarLaunch.pending != nil else { return }
+        guard modelBarLaunchTask == nil else { modelBarReadinessChanged = true; return }
+        modelBarReadinessChanged = false
         modelBarLaunchTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.modelBarLaunchTask = nil }
+            defer {
+                self.modelBarLaunchTask = nil
+                if self.modelBarReadinessChanged { self.applyPendingModelBarSpeed() }
+            }
             let state = await Task.detached { VoicePeerControl.localStatus() }.value
+            let titleReady = await Task.detached {
+                state.call.flatMap { try? CodexChatSpeed.uniqueTitle(thread: $0.thread, database: VoiceTimeline.databaseURL()) } != nil
+            }.value
             guard !Task.isCancelled, !self.quitting, let started = state.startedAtMilliseconds,
-                  let call = self.modelBarLaunch.take(state, at: Date()) else { return }
+                  let call = self.modelBarLaunch.take(state, at: Date(), composerReady: titleReady) else { return }
             self.modelBarLaunchExpiry?.cancel(); self.modelBarLaunchExpiry = nil
             // Finish the launch's existing defaults receipt before acquiring the speed lease.
             // This recovery changes no call state and cannot send a shortcut. — GPT-6.1 Sol

@@ -133,6 +133,7 @@ struct VoiceTimeline {
 @MainActor final class VoiceCallMonitor {
     var onChange: ((VoiceCallObservation) -> Void)?
     var onSessionStarted: ((Date) -> Void)?
+    var onMetadataChanged: (() -> Void)?
     private var lastSessionStart: Int64?
     private var tracker = VoiceCallTracker()
     private var started = false
@@ -240,6 +241,7 @@ struct VoiceTimeline {
                 // Most SQLite writes are unrelated to call boundaries. They
                 // must not cause repeated AX scans of a busy conversation.
                 if let value, value != self.tracker.activeSessions { self.refresh() }
+                self.onMetadataChanged?()
             } while self.metadataAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.metadataTask = nil }
         }

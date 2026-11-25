@@ -78,7 +78,9 @@ import Foundation
               "A different desktop PID cannot consume the pending call")
         check(launch.take(.init(status: .active, call: good.call, startedAtMilliseconds: state.startedAtMilliseconds! - 1000), at: now) == nil,
               "An old session cannot inherit a fresh launch request")
-        check(launch.take(state, at: now) == good.call && launch.take(state, at: now) == nil, "The exact new call is handed off once")
+        check(launch.take(state, at: now, composerReady: false) == nil && launch.pending != nil,
+              "An unresolved temporary title keeps the one handoff pending without a native mutation")
+        check(launch.take(state, at: now, composerReady: true) == good.call && launch.take(state, at: now) == nil, "The exact new call is handed off once after its title is ready")
         launch.arm(sent: now, pid: good.call.pid)
         check(launch.take(state, at: now.addingTimeInterval(31)) == nil && launch.pending == nil, "An expired opening cannot make a late selection")
         launch.arm(sent: now, pid: good.call.pid); launch.cancel()
