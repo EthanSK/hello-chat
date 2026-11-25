@@ -1043,6 +1043,35 @@ import Foundation
         precondition(DraftChoices.modelMenuSelection(["GPT-6.2 Sol"]) == nil)
         precondition(DraftChoices.modelMenuSelection(["GPT-6.2 Sol", "Medium", "High"]) == nil)
         precondition(DraftChoices.modelMenuSelection(["", "High"]) == nil)
+        var menuReads = 0, menuPresses = 0
+        let opened: Int = try CodexVoiceDraft.waitForModelMenu(group: {
+            menuReads += 1
+            return menuPresses == 1 && menuReads >= 4 ? 42 : nil
+        }, pill: { menuReads >= 2 ? 7 : nil }, press: {
+            precondition($0 == 7)
+            menuPresses += 1
+        })
+        precondition(opened == 42 && menuReads == 4 && menuPresses == 1,
+                     "A temporarily missing button and a delayed popover share one opening attempt")
+        let alreadyOpen: Int = try CodexVoiceDraft.waitForModelMenu(group: { 42 },
+            pill: { preconditionFailure("An open menu needs no button read") },
+            press: { _ in preconditionFailure("An open menu must not be toggled") })
+        precondition(alreadyOpen == 42)
+        enum MenuInterrupted: Error { case input }
+        do {
+            let _: Int = try CodexVoiceDraft.waitForModelMenu(group: { throw MenuInterrupted.input },
+                pill: { 7 }, press: { _ in preconditionFailure("Input cancellation must precede a press") })
+            preconditionFailure("Input cancellation must propagate")
+        } catch MenuInterrupted.input { }
+        var failedPresses = 0
+        do {
+            let _: Int = try CodexVoiceDraft.waitForModelMenu(group: { nil }, pill: { 7 }, press: { _ in
+                failedPresses += 1
+                throw MenuInterrupted.input
+            })
+            preconditionFailure("A failed press must propagate")
+        } catch MenuInterrupted.input { }
+        precondition(failedPresses == 1)
         precondition(DraftChoices.modelAndEffort("Select effort") == nil)
         precondition(DraftChoices.speed("Speed Ultrafast") == "Ultrafast" && DraftChoices.speed("Ultrafast") == nil)
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

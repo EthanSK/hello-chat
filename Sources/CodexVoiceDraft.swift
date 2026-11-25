@@ -178,11 +178,36 @@ final class CodexVoiceDraft: VoiceDraftPicker {
         find(kAXPopUpButtonRole) { Self.label($0) == "Select effort" || DraftChoices.modelAndEffort(Self.label($0)) != nil }
     }
     private func menu() throws -> AXUIElement {
-        try owned()
-        if let group = named(kAXGroupRole, "Select effort") { return group }
-        guard let pill = pill() else { throw BridgeError.message("Couldn’t find the model picker in the empty Codex draft.") }
-        try Self.press(pill)
-        return try Self.wait("Couldn’t open the Codex model picker.") { self.named(kAXGroupRole, "Select effort") }
+        var pressed = false
+        do {
+            return try Self.waitForModelMenu(group: {
+                try self.owned()
+                return self.named(kAXGroupRole, "Select effort")
+            }, pill: { self.pill() }, press: {
+                try self.owned()
+                try Self.press($0)
+                pressed = true
+            })
+        } catch {
+            Diagnostics.shared.record("voice.draft.picker_not_ready", info: ["check": pressed ? "open menu" : "model button"])
+            throw error
+        }
+    }
+    // An empty composer does not establish model-button readiness. Share the
+    // existing two-second menu-opening bound across its fresh button and popover
+    // reads, with one press at most; never add padding or repeat the action.
+    // Found by Claude Opus 5.5. Fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+    static func waitForModelMenu<Element>(group: () throws -> Element?, pill: () -> Element?,
+                                          press: (Element) throws -> Void) throws -> Element {
+        var pressed = false
+        return try wait("Couldn’t open the Codex model picker.") {
+            if let menu = try group() { return menu }
+            if !pressed, let button = pill() {
+                try press(button)
+                pressed = true
+            }
+            return nil
+        }
     }
     private func dismiss() throws {
         guard let open = named(kAXPopUpButtonRole, "Select effort") else { return }
