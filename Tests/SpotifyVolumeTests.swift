@@ -78,8 +78,78 @@ import SwiftUI
         }
     }
 
+    static func combinedAudioMute() throws {
+        for outputFirst in [false, true] {
+            let f = Fixture(), session = f.session()
+            _ = try session.reconcile(.active, callIdentifier: "call", microphoneMuted: false, outputSilenced: false)
+            _ = try session.reconcile(.active, callIdentifier: "call", microphoneMuted: !outputFirst, outputSilenced: outputFirst)
+            check(f.volume == 80 && f.writes == [50, 80])
+            _ = try session.reconcile(.active, callIdentifier: "call", microphoneMuted: true, outputSilenced: true)
+            // Recreate the owner from its actual encoded receipt while both reasons overlap.
+            f.receipt = try JSONDecoder().decode(SpotifyVolumeLease.self, from: JSONEncoder().encode(f.receipt!))
+            let restarted = f.session()
+            _ = try restarted.reconcile(.active, callIdentifier: "call", microphoneMuted: outputFirst, outputSilenced: !outputFirst)
+            _ = try restarted.reconcile(.active, callIdentifier: "call")
+            check(f.volume == 80 && f.writes == [50, 80])
+            _ = try restarted.reconcile(.active, callIdentifier: "call", microphoneMuted: false, outputSilenced: false)
+            check(f.volume == 50 && f.writes == [50, 80, 50])
+            check(f.receipt?.microphoneMuted == false && f.receipt?.outputSilenced == false)
+            _ = try restarted.reconcile(.inactive)
+            check(f.volume == 80 && f.receipt == nil)
+        }
+        let chosen = Fixture(); chosen.volume = 49
+        let choice = chosen.session()
+        _ = try choice.reconcile(.active, callIdentifier: "call", outputSilenced: false, limit: 40)
+        _ = try choice.reconcile(.active, callIdentifier: "call", outputSilenced: true, limit: 40)
+        check(chosen.volume == 49 && chosen.writes == [40, 49])
+        _ = try choice.reconcile(.active, callIdentifier: "call", outputSilenced: false, limit: 40)
+        _ = try choice.setVolume(49, preservingForCall: true, callIdentifier: "call")
+        _ = try choice.reconcile(.active, callIdentifier: "call", microphoneMuted: true, outputSilenced: true, limit: 40)
+        _ = try choice.reconcile(.active, callIdentifier: "call", microphoneMuted: false, outputSilenced: false, limit: 40)
+        check(chosen.volume == 49 && chosen.receipt?.mutePhase == .manualOverride)
+        let quiet = Fixture(); quiet.volume = 20
+        let quietSession = quiet.session()
+        _ = try quietSession.reconcile(.active, outputSilenced: true, limit: 40)
+        _ = try quietSession.reconcile(.active, outputSilenced: false, limit: 40)
+        check(quiet.volume == 20 && quiet.writes.isEmpty)
+        let changed = Fixture(), changedSession = changed.session()
+        _ = try changedSession.reconcile(.active, callIdentifier: "old", outputSilenced: true)
+        _ = try changedSession.reconcile(.active, callIdentifier: "new")
+        check(changed.volume == 50 && changed.receipt?.outputSilenced == nil)
+        let failed = Fixture(), failedSession = failed.session()
+        _ = try failedSession.reconcile(.active)
+        failed.failSave = true
+        do { _ = try failedSession.reconcile(.active, outputSilenced: true); fatalError("No restore without persisted ownership") } catch {}
+        check(failed.volume == 50 && failed.writes == [50])
+    }
+
+    static func nativeAudioOwnership() {
+        let single = VoiceLedgerSessions(startedAtMilliseconds: ["call": 1])
+        for complete in [true, false] {
+            for allowed in [true, false] {
+                for output in [Bool?.none, false, true] {
+                    var tracker = VoiceCallTracker()
+                    let result = tracker.observe(.init(controlsPresent: true, controlsComplete: complete,
+                        applicationAbsent: false, process: 1, ledger: single, accessibilityAllowed: allowed,
+                        microphoneMuted: false, outputSilenced: output)).observations.last!
+                    let confirmed = complete && allowed && output != nil
+                    check(result.microphoneMuted == (confirmed ? false : nil))
+                    check(result.outputSilenced == (confirmed ? output : nil))
+                }
+            }
+        }
+        for ledger in [VoiceLedgerSessions?.none, .init(startedAtMilliseconds: ["a": 1, "b": 2])] {
+            var tracker = VoiceCallTracker()
+            let result = tracker.observe(.init(controlsPresent: true, controlsComplete: true,
+                applicationAbsent: false, process: 1, ledger: ledger, microphoneMuted: true, outputSilenced: true)).observations.last!
+            check(result.microphoneMuted == nil && result.outputSilenced == nil)
+        }
+    }
+
     static func main() throws {
         try spokenVolume()
+        try combinedAudioMute()
+        nativeAudioOwnership()
         var savedLimit = 50
         var edits: [Int] = []
         let field = Binding(get: { savedLimit }, set: { savedLimit = $0; edits.append($0) }).changes(in: 0...100)

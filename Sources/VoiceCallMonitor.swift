@@ -134,6 +134,7 @@ struct VoiceTimeline {
     var onChange: ((VoiceCallObservation) -> Void)?
     var onSessionStarted: ((Date) -> Void)?
     var onMetadataChanged: (() -> Void)?
+    var observesAudioState = false { didSet { if oldValue != observesAudioState { refresh() } } }
     private var lastSessionStart: Int64?
     private var tracker = VoiceCallTracker()
     private var started = false
@@ -188,7 +189,7 @@ struct VoiceTimeline {
             guard let self else { return }
             repeat {
                 self.refreshAgain = false
-                let database = self.database
+                let database = self.database, readAudio = self.observesAudioState
                 let evidence = await Task.detached(priority: .utility) {
                     let observedAt = ProcessInfo.processInfo.systemUptime
                     let absent = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
@@ -197,14 +198,20 @@ struct VoiceTimeline {
                     // the native controls. An unresolved process or launch is
                     // unknown evidence, never "no sessions since now".
                     let app = VoiceBridge.currentApplication()
+                    let previousLedger = readAudio ? app?.launchDate.flatMap { VoiceTimeline.sessions(database: database, since: $0) } : nil
                     var callElements: [AXUIElement] = []
-                    let state = VoiceBridge.snapshot(requireEnd: true, observeCallElements: { callElements = $0 })
+                    var audioElements: [AXUIElement] = []
+                    let state = VoiceBridge.snapshot(requireEnd: true, readCallAudioState: readAudio,
+                        observeCallElements: { callElements = $0 }, observeAudioElements: { audioElements = $0 })
                     let launch = state.pid != nil && app?.processIdentifier == state.pid ? app?.launchDate : nil
+                    let ledger = launch.flatMap { VoiceTimeline.sessions(database: database, since: $0) }
+                    let sameCall = readAudio && ledger?.active.count == 1 && previousLedger?.active == ledger?.active
                     let read = VoiceCallRead(controlsPresent: state.endControlAvailable || state.microphone != nil,
                         controlsComplete: state.controlsComplete, applicationAbsent: absent, process: state.pid,
-                        ledger: launch.flatMap { VoiceTimeline.sessions(database: database, since: $0) },
-                        ledgerResolved: launch != nil, accessibilityAllowed: state.accessibilityAllowed)
-                    return (read, state.pid, callElements, observedAt)
+                        ledger: ledger, ledgerResolved: launch != nil, accessibilityAllowed: state.accessibilityAllowed,
+                        microphoneMuted: sameCall ? state.microphone.map { $0 == .muted } : nil,
+                        outputSilenced: sameCall ? state.outputMuted : nil)
+                    return (read, state.pid, callElements, observedAt, audioElements)
                 }.value
                 guard !Task.isCancelled, self.started, self.generation == generation else { break }
                 if let started = evidence.0.ledger?.startedAtMilliseconds.values.max(), started != self.lastSessionStart {
@@ -212,7 +219,7 @@ struct VoiceTimeline {
                     self.onSessionStarted?(Date(timeIntervalSince1970: Double(started) / 1_000))
                 }
                 let result = self.tracker.observe(evidence.0)
-                self.installAccessibilityObserver(pid: evidence.1, callElements: evidence.2)
+                self.installAccessibilityObserver(pid: evidence.1, callElements: evidence.2, audioElements: evidence.4)
                 self.installFileObservers()
                 for var observation in result.observations {
                     observation.observedAt = evidence.3
@@ -247,7 +254,7 @@ struct VoiceTimeline {
         }
     }
 
-    private func installAccessibilityObserver(pid: pid_t?, callElements: [AXUIElement]) {
+    private func installAccessibilityObserver(pid: pid_t?, callElements: [AXUIElement], audioElements: [AXUIElement]) {
         guard let pid, AXIsProcessTrusted() else { removeAccessibilityObserver(); return }
         if observedPID != pid {
             removeAccessibilityObserver()
@@ -272,7 +279,9 @@ struct VoiceTimeline {
         for (element, name) in registrations { AXObserverRemoveNotification(observer, element, name) }
         registrations.removeAll()
         for element in elements {
-            for name in notifications {
+            let names = notifications + (observesAudioState && audioElements.contains(where: { CFEqual($0, element) })
+                ? [kAXValueChangedNotification, kAXTitleChangedNotification] : [])
+            for name in names {
                 if AXObserverAddNotification(observer, element, name as CFString,
                     Unmanaged.passUnretained(self).toOpaque()) == .success {
                     registrations.append((element, name as CFString))
