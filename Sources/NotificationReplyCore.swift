@@ -249,7 +249,7 @@ struct NotificationReplyCore {
             if let candidate = startCandidate {
                 let unchanged = startCandidatePrefix.allSatisfy { prefix in
                     guard let batch = batches.first(where: { $0.batch == prefix.batch }) else { return false }
-                    return batch.words.count >= prefix.words.count && Array(batch.words.prefix(prefix.words.count).map(\.text)) == prefix.words
+                    return batch.words.count >= prefix.first + prefix.words.count && Array(batch.words.dropFirst(prefix.first).prefix(prefix.words.count).map(\.text)) == prefix.words
                 }
                 guard unchanged, let current = currentSpan(candidate, in: all), current.contiguous,
                       current.tokens.map({ $0.word.text }) == candidate.tokens.map({ $0.word.text }) else {
@@ -278,7 +278,7 @@ struct NotificationReplyCore {
                     startCandidate = nil; startCandidatePrefix.removeAll(); startCandidateSeenAt = nil
                 } else {
                     if startCandidate == nil {
-                        startCandidate = span; startCandidateSeenAt = now; startCandidatePrefix = prefixes(for: span)
+                        startCandidate = span; startCandidateSeenAt = now; startCandidatePrefix = prefixes(for: span, since: ended - 0.05)
                         textRevision += 1
                     }
                     finalizeThrough = span.last.word.end + 0.15
@@ -356,10 +356,12 @@ struct NotificationReplyCore {
         let span = CommandSpan(tokens: Array(content[first..<(first + candidate.tokens.count)]))
         return span.last.position == candidate.last.position ? span : nil
     }
-    private func prefixes(for span: CommandSpan) -> [BatchPrefix] {
+    private func prefixes(for span: CommandSpan, since: Double? = nil) -> [BatchPrefix] {
         batches.compactMap { batch in
             guard let last = span.tokens.last(where: { $0.position.batch == batch.batch }) else { return nil }
-            return BatchPrefix(batch: batch.batch, words: Array(batch.words.prefix(last.position.index + 1).map(\.text)))
+            let prefix = batch.words.prefix(last.position.index + 1)
+            let first = since.flatMap { time in prefix.firstIndex(where: { $0.end >= time }) } ?? 0
+            return BatchPrefix(batch: batch.batch, words: Array(prefix.dropFirst(first).map(\.text)), first: first)
         }
     }
 
@@ -373,7 +375,7 @@ struct NotificationReplyCore {
     }
 
     private struct Position: Equatable { let batch: UUID; let index: Int }
-    private struct BatchPrefix { let batch: UUID; let words: [String] }
+    private struct BatchPrefix { let batch: UUID; let words: [String]; var first = 0 }
     private struct CommandSpan {
         let tokens: [TimedToken]
         var first: TimedToken { tokens[0] }
