@@ -2,7 +2,7 @@
 # Compile and run the local regression suites with injected transports, never live Voice calls.
 set -euo pipefail
 cd "${0:A:h:h}"
-speed_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Tests/CodexChatSpeedTests.swift)
+speed_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Tests/CodexChatSpeedTests.swift Sources/AppActivation.swift)
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplyCoreTests.swift -o "$build_dir/NotificationReplyCoreTests"
@@ -23,7 +23,7 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpokenC
 "$build_dir/SpokenCommandJournalTests"
 swiftc -swift-version 5 -parse-as-library $speed_sources -o "$build_dir/CodexChatSpeedTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/CodexChatSpeedTests"
-dot_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/DotCallCommand.swift Tests/DotCallCommandTests.swift)
+dot_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/DotCallCommand.swift Tests/DotCallCommandTests.swift Sources/AppActivation.swift)
 swiftc -swift-version 5 -parse-as-library $dot_sources -o "$build_dir/DotCallCommandTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/DotCallCommandTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppShortcuts.swift Tests/AppShortcutTests.swift -o "$build_dir/AppShortcutTests" -framework AppIntents
@@ -34,9 +34,9 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/SpotifyVolumePhraseTests"
 swiftc -swift-version 5 -parse-as-library Sources/SpotifyVolumeSession.swift Sources/VoiceStatusRefresh.swift Tests/VoiceStatusRefreshTests.swift -o "$build_dir/VoiceStatusRefreshTests"
 "$build_dir/VoiceStatusRefreshTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Tests/VoiceTimelineTests.swift -o "$build_dir/VoiceTimelineTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Tests/VoiceTimelineTests.swift Sources/AppActivation.swift Sources/Diagnostics.swift -o "$build_dir/VoiceTimelineTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/VoiceTimelineTests" "$build_dir/SpotifyVolumeChecks.noindex/timeline.sqlite"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/ShowVoiceCommand.swift Tests/VoicePeerPriorityTests.swift -o "$build_dir/VoicePeerPriorityTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/ShowVoiceCommand.swift Tests/VoicePeerPriorityTests.swift Sources/AppActivation.swift -o "$build_dir/VoicePeerPriorityTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 "$build_dir/VoicePeerPriorityTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StartupSpeech.swift Tests/StartupSpeechTests.swift -o "$build_dir/StartupSpeechTests"
 "$build_dir/StartupSpeechTests" "$build_dir/StartupSpeechChecks.noindex"
@@ -44,19 +44,19 @@ swiftc -swift-version 5 -parse-as-library Sources/SpeechModel.swift Tests/Speech
 "$build_dir/SpeechModelTests"
 swiftc -swift-version 5 -parse-as-library Sources/TranscriptViewport.swift Tests/TranscriptViewportTests.swift -o "$build_dir/TranscriptViewportTests"
 "$build_dir/TranscriptViewportTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/AgentFlowRecordingMonitor.swift Tests/AgentFlowRecordingTests.swift -o "$build_dir/AgentFlowRecordingTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/AgentFlowRecordingMonitor.swift Tests/AgentFlowRecordingTests.swift Sources/AppActivation.swift Sources/Diagnostics.swift -o "$build_dir/AgentFlowRecordingTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
 "$build_dir/AgentFlowRecordingTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/AppInstanceLock.swift Tests/AppInstanceTests.swift -o "$build_dir/AppInstanceTests"
 "$build_dir/AppInstanceTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Tests/CoreTests.swift -o "$build_dir/CoreTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Tests/CoreTests.swift Sources/AppActivation.swift Sources/Diagnostics.swift -o "$build_dir/CoreTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
 "$build_dir/CoreTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpeechPCM.swift Tests/SpeechPCMTests.swift -o "$build_dir/SpeechPCMTests" -framework AVFoundation
 "$build_dir/SpeechPCMTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/Diagnostics.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/CodexVoiceSpeed.swift Sources/NativeVoice.swift Tests/NativeVoiceTests.swift -o "$build_dir/NativeVoiceTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/Diagnostics.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/CodexVoiceSpeed.swift Sources/NativeVoice.swift Tests/NativeVoiceTests.swift Sources/AppActivation.swift -o "$build_dir/NativeVoiceTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 # Keep the real configuration protocol's diagnostics in the fixture's home.
 mkdir -p "$build_dir/native-test-home"
 CFFIXED_USER_HOME="${build_dir:A}/native-test-home" "$build_dir/NativeVoiceTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/MicrophoneInputs.swift Sources/MicrophoneCapture.swift Sources/DockMonitor.swift Sources/ResourceUsage.swift Tests/InputPolicyTests.swift -o "$build_dir/InputPolicyTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -framework AudioToolbox -framework AVFoundation -framework IOKit
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/MicrophoneInputs.swift Sources/MicrophoneCapture.swift Sources/DockMonitor.swift Sources/ResourceUsage.swift Tests/InputPolicyTests.swift Sources/AppActivation.swift Sources/Diagnostics.swift -o "$build_dir/InputPolicyTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -framework AudioToolbox -framework AVFoundation -framework IOKit
 "$build_dir/InputPolicyTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpeechContinuity.swift Tests/SpeechContinuityTests.swift -o "$build_dir/SpeechContinuityTests"
 "$build_dir/SpeechContinuityTests"
@@ -77,7 +77,7 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/PhraseListTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/VideoBridge.swift Tests/VideoBridgeTests.swift -o "$build_dir/VideoBridgeTests" -framework Combine
 "$build_dir/VideoBridgeTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/AppCommands.swift Sources/DesktopCommands.swift Sources/Diagnostics.swift Tests/DesktopCommandTests.swift -o "$build_dir/DesktopCommandTests" -framework AppKit -framework ApplicationServices
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/AppCommands.swift Sources/DesktopCommands.swift Sources/Diagnostics.swift Tests/DesktopCommandTests.swift Sources/AppActivation.swift -o "$build_dir/DesktopCommandTests" -framework AppKit -framework ApplicationServices
 "$build_dir/DesktopCommandTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/AppCommands.swift Tests/AppSpellingTests.swift -o "$build_dir/AppSpellingTests"
 "$build_dir/AppSpellingTests"
@@ -88,7 +88,7 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Tests/AppPathsTests.swift -o "$build_dir/AppPathsTests"
 "$build_dir/AppPathsTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Tests/CodexDiscoveryTests.swift -o "$build_dir/CodexDiscoveryTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Tests/CodexDiscoveryTests.swift Sources/AppActivation.swift Sources/Diagnostics.swift -o "$build_dir/CodexDiscoveryTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
 "$build_dir/CodexDiscoveryTests"
 python3 scripts/test-transcript-backup.py
 python3 scripts/test-release.py
@@ -107,7 +107,7 @@ swiftc -swift-version 5 -parse-as-library Sources/DesktopSession.swift Tests/Des
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/PhraseHighlights.swift Sources/HeardTranscript.swift Tests/TranscriptRenderingTests.swift -o "$build_dir/TranscriptRenderingTests" -framework SwiftUI
 "$build_dir/TranscriptRenderingTests"
 
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/StandaloneWake.swift Sources/PhraseHighlights.swift Tests/PhraseDictionaryTests.swift -o "$build_dir/PhraseDictionaryTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/StandaloneWake.swift Sources/PhraseHighlights.swift Tests/PhraseDictionaryTests.swift Sources/AppActivation.swift Sources/Diagnostics.swift -o "$build_dir/PhraseDictionaryTests" -framework AppKit -framework ApplicationServices -framework CoreAudio
 "$build_dir/PhraseDictionaryTests"
 
 python3 scripts/prepare-command-help.py --check

@@ -89,7 +89,14 @@ struct VoiceBridge {
         configuration.createsNewApplicationInstance = false
         do {
             let opened = try await NSWorkspace.shared.open([link], withApplicationAt: url, configuration: configuration)
-            return opened.bundleIdentifier == "com.openai.codex" && !opened.isTerminated && (pid == nil || opened.processIdentifier == pid)
+            guard opened.bundleIdentifier == "com.openai.codex", !opened.isTerminated,
+                  opened.bundleURL == url, pid == nil || opened.processIdentifier == pid,
+                  !Task.isCancelled, DesktopSessionState.current == .interactive else { return false }
+            let foreground = await AppActivation.request(pid: opened.processIdentifier,
+                bundleID: "com.openai.codex", url: url, requireFrontmost: true)
+            Diagnostics.shared.record("voice.chat.navigation", numbers: ["target_pid": Double(opened.processIdentifier)],
+                                      info: ["frontmost": String(foreground)])
+            return foreground
         } catch { return false }
     }
 

@@ -90,6 +90,30 @@ private final class Probe {
         check(!(await RunningAppActivation.request(identityMatches: { false }, native: { nativeRequests += 1; return true },
             accessibility: { axRequests += 1; return true })) && nativeRequests == 1 && axRequests == 2,
               "A stale target receives no activation request")
+        var frontmost = false, strictNative = 0, strictAX = 0, strictWorkspace = 0
+        check(await RunningAppActivation.request(identityMatches: { true }, native: {
+            strictNative += 1; return true
+        }, accessibility: {
+            strictAX += 1; frontmost = true; return true
+        }, workspace: { strictWorkspace += 1; return true }, isFrontmost: { frontmost })
+            && strictNative == 1 && strictAX == 1 && strictWorkspace == 0,
+            "Accepted navigation in a background app still uses the native AX foreground route")
+        check(!(await RunningAppActivation.request(identityMatches: { true }, native: { true },
+            accessibility: { true }, workspace: { true }, isFrontmost: { false })),
+            "Three accepted dispatches without actual foreground state cannot claim success")
+        var generation = 1
+        check(!(await RunningAppActivation.request(identityMatches: { generation == 1 }, native: {
+            generation = 2; return true
+        }, accessibility: { strictAX += 1; return true }, isFrontmost: { true })) && strictAX == 1,
+            "An accepted native request cannot bless a changed process or dispatch its AX fallback")
+        let cancelledStrictActivation = Task { () -> Bool in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await RunningAppActivation.request(identityMatches: { true }, native: {
+                strictNative += 1; return true
+            }, accessibility: { strictAX += 1; return true }, isFrontmost: { true })
+        }
+        check(!(await cancelledStrictActivation.value) && strictNative == 1 && strictAX == 1,
+              "Cancelled navigation sends no native foreground request")
         func failureText(_ decision: AppCommandDecision) -> String? { if case .failure(let text) = decision { return text }; return nil }
 
         // Cancellation between activation routes must not post the next request.

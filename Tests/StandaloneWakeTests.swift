@@ -12,6 +12,16 @@ import Foundation
             precondition(detector.poll(at: 1, phrase: phrase, similar: false, rejectNegated: true, directOnly: true) == shouldShow)
             precondition(!detector.poll(at: 2, phrase: phrase, similar: false, rejectNegated: true, directOnly: true))
         }
+        var successiveShow = StandaloneWake()
+        let showPhrase = PhraseSlot.showVoicePhrase.defaultText
+        for number in 1...4 {
+            successiveShow.audio(level: 0.2, seconds: 0.1, at: Double(number))
+            successiveShow.update(Array(repeating: "Show voice", count: number).joined(separator: ". "), at: Double(number))
+            precondition(successiveShow.poll(at: Double(number), phrase: showPhrase, similar: false,
+                rejectNegated: true, directOnly: true), "Each fresh direct Show Voice occurrence is accepted")
+            precondition(!successiveShow.poll(at: Double(number) + 0.1, phrase: showPhrase, similar: false,
+                rejectNegated: true, directOnly: true), "The same occurrence cannot be replayed")
+        }
         var checks = 0
         func expect(_ condition: Bool, _ message: String) {
             precondition(condition, message); checks += 1

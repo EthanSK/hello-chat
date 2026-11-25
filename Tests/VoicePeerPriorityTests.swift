@@ -126,6 +126,15 @@ private func call(pid: Int32) -> VoicePeerCall { VoicePeerCall(token: "\(UUID())
             return true
         })
         precondition(show == .opened && shown.map(\.absoluteString) == ["codex://threads/" + thread.uuidString.lowercased()])
+        // Fresh same-call commands must navigate again, even after a previous successful show. — GPT-6.1 Sol
+        for _ in 0..<3 {
+            let next = await ShowVoiceCommand.perform(resolve: { .init(status: .active, call: local) }, open: { pid, link in
+                precondition(pid == local.pid && link.lastPathComponent == thread.uuidString.lowercased())
+                shown.append(link); return true
+            })
+            precondition(next == .opened)
+        }
+        precondition(shown.count == 4, "Show Voice has no once-per-call navigation suppression")
         let failedShow = await ShowVoiceCommand.perform(resolve: { .init(status: .active, call: local) }, open: { _, _ in false })
         precondition(failedShow == .failed)
         let last = UUID()
