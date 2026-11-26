@@ -44,9 +44,30 @@ No new listener/poller is introduced. End/Cancel/guard decisions stop renewal an
 seven-second cleanup allowance from that first decision, followed by actual FIFO finalization.
 Legacy/no-feature deadlines and the finite five-second initial opportunity stay unchanged.
 
+Clients may also opt into `stopSpeaking:true` when the app advertises that optional Boolean and
+the calling queue, client and native speaker all support the exact-instance stop receipt. The first
+supported client requires negotiated manual composition as well, so an old speaker cannot promise
+a stop it cannot perform. Missing/false leaves ordinary speech unchanged. Snapshots echo the flag.
+Only an actually announcing attempt accepts the configured Shut up form through the existing
+timed, native-confirmed listener. It cancels unsent with `user-stop-speaking`: no new Reply window,
+fallback, send or navigation. Partial recognition requests the existing native final without a
+post-command quiet wait. Negated, mentioned, quoted and revised-away controls are refused. If the
+original notification contains that exact form, it is conservatively ignored because recognition
+cannot distinguish a human repetition from the announcement. Other configured forms remain usable.
+
+The existing private app status carries the exact event/instance and this explicit reason.
+Only its negotiated native speaker checks that authoritative file during the existing playback
+pump and terminates its own admitted child, even if a status IPC call is still waiting. The derived
+release receipt remains the hold/cleanup signal. Generic cancellation or unavailable reply
+admission never stops ordinary TTS.
+The speaker then follows its existing bounded reap, balanced media cleanup and FIFO finalizer.
+Its private `stoppedSpeaking` proof confirms only that cleanup; the app's terminal cancelled state
+can never grant body-send permission. Physical detection and audible-stop latency need separate
+acceptance evidence; a requested stop alone is not proof that playback stopped.
+
 Operations, all scoped to one notification UUID:
 
-- `notificationReply.prepare`: `eventID`, `threadID`, `turnID`, `questionID`, `spokenText`, optional Boolean `manualFinish`.
+- `notificationReply.prepare`: `eventID`, `threadID`, `turnID`, `questionID`, `spokenText`, optional Booleans `manualFinish` and `stopSpeaking`.
   IDs are strings; optional turn/question IDs use an empty string. The thread UUID is mandatory.
   H Chat captures the exact origin's new-user-message boundary and validates an open question.
   It returns its authoritative settings, maximum post-audio hold, current disposition, app-instance

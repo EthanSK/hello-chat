@@ -426,6 +426,22 @@ Manual composition is an optional prepare capability. One exact owner status str
 
 The exact requested wake spelling hello cat belongs to the existing wake dictionary, not a second detector. Existing customized dictionaries retain their own entries; the reported M5 dictionary was explicitly updated through the shared settings API.
 
+## 26 November 2026 — Stop the current notification through its exact owner
+
+Notification Shut up belongs to the existing reply listener only while its negotiated event is
+actually announcing. Reuse native timed-prefix confirmation and the same shared spelling store;
+never make generic reply admission failure a playback-stop request. Preserve in-announcement
+negation across an ordinary pause and reject quoted, mentioned or revised-away controls. When the
+notification itself contains a configured form, conservatively ignore that form without claiming
+speaker identification. Derive the visible main-phrase hint from the same echo cache so it cannot
+promise a control this event refuses. Terminal recognition tables and cached forms retire together.
+
+The app's explicit cancelled/user-stop-speaking decision never grants reply submission. Its
+native speaker must check the exact private app status in the existing playback pump: relaying
+only through a metadata worker can stall behind that worker's bounded status IPC. Synthetic timed
+recognition, owned inert children and native offscreen rendering qualify those boundaries
+separately from physical-microphone recognition or audible stop latency.
+
 
 ## 25 November 2026 — Named chat speed uses the existing value-command owner
 

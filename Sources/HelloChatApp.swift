@@ -1757,6 +1757,8 @@ struct SettingsView: View {
                     set: { model.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey] = $0 }),
                 cancelReplySpellings: Binding(get: { model.phraseDictionaries[NotificationReplyCore.Commands.cancelReplySpellingKey] },
                     set: { model.phraseDictionaries[NotificationReplyCore.Commands.cancelReplySpellingKey] = $0 }),
+                stopSpeakingSpellings: Binding(get: { model.phraseDictionaries[NotificationReplyCore.Commands.stopSpeakingSpellingKey] },
+                    set: { model.phraseDictionaries[NotificationReplyCore.Commands.stopSpeakingSpellingKey] = $0 }),
                 similar: model.similarPhrases, readiness: { model.notificationReplies.readiness })
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
