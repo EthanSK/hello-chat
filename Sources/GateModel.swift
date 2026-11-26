@@ -521,7 +521,7 @@ import SwiftUI
     @Published var phraseDictionaries = UserDefaults.standard.object(forKey: "phraseDictionaries") as? [String: [String]] ?? [:] {
         didSet {
             UserDefaults.standard.set(phraseDictionaries, forKey: "phraseDictionaries"); updatePhrases()
-            let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey, NotificationReplyCore.Commands.cancelReplySpellingKey]
+            let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey, NotificationReplyCore.Commands.cancelReplySpellingKey, NotificationReplyCore.Commands.stopSpeakingSpellingKey]
             if keys.contains(where: { oldValue[$0] != phraseDictionaries[$0] }) { notificationReplies.interrupted("settings-changed") }
         }
     }
@@ -842,6 +842,7 @@ import SwiftUI
             return .init(replySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.replySpellingKey],
                          endReplySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey],
                          cancelReplySpellings: self.phraseDictionaries[NotificationReplyCore.Commands.cancelReplySpellingKey],
+                         stopSpeakingSpellings: self.phraseDictionaries[NotificationReplyCore.Commands.stopSpeakingSpellingKey],
                          alternateSpellings: self.similarPhrases)
         }
         notificationReplies.resetRecognition = { [weak self] in
@@ -1245,7 +1246,7 @@ import SwiftUI
         rebuildSpeakerCommands()
         if cancelPendingApps { cancelAppCommands() }
         listener.contextualPhrases = PhraseSlot.allCases.flatMap { patterns(for: $0).map(\.text) } + activeSpeakerCommands.map { $0.pattern.text }
-            + [NotificationReplyCore.Commands.replyPhrase, NotificationReplyCore.Commands.endReplyPhrase, NotificationReplyCore.Commands.cancelReplyPhrase]
+            + [NotificationReplyCore.Commands.replyPhrase, NotificationReplyCore.Commands.endReplyPhrase, NotificationReplyCore.Commands.cancelReplyPhrase, NotificationReplyCore.Commands.stopSpeakingPhrase]
         endPhrase.reset()
         standaloneWake.reset()
         resetAudioPhrases()

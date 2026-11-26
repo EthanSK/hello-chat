@@ -67,6 +67,110 @@ import SwiftUI
             deliveredUptime: delivery, deliveredWall: f.clock.wallBase + delivery,
             skipReason: "agent-flow-speech-denied", expiresAt: f.clock.wallBase + f.clock.time + 3)
     }
+    func testStopSpeakingUsesNegotiatedAudioAndNeverDispatches() async throws {
+        for supported in [false, true] {
+            let f = try fixture(), event = UUID(), m = f.coordinator
+            var finalizations: [Double] = []
+            m.finalizeRecognition = { finalizations.append($0) }
+            m.openOrigin = { _, _ in XCTFail("Stopping speech must not navigate"); return false }
+            let initial = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "",
+                spokenText: "Fixture notification ready.", manualFinish: true, stopSpeaking: supported)
+            XCTAssertEqual(initial["stopSpeaking"] as? Bool, supported)
+            f.clock.time = 100.1
+            _ = try m.audioStarted(event: event, instance: m.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time)
+            let batch = UUID(), words: [NotificationReplyCore.Word] = [
+                .init(text: "shut", start: 100.5, end: 100.65), .init(text: "up", start: 100.7, end: 100.85)]
+            f.clock.time = 101
+            m.recognized(.init(batch: batch, text: "Shut up", words: words, stableWords: 0))
+            XCTAssertEqual(try m.status(event: event, instance: m.instance)["phase"] as? String, "announcing")
+            XCTAssertEqual(finalizations.isEmpty, !supported, "Partial stop requests native confirmation only after negotiation")
+            m.recognized(.init(batch: batch, text: "Shut up", words: words, stableWords: 2))
+            let result = try m.status(event: event, instance: m.instance)
+            XCTAssertEqual(result["phase"] as? String, supported ? "cancelled" : "announcing")
+            XCTAssertEqual(result["reason"] as? String, supported ? "user-stop-speaking" : "")
+            if supported {
+                _ = try m.mediaReleased(event: event, instance: m.instance, released: true)
+                f.clock.time = 101.2
+                let late = try m.audioEnded(event: event, instance: m.instance, uptime: f.clock.time,
+                    wall: f.clock.wallBase + f.clock.time, completed: true)
+                XCTAssertEqual(late["phase"] as? String, "cancelled", "Late audio completion cannot reopen Reply")
+                XCTAssertEqual(late["reason"] as? String, "user-stop-speaking")
+            }
+            await m.waitForPendingDelivery()
+            XCTAssertEqual(f.calls.count, 0)
+            await m.shutdown()
+        }
+    }
+    func testStopSpeakingPrepareCannotChangeNegotiationOnReplay() async throws {
+        let f = try fixture(), event = UUID(), m = f.coordinator
+        let first = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "",
+            spokenText: "Original fixture.", stopSpeaking: true)
+        let repeated = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "",
+            spokenText: "Original fixture.", stopSpeaking: true)
+        XCTAssertEqual(first["instance"] as? String, repeated["instance"] as? String)
+        do {
+            _ = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "",
+                spokenText: "Original fixture.", stopSpeaking: false)
+            XCTFail("A duplicate event must not change its stop contract")
+        } catch let error as NotificationReplyCoordinator.Failure {
+            XCTAssertEqual(error.rawValue, NotificationReplyCoordinator.Failure.invalidEvent.rawValue)
+        }
+        await m.shutdown()
+    }
+    func testStopHintUsesTheSameFrozenEchoGuardAsRecognition() async throws {
+        for ownText in ["Ordinary fixture.", "The Shut up command is available."] {
+            let f = try fixture(), event = UUID(), m = f.coordinator
+            var shown: [NotificationReplyCoordinator.Presentation] = []
+            m.showPresentation = { if let presentation = $0 { shown.append(presentation) } }
+            _ = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "",
+                spokenText: ownText, manualFinish: true, stopSpeaking: true)
+            f.clock.time = 100.1
+            _ = try m.audioStarted(event: event, instance: m.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time)
+            XCTAssertEqual(shown.last?.canSayStopSpeaking, ownText == "Ordinary fixture.")
+            XCTAssertEqual(try m.status(event: event, instance: m.instance)["stopSpeaking"] as? Bool, true,
+                "Negotiated support remains distinct from this event's usable main phrase")
+            await m.shutdown()
+        }
+    }
+    func testStopSpeakingStillHonoursVoiceGuard() async throws {
+        let f = try fixture(), event = UUID(), m = f.coordinator
+        _ = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "",
+            spokenText: "Original fixture.", manualFinish: true, stopSpeaking: true)
+        f.clock.time = 100.1
+        _ = try m.audioStarted(event: event, instance: m.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time)
+        m.currentReadiness = { .voiceActive }
+        f.clock.time = 101
+        m.recognized(.init(batch: UUID(), text: "Shut up", words: [
+            .init(text: "shut", start: 100.5, end: 100.65), .init(text: "up", start: 100.7, end: 100.85)], stableWords: 2))
+        XCTAssertEqual(try m.status(event: event, instance: m.instance)["reason"] as? String, "voiceActive")
+        XCTAssertEqual(f.calls.count, 0)
+        await m.shutdown()
+    }
+    func testStaleOriginCannotBecomeAStopRequest() async throws {
+        let f = try fixture(), event = UUID(), m = f.coordinator
+        _ = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "",
+            spokenText: "Original fixture.", manualFinish: true, stopSpeaking: true)
+        f.clock.time = 100.1
+        _ = try m.audioStarted(event: event, instance: m.instance, uptime: f.clock.time, wall: f.clock.wallBase + f.clock.time)
+        let changed = expectation(description: "The real origin watcher rejects newer user input")
+        var observed = false
+        m.outcome = { _, _, reason, _ in
+            if reason == "originStale", !observed { observed = true; changed.fulfill() }
+        }
+        let handle = try FileHandle(forWritingTo: f.origin.rollout)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"A newer fixture instruction\"}}\n".utf8))
+        try handle.close()
+        await fulfillment(of: [changed], timeout: 3)
+        f.clock.time = 101
+        m.recognized(.init(batch: UUID(), text: "Shut up", words: [
+            .init(text: "shut", start: 100.5, end: 100.65), .init(text: "up", start: 100.7, end: 100.85)], stableWords: 2))
+        XCTAssertEqual(try m.status(event: event, instance: m.instance)["reason"] as? String, "originStale")
+        _ = try m.mediaReleased(event: event, instance: m.instance, released: true)
+        await m.waitForPendingDelivery()
+        XCTAssertEqual(f.calls.count, 0)
+        await m.shutdown()
+    }
     func testManualCaptureRenewsPastOldLimitsAndCleansFromDecision() async throws {
         let f = try fixture(), event = UUID(), m = f.coordinator
         let first = try await m.prepare(event: event, thread: f.origin.thread, turn: nil, question: "", spokenText: "Original fixture.", manualFinish: true)
@@ -154,30 +258,37 @@ import SwiftUI
         XCTAssertEqual(f.calls.count, 0)
         await m.shutdown()
     }
-    func testPrepareOptionalManualSchemaKeepsLegacyAndStrictValidation() async throws {
+    func testPrepareOptionalManualAndStopSchemasKeepLegacyAndStrictValidation() async throws {
         let model = GateModel(enableSpotifyControl: false)
         let f = try fixture(coordinator: model.notificationReplies)
         let control = HAgentControl(model, zoom: InterfaceZoom(), updater: AppUpdater())
         let operation = try XCTUnwrap(control.operations["notificationReply.prepare"])
-        XCTAssertEqual(operation.optionalFields.keys.sorted(), ["manualFinish"])
+        XCTAssertEqual(operation.optionalFields.keys.sorted(), ["manualFinish", "stopSpeaking"])
         XCTAssertNil(operation.fields["manualFinish"])
+        XCTAssertNil(operation.fields["stopSpeaking"])
         func request(_ args: [String: Any]) throws -> HControlRequest {
             try HControlRequest(JSONSerialization.data(withJSONObject: ["version": 1, "id": UUID().uuidString, "expiresAt": Date().timeIntervalSince1970 + 10, "operation": "notificationReply.prepare", "arguments": args]))
         }
         for flag in [nil, false, true] as [Bool?] {
+          for stopFlag in [nil, false, true] as [Bool?] {
             let event = UUID()
             var args: [String: Any] = ["eventID": event.uuidString, "threadID": f.origin.thread.uuidString, "turnID": "", "questionID": "", "spokenText": "Fixture notification ready."]
             if let flag { args["manualFinish"] = flag }
+            if let stopFlag { args["stopSpeaking"] = stopFlag }
             let result = try await control.handle(request(args))
             XCTAssertEqual((result.result as? [String: Any])?["manualFinish"] as? Bool, flag ?? false)
+            XCTAssertEqual((result.result as? [String: Any])?["stopSpeaking"] as? Bool, stopFlag ?? false)
             _ = try f.coordinator.cancel(event: event, instance: f.coordinator.instance, reason: "fixture")
             _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: false)
             for bad in [1, "true"] as [Any] {
-                args["manualFinish"] = bad
-                do { _ = try await control.handle(request(args)); XCTFail("Invalid optional Boolean accepted") } catch HControlFailure.invalid { }
+                for key in ["manualFinish", "stopSpeaking"] {
+                    var invalid = args; invalid[key] = bad
+                    do { _ = try await control.handle(request(invalid)); XCTFail("Invalid optional Boolean accepted: \(key)") } catch HControlFailure.invalid { }
+                }
             }
             args.removeValue(forKey: "manualFinish"); args["extra"] = true
             do { _ = try await control.handle(request(args)); XCTFail("Unknown prepare field accepted") } catch HControlFailure.invalid { }
+          }
         }
         for (name, other) in control.operations where name != "notificationReply.prepare" {
             XCTAssertTrue(other.optionalFields.isEmpty, "Existing strict schema changed: \(name)")
@@ -623,6 +734,11 @@ import SwiftUI
         hud.show(.init(event: event, phase: .waiting, reason: "", spokenText: "Exact original notification remains readable.", confirmingReply: true))
         XCTAssertLessThanOrEqual(panel.host.fittingSize.height, panel.frame.height + 1)
         try captureInertPanel(panel, name: "reference-confirming")
+        hud.show(.init(event: event, phase: .announcing, reason: "", spokenText: "Exact original notification remains readable.", canSayStopSpeaking: true))
+        XCTAssertLessThanOrEqual(panel.host.fittingSize.height, panel.frame.height + 1)
+        try captureInertPanel(panel, name: "announcing-stop-speaking")
+        hud.show(.init(event: event, phase: .cancelled, reason: "user-stop-speaking", spokenText: "Exact original notification remains readable."))
+        try captureInertPanel(panel, name: "stop-requested")
         XCTAssertFalse(panel.isVisible)
         hud.dismissCurrent()
         XCTAssertTrue(hud.panels.isEmpty)
@@ -642,8 +758,8 @@ import SwiftUI
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
         let settings = NotificationReplySettings(defaults: defaults); settings.enabled = true
-        var reply: [String]?, end: [String]?, cancel: [String]?
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 720, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+        var reply: [String]?, end: [String]?, cancel: [String]?, stop: [String]?
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 720, height: 480), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let view = NSHostingView(rootView: Form {
@@ -651,6 +767,7 @@ import SwiftUI
                 replySpellings: Binding(get: { reply }, set: { reply = $0 }),
                 endReplySpellings: Binding(get: { end }, set: { end = $0 }),
                 cancelReplySpellings: Binding(get: { cancel }, set: { cancel = $0 }),
+                stopSpeakingSpellings: Binding(get: { stop }, set: { stop = $0 }),
                 similar: true, readiness: { .ready })
         }.formStyle(.grouped))
         window.contentView = view
@@ -659,6 +776,7 @@ import SwiftUI
         try captureInertView(view, name: "notification-spellings-settings")
         XCTAssertFalse(window.isVisible, "Settings visual QC must not cover a working screen")
         XCTAssertNil(reply); XCTAssertNil(end); XCTAssertNil(cancel, "Rendering must not save a default over the user's spelling choice")
+        XCTAssertNil(stop, "Rendering must not save a stop-control override")
     }
     private func captureInertPanel(_ panel: NotificationReplyHUD.Panel, name: String) throws {
         XCTAssertFalse(panel.isVisible)
