@@ -16,28 +16,36 @@ struct NotificationReplyCore {
         static let replyPhrase = "Reply", endReplyPhrase = "End reply", cancelReplyPhrase = "Cancel reply"
         static let replySpellingKey = "notificationReply", endReplySpellingKey = "notificationEndReply"
         static let cancelReplySpellingKey = "notificationCancelReply"
+        static let stopSpeakingPhrase = "Shut up"
+        static let stopSpeakingSpellingKey = "notificationStopSpeaking"
+        static let defaultStopSpeakingSpellings: [String] = []
         static let finishHint = "Say \(endReplyPhrase) to send · \(cancelReplyPhrase) to discard."
         static let defaultReplySpellings: [String] = []
         static let defaultEndReplySpellings = ["And reply"]
         static let defaultCancelReplySpellings: [String] = []
         fileprivate static let canonicalEndForm = NotificationReplyCore.tokens(endReplyPhrase).map(\.word)
         fileprivate static let canonicalCancelForm = NotificationReplyCore.tokens(cancelReplyPhrase).map(\.word)
-        let replyForms: [[String]], endReplyForms: [[String]], cancelReplyForms: [[String]]
-        fileprivate let replyWordCounts: [Int], endWordCounts: [Int]
-        private let replyIndex: [Int: Set<[String]>], endIndex: [Int: Set<[String]>], cancelIndex: [Int: Set<[String]>]
+        fileprivate static let canonicalStopSpeakingForm = NotificationReplyCore.tokens(stopSpeakingPhrase).map(\.word)
+        let replyForms: [[String]], endReplyForms: [[String]], cancelReplyForms: [[String]], stopSpeakingForms: [[String]]
+        fileprivate let replyWordCounts: [Int], endWordCounts: [Int], stopSpeakingWordCounts: [Int]
+        private let replyIndex: [Int: Set<[String]>], endIndex: [Int: Set<[String]>], cancelIndex: [Int: Set<[String]>], stopSpeakingIndex: [Int: Set<[String]>]
 
-        init(replySpellings: [String]? = nil, endReplySpellings: [String]? = nil, cancelReplySpellings: [String]? = nil, alternateSpellings: Bool = true) {
+        init(replySpellings: [String]? = nil, endReplySpellings: [String]? = nil, cancelReplySpellings: [String]? = nil, stopSpeakingSpellings: [String]? = nil, alternateSpellings: Bool = true) {
             replyForms = Self.forms(Self.replyPhrase, alternateSpellings ? replySpellings ?? Self.defaultReplySpellings : [])
             endReplyForms = Self.forms(Self.endReplyPhrase, alternateSpellings ? endReplySpellings ?? Self.defaultEndReplySpellings : [])
             cancelReplyForms = Self.forms(Self.cancelReplyPhrase, alternateSpellings ? cancelReplySpellings ?? Self.defaultCancelReplySpellings : [])
+            stopSpeakingForms = Self.forms(Self.stopSpeakingPhrase, alternateSpellings ? stopSpeakingSpellings ?? Self.defaultStopSpeakingSpellings : [])
             replyIndex = Dictionary(grouping: replyForms, by: \.count).mapValues { Set($0) }
             endIndex = Dictionary(grouping: endReplyForms, by: \.count).mapValues { Set($0) }
             cancelIndex = Dictionary(grouping: cancelReplyForms, by: \.count).mapValues { Set($0) }
+            stopSpeakingIndex = Dictionary(grouping: stopSpeakingForms, by: \.count).mapValues { Set($0) }
             replyWordCounts = replyIndex.keys.sorted(by: >); endWordCounts = Set(endIndex.keys).union(cancelIndex.keys).sorted(by: >)
+            stopSpeakingWordCounts = stopSpeakingIndex.keys.sorted(by: >)
         }
         fileprivate func matchesReply(_ words: [String]) -> Bool { replyIndex[words.count]?.contains(words) == true }
         fileprivate func matchesEnd(_ words: [String]) -> Bool { endIndex[words.count]?.contains(words) == true }
         fileprivate func matchesCancel(_ words: [String]) -> Bool { cancelIndex[words.count]?.contains(words) == true }
+        fileprivate func matchesStopSpeaking(_ words: [String]) -> Bool { stopSpeakingIndex[words.count]?.contains(words) == true }
         var hasConflictingFinishes: Bool {
             endReplyForms.contains { words in cancelIndex.contains { $0.key <= words.count && $0.value.contains(Array(words.prefix($0.key))) } }
                 || cancelReplyForms.contains { words in endIndex.contains { $0.key <= words.count && $0.value.contains(Array(words.prefix($0.key))) } }
@@ -86,6 +94,7 @@ struct NotificationReplyCore {
     }
     let limits: Limits
     let manualFinish: Bool
+    let stopSpeaking: Bool
     private static let retiredCommands = Commands(alternateSpellings: false)
     private var commands: Commands
     let preparedAt: Double
@@ -111,9 +120,25 @@ struct NotificationReplyCore {
     private var windowProcessedAt: Double?
     private var ownerSeenAt: Double?
     private var announcementStartedAt: Double?
+    private var echoStopSpeakingForms: Set<[String]> = []
+    private var stopSpeakingCandidate: CommandSpan?
+    private var stopSpeakingPrefix: [TimedToken] = []
+    private var rejectedStopSpeakingThrough: Double?
 
-    init(at now: Double, limits: Limits = .init(), commands: Commands = .init(), manualFinish: Bool = false) {
+    init(at now: Double, limits: Limits = .init(), commands: Commands = .init(), manualFinish: Bool = false, stopSpeaking: Bool = false, spokenText: String = "") {
         preparedAt = now; self.limits = limits; self.commands = commands; self.manualFinish = manualFinish
+        self.stopSpeaking = stopSpeaking
+        // Ethan's "shut up" uses this existing listener. A phrase in our own
+        // announcement is ambiguous; refuse it without guessing who spoke. — GPT-6.1 Sol
+        if stopSpeaking {
+            let spokenWords = Self.tokens(spokenText).map(\.word)
+            for length in commands.stopSpeakingWordCounts where length <= spokenWords.count {
+                for index in 0...(spokenWords.count - length) {
+                    let form = Array(spokenWords[index..<(index + length)])
+                    if commands.matchesStopSpeaking(form) { echoStopSpeakingForms.insert(form) }
+                }
+            }
+        }
         if commands.hasConflictingFinishes { cancel("command-spellings-conflict", unavailable: true) }
     }
 
@@ -122,6 +147,10 @@ struct NotificationReplyCore {
     }
     var releaseRequested: Bool { [.releasing, .cancelled, .unavailable, .queued, .delivered].contains(phase) }
     var confirmingReply: Bool { phase == .waiting && startCandidate != nil }
+    // The HUD must not promise a command that this event's own-text guard refuses. — GPT-6.1 Sol
+    var canSayStopSpeaking: Bool {
+        phase == .announcing && stopSpeaking && !echoStopSpeakingForms.contains(Commands.canonicalStopSpeakingForm)
+    }
     var ownerLeaseExpiresUptime: Double? {
         manualFinish && phase == .composing ? ownerSeenAt.map { $0 + Self.ownerLeaseSeconds } : nil
     }
@@ -142,6 +171,7 @@ struct NotificationReplyCore {
     }
     mutating func audioEnded(at time: Double, completed: Bool, now: Double) {
         guard phase == .preparing || phase == .announcing else { return }
+        stopSpeakingCandidate = nil; stopSpeakingPrefix.removeAll(); finalizeThrough = nil
         guard completed, time.isFinite, time >= preparedAt, time <= now + 0.05 else {
             cancel("announcement-not-completed"); return
         }
@@ -247,13 +277,19 @@ struct NotificationReplyCore {
         commands = Self.retiredCommands; batches.removeAll(); activation = nil; finalizeThrough = nil
         startCandidate = nil; startCandidatePrefix.removeAll(); startCandidateSeenAt = nil
         endCandidatePrefix.removeAll(); endCandidate = nil; endCandidateSeenAt = nil
+        stopSpeakingCandidate = nil; stopSpeakingPrefix.removeAll(); rejectedStopSpeakingThrough = nil
+        echoStopSpeakingForms.removeAll()
     }
 
     private mutating func evaluate(now: Double) {
         let all = flattened()
+        if phase == .announcing {
+            evaluateStopSpeaking(in: all, now: now)
+            return
+        }
         if phase == .waiting, let ended = opportunityAt {
             if let candidate = startCandidate {
-                guard let current = currentStartSpan(candidate, in: all), current.contiguous,
+                guard let current = currentTimedSpan(candidate, in: all), current.contiguous,
                       sameTimedWords(startCandidatePrefix, startPrefix(through: current, in: all, since: ended - 0.05)) else {
                     cancel("reply-command-unconfirmed"); return
                 }
@@ -340,6 +376,67 @@ struct NotificationReplyCore {
         endCandidate = nil; endCandidateSeenAt = nil; endCandidatePrefix.removeAll()
     }
 
+    /// Stop only this negotiated announcement after native confirmation; never send a reply. — GPT-6.1 Sol
+    private mutating func evaluateStopSpeaking(in all: [TimedToken], now: Double) {
+        guard stopSpeaking, let started = announcementStartedAt else { return }
+        if let candidate = stopSpeakingCandidate {
+            let canonical = candidate.tokens.map { $0.word.text } == Commands.canonicalStopSpeakingForm
+            guard let current = currentTimedSpan(candidate, in: all), current.contiguous,
+                  current.first.word.start >= started - 0.05, current.last.word.end <= now + 0.05,
+                  sameTimedWords(stopSpeakingPrefix, startPrefix(through: current, in: all, since: started - 0.05)),
+                  stopSpeakingContextAllowed(current, in: all),
+                  stopSpeakingStillStandalone(current, in: all, canonical: canonical) else {
+                rejectedStopSpeakingThrough = max(rejectedStopSpeakingThrough ?? 0, candidate.last.word.end)
+                stopSpeakingCandidate = nil; stopSpeakingPrefix.removeAll(); finalizeThrough = nil
+                return
+            }
+            if current.tokens.allSatisfy(\.stable) { cancel("user-stop-speaking") }
+            return
+        }
+        for length in commands.stopSpeakingWordCounts where length <= all.count {
+            let span = CommandSpan(tokens: Array(all.suffix(length)))
+            let words = span.tokens.map { $0.word.text }
+            guard span.first.word.start >= started - 0.05, span.last.word.end <= now + 0.05,
+                  rejectedStopSpeakingThrough.map({ span.first.word.start > $0 + 0.05 }) ?? true,
+                  span.contiguous, zip(span.tokens, span.tokens.dropFirst()).allSatisfy({ $1.word.start >= $0.word.start }),
+                  commands.matchesStopSpeaking(words), !echoStopSpeakingForms.contains(words),
+                  stopSpeakingContextAllowed(span, in: all) else { continue }
+            if span.tokens.allSatisfy(\.stable) { cancel("user-stop-speaking"); return }
+            stopSpeakingCandidate = span
+            stopSpeakingPrefix = startPrefix(through: span, in: all, since: started - 0.05)
+            finalizeThrough = span.last.word.end + 0.15
+            return
+        }
+    }
+
+    /// A continued phrase may be a mention; a later separate sentence does not revoke a confirmed command. — GPT-6.1 Sol
+    private func stopSpeakingStillStandalone(_ span: CommandSpan, in all: [TimedToken], canonical: Bool) -> Bool {
+        guard let last = all.firstIndex(where: { $0.position == span.last.position }) else { return false }
+        if last == all.count - 1 { return true }
+        let next = all[last + 1]
+        return canonical && (beginsSentence(next.position) || next.word.start - span.last.word.end >= 0.25)
+    }
+
+    /// Punctuation after "say" is still a mention; quotes and negation never silence speech. — GPT-6.1 Sol
+    private func stopSpeakingContextAllowed(_ span: CommandSpan, in all: [TimedToken]) -> Bool {
+        guard let started = announcementStartedAt else { return false }
+        // A pause or nearby modifier must not erase negation or a mention heard
+        // during this announcement. Only older pre-audio context can age out.
+        // Found and fixed by GPT-6.1 Sol.
+        let preceding = all.prefix { $0.position != span.first.position }
+            .suffix(4).filter { $0.word.end >= started - 0.05 || span.first.word.start - $0.word.end <= 0.6 }.map { $0.word.text }
+        guard !preceding.contains(where: {
+            ["not", "never", "say", "says", "said", "saying", "phrase", "command", "word", "words", "called", "named"].contains($0)
+        }), !zip(preceding, preceding.dropFirst()).contains(where: {
+            ["don", "didn", "won", "can"].contains($0.0) && $0.1 == "t"
+        }),
+              let batch = batches.first(where: { $0.batch == span.first.position.batch }) else { return false }
+        let tokens = Self.tokens(batch.text), index = span.first.position.index
+        guard tokens.indices.contains(index) else { return false }
+        let before = index > 0 ? tokens[index - 1].range.upperBound : batch.text.startIndex
+        return !batch.text[before..<tokens[index].range.lowerBound].contains(where: { "\"'“”‘’".contains($0) })
+    }
+
     private func replySpan(in all: [TimedToken], at index: Int) -> CommandSpan? {
         for length in commands.replyWordCounts where index + length <= all.count {
             let span = CommandSpan(tokens: Array(all[index..<(index + length)]))
@@ -369,9 +466,10 @@ struct NotificationReplyCore {
         guard let last = all.firstIndex(where: { $0.position == span.last.position }) else { return [] }
         return all.prefix(last + 1).filter { $0.word.end >= since }
     }
-    // A native correction may retokenize completed announcement words. Bind initial Reply
-    // to its unchanged timed words and in-window context, not the obsolete earlier indices.
-    private func currentStartSpan(_ candidate: CommandSpan, in all: [TimedToken]) -> CommandSpan? {
+    // Refactor of existing currentStartSpan, shared with the announcing control.
+    // A native correction may retokenize earlier words. Bind these controls to
+    // unchanged timed words and in-window context, not obsolete indices. — GPT-6.1 Sol
+    private func currentTimedSpan(_ candidate: CommandSpan, in all: [TimedToken]) -> CommandSpan? {
         var match: CommandSpan?
         for first in all.indices where first + candidate.tokens.count <= all.count {
             let span = CommandSpan(tokens: Array(all[first..<(first + candidate.tokens.count)]))

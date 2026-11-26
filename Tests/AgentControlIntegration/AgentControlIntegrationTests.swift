@@ -26,7 +26,7 @@ final class AgentControlIntegrationTests: XCTestCase {
     }
     @MainActor func testNotificationSpellingsUseSharedStoreAndRevision() async throws {
         try requireIsolatedHome()
-        let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey, NotificationReplyCore.Commands.cancelReplySpellingKey]
+        let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey, NotificationReplyCore.Commands.cancelReplySpellingKey, NotificationReplyCore.Commands.stopSpeakingSpellingKey]
         let saved = UserDefaults.standard.object(forKey: "phraseDictionaries")
         let similar = UserDefaults.standard.object(forKey: "similarPhrases")
         defer {
@@ -53,17 +53,21 @@ final class AgentControlIntegrationTests: XCTestCase {
         model.phraseDictionaries[keys[0]] = ["Respond"]
         model.phraseDictionaries[keys[1]] = ["Finish response"]
         model.phraseDictionaries[keys[2]] = ["Discard response"]
+        model.phraseDictionaries[keys[3]] = ["Quiet please"]
         XCTAssertTrue(model.notificationReplies.commandForms().replyForms.contains(["respond"]))
         XCTAssertTrue(model.notificationReplies.commandForms().endReplyForms.contains(["finish", "response"]))
         XCTAssertTrue(model.notificationReplies.commandForms().cancelReplyForms.contains(["discard", "response"]))
+        XCTAssertTrue(model.notificationReplies.commandForms().stopSpeakingForms.contains(["quiet", "please"]))
         let after = try await read()
         XCTAssertNotEqual(before["revision"] as? String, after["revision"] as? String)
         let settings = try XCTUnwrap(after["settings"] as? [String: Any])
         XCTAssertEqual(settings["notificationEndReplySpellings"] as? [String], ["Finish response"])
         XCTAssertEqual(settings["notificationCancelReplySpellings"] as? [String], ["Discard response"])
+        XCTAssertEqual(settings["notificationStopSpeakingSpellings"] as? [String], ["Quiet please"])
         model.similarPhrases = false
         XCTAssertEqual(model.notificationReplies.commandForms().replyForms, [["reply"]])
         XCTAssertEqual(model.notificationReplies.commandForms().endReplyForms, [["end", "reply"]])
+        XCTAssertEqual(model.notificationReplies.commandForms().stopSpeakingForms, [["shut", "up"]])
         XCTAssertEqual(model.phraseDictionaries[keys[1]], ["Finish response"], "Disabling alternatives preserves the editable list")
         model.similarPhrases = true
         model.phraseDictionaries[keys[1]] = nil

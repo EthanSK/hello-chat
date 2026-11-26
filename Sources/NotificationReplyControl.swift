@@ -18,7 +18,7 @@ extension HAgentControl {
                 }
             })
         }
-        add("prepare", fields: ["eventID": .uuid, "threadID": .uuid, "turnID": .text, "questionID": .text, "spokenText": .text], optional: ["manualFinish": .bool]) { request in
+        add("prepare", fields: ["eventID": .uuid, "threadID": .uuid, "turnID": .text, "questionID": .text, "spokenText": .text], optional: ["manualFinish": .bool, "stopSpeaking": .bool]) { request in
             let rawTurn = request.string("turnID")
             let turn = UUID(uuidString: rawTurn)
             guard rawTurn.isEmpty || turn != nil,
@@ -26,7 +26,8 @@ extension HAgentControl {
                 throw NotificationReplyCoordinator.Failure.invalidEvent
             }
             return try await replies.prepare(event: event, thread: thread, turn: turn, question: request.string("questionID"), spokenText: request.string("spokenText"),
-                                             manualFinish: request.arguments["manualFinish"] as? Bool ?? false)
+                                             manualFinish: request.arguments["manualFinish"] as? Bool ?? false,
+                                             stopSpeaking: request.arguments["stopSpeaking"] as? Bool ?? false)
         }
         add("audioStarted", fields: event.merging(["startedUptime": .number(0...1e12), "startedWall": .number(0...1e12)]) { $1 }) { request in
             let ids = try request.notificationReplyIDs()

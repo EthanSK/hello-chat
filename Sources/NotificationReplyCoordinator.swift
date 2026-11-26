@@ -35,7 +35,7 @@ import Foundation
 @MainActor final class NotificationReplyCoordinator: ObservableObject {
     enum Readiness: String { case ready, disabled, listeningOff, listenerUnavailable, voiceActive, voiceUnknown, desktopUnavailable, codexUnavailable }
     enum Failure: String, Error { case invalidEvent, busy, differentInstance, unavailable }
-    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = ""; var commandSeconds = NotificationReplyCore.Limits().commandSeconds; var confirmingReply = false }
+    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = ""; var commandSeconds = NotificationReplyCore.Limits().commandSeconds; var confirmingReply = false; var canSayStopSpeaking = false }
     let settings: NotificationReplySettings
     let instance = UUID()
     @Published private(set) var lastPhase: NotificationReplyCore.Phase?
@@ -90,17 +90,18 @@ import Foundation
         self.settings.changed = { [weak self] in self?.cancelAll("settings-changed") }
     }
 
-    func prepare(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, manualFinish: Bool = false) async throws -> [String: Any] {
+    func prepare(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, manualFinish: Bool = false, stopSpeaking: Bool = false) async throws -> [String: Any] {
         guard !spokenText.isEmpty, spokenText.count <= 2048, question.count <= 160 else { throw Failure.invalidEvent }
         if let existing = sessions[event] {
             guard existing.thread == thread, existing.turn == turn, existing.question == question,
                   existing.core.manualFinish == manualFinish,
+                  existing.core.stopSpeaking == stopSpeaking,
                   existing.spokenFingerprint == Data(SHA256.hash(data: Data(spokenText.utf8))) else { throw Failure.invalidEvent }
             return snapshot(existing)
         }
         guard !interceptsSpeech else { throw Failure.busy }
         prune()
-        let session = Session(event: event, thread: thread, turn: turn, question: question, spokenText: spokenText, at: now, limits: settings.limits, commands: commandForms(), manualFinish: manualFinish)
+        let session = Session(event: event, thread: thread, turn: turn, question: question, spokenText: spokenText, at: now, limits: settings.limits, commands: commandForms(), manualFinish: manualFinish, stopSpeaking: stopSpeaking)
         let admitted = readiness
         sessions[event] = session; startTimer()
         if admitted == .ready, session.core.phase == .preparing { active = event; resetRecognition?() }
@@ -279,10 +280,10 @@ import Foundation
         var presentedTextRevision = -1
         var observers: [DispatchSourceFileSystemObject] = []
         let lease = NotificationReplyLease()
-        init(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, at: Double, limits: NotificationReplyCore.Limits, commands: NotificationReplyCore.Commands, manualFinish: Bool) {
+        init(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, at: Double, limits: NotificationReplyCore.Limits, commands: NotificationReplyCore.Commands, manualFinish: Bool, stopSpeaking: Bool) {
             self.event = event; self.thread = thread; self.turn = turn; self.question = question; self.spokenText = spokenText
             spokenFingerprint = Data(SHA256.hash(data: Data(spokenText.utf8)))
-            core = .init(at: at, limits: limits, commands: commands, manualFinish: manualFinish)
+            core = .init(at: at, limits: limits, commands: commands, manualFinish: manualFinish, stopSpeaking: stopSpeaking, spokenText: spokenText)
         }
         deinit { observers.forEach { $0.cancel() } }
     }
@@ -301,6 +302,7 @@ import Foundation
                 "instance": instance.uuidString.lowercased(), "statusFile": files.path(session.event).path,
                 "phase": session.core.phase.rawValue, "reason": session.core.reason, "releaseRequested": session.core.releaseRequested,
                 "manualFinish": session.core.manualFinish,
+                "stopSpeaking": session.core.stopSpeaking,
                 "ownerLeaseSeconds": NotificationReplyCore.ownerLeaseSeconds,
                 "ownerLeaseExpiresUptime": session.core.ownerLeaseExpiresUptime as Any? ?? NSNull(),
                 "opportunityKind": session.fallback != nil ? "visual" : session.core.audioEndedAt != nil ? "audio" : "none",
@@ -346,7 +348,7 @@ import Foundation
         session.presentedTextRevision = session.core.textRevision; shown = session.event
         showPresentation?(.init(event: session.event, phase: session.core.phase, reason: session.core.reason,
             spokenText: session.spokenText, replyText: session.core.phase == .composing ? session.core.draftText : "", commandSeconds: session.core.limits.commandSeconds,
-            confirmingReply: session.core.confirmingReply))
+            confirmingReply: session.core.confirmingReply, canSayStopSpeaking: session.core.canSayStopSpeaking))
     }
     private func startTimer() {
         guard timer == nil else { return }

@@ -205,6 +205,7 @@ extension HAgentControl {
             "notificationReplySpellings": model.phraseDictionaries[NotificationReplyCore.Commands.replySpellingKey] ?? NotificationReplyCore.Commands.defaultReplySpellings,
             "notificationEndReplySpellings": model.phraseDictionaries[NotificationReplyCore.Commands.endReplySpellingKey] ?? NotificationReplyCore.Commands.defaultEndReplySpellings,
             "notificationCancelReplySpellings": model.phraseDictionaries[NotificationReplyCore.Commands.cancelReplySpellingKey] ?? NotificationReplyCore.Commands.defaultCancelReplySpellings,
+            "notificationStopSpeakingSpellings": model.phraseDictionaries[NotificationReplyCore.Commands.stopSpeakingSpellingKey] ?? NotificationReplyCore.Commands.defaultStopSpeakingSpellings,
             "ultrafastForNewVoiceChats": UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true,
             "speechModel": model.speechModel.rawValue, "microphone": model.inputs.selectedUID,
             // Include the same owner state in the revision so a newer priority edit cannot be

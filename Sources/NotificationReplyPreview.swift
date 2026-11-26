@@ -73,7 +73,7 @@ import SwiftUI
         private let text = "This is a preview notification. No microphone, sound or message is running in this preview."
         var body: some View {
             Form {
-                NotificationReplySettingsSection(settings: settings, replySpellings: .constant(nil), endReplySpellings: .constant(nil), cancelReplySpellings: .constant(nil),
+                NotificationReplySettingsSection(settings: settings, replySpellings: .constant(nil), endReplySpellings: .constant(nil), cancelReplySpellings: .constant(nil), stopSpeakingSpellings: .constant(nil),
                     similar: true, readiness: { settings.enabled ? .ready : .disabled })
                 Section("Display Preview") {
                     Text("Display only. No microphone, sound or message.").foregroundStyle(.secondary)

@@ -479,3 +479,19 @@ Remote AX registration/removal belongs off MainActor, but publish already-observ
 ## Absolute YouTube volume
 
 H Chat sends `setVolume` only after the exact fresh protocol-1 bridge status advertises `youtubeAbsoluteVolume`. The bridge binds one YouTube tab, checks the same 2.5-second expiry at the player, changes only `video.volume`, and confirms the percentage with unchanged playing/paused/mute state. Preserve recording ownership and avoid the mouse volume-up helper, which deliberately unmutes. Unknown or failed delivery must never try another target or replay the value. Older bridge versions stay unavailable. Source, inert player tests, native installation and Chrome Reload are separate qualification boundaries. — GPT-6.1 Sol, 2026-11-28
+
+## 26 November 2026 — Stop the current notification through its exact owner
+
+Notification Shut up belongs to the existing reply listener only while its negotiated event is
+actually announcing. Reuse native timed-prefix confirmation and the same shared spelling store;
+never make generic reply admission failure a playback-stop request. Preserve in-announcement
+negation across an ordinary pause and reject quoted, mentioned or revised-away controls. When the
+notification itself contains a configured form, conservatively ignore that form without claiming
+speaker identification. Derive the visible main-phrase hint from the same echo cache so it cannot
+promise a control this event refuses. Terminal recognition tables and cached forms retire together.
+
+The app's explicit cancelled/user-stop-speaking decision never grants reply submission. Its
+native speaker must check the exact private app status in the existing playback pump: relaying
+only through a metadata worker can stall behind that worker's bounded status IPC. Synthetic timed
+recognition, owned inert children and native offscreen rendering qualify those boundaries
+separately from physical-microphone recognition or audible stop latency.

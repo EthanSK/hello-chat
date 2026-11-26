@@ -152,7 +152,7 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 
 | Section | Contents |
 | --- | --- |
-| Notification Replies | Optional spoken replies after Codex notifications. **Enabled** uses the existing speech model and microphone. Edit **Reply**, **End reply** and **Cancel reply** spellings here. |
+| Notification Replies | Optional spoken replies after Codex notifications. **Enabled** uses the existing speech model and microphone. Edit **Reply**, **End reply**, **Cancel reply** and **Shut up** spellings here. |
 | Automatic Listening | **Listen automatically when docked**, off by default. Starts listening 2 minutes after connecting power and an external display. Unplug either to stop automatic listening. Turning listening on yourself works with any display setup and stays on across restarts. |
 | Recognition | **Alternate spellings for default phrases** and **Check speech recognition**. Phrase and microphone editors are on Home. |
 | Disabled Commands | Turn a Home command off with **Enabled** in its gear. It stops matching and leaves Home. Open the same gear here to turn it back on; phrases, spellings, sounds, repeat choices and values are kept. Commands are enabled by default. Menu actions, buttons and Shortcuts remain available. |
@@ -183,6 +183,12 @@ In Settings → Custom Phrases, open the configuration file, save your edits, th
 Both `arguments` and `workingDirectory` are optional. H Chat runs the executable directly after a complete matching utterance. It passes the arguments as written. Phrases embedded in longer speech do not trigger a script. Built-in commands keep priority.
 
 ## Notification replies
+
+While a notification is speaking, say **Shut up** to stop that notification's speech and cancel its
+reply attempt. This requires the matching shared speech integration. It does not pause unrelated
+media or send a reply. If the notification itself contains the same command wording, H Chat ignores
+that wording to avoid mistaking its own announcement for a command; another configured spelling
+can still be used.
 
 Enable **Settings → Notification Replies** with the shared Codex notification-speech integration installed. After a notification finishes, say **Reply** within five seconds, then speak your answer. If intended speech is skipped by an Agent Flow check before audio starts or audio could not be prepared, the same five-second opportunity starts when **Say Reply** appears after confirmed notification delivery. Say **End reply** to send it to the exact chat that produced the notification, or **Cancel reply** to discard it. Once Reply is confirmed, ordinary pauses keep listening until End or Cancel; losing the listener, notification owner or eligible chat still cancels without sending. The compact floating display keeps the complete original notification in every displayed state and streams the reply words while composing. It shows a pending confirmation honestly and keeps End/Cancel hints visible after Reply starts. Short content fits without filling the maximum height. Drag its header to move it, or use its close button to cancel an unsent reply. Last command keeps the outcome. Queue acceptance is separate from a reply appearing in that chat.
 

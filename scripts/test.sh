@@ -9,6 +9,8 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/CustomScriptPhraseTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplyCoreTests.swift -o "$build_dir/NotificationReplyCoreTests"
 "$build_dir/NotificationReplyCoreTests"
+swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplyStopSpeakingTests.swift -o "$build_dir/NotificationReplyStopSpeakingTests"
+"$build_dir/NotificationReplyStopSpeakingTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplySpellingTests.swift -o "$build_dir/NotificationReplySpellingTests"
 "$build_dir/NotificationReplySpellingTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Sources/NotificationReplySpeech.swift Tests/NotificationReplySpeechTests.swift -o "$build_dir/NotificationReplySpeechTests"

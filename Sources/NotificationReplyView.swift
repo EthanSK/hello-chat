@@ -22,14 +22,16 @@ struct NotificationReplySettingsSection: View {
     @Binding var replySpellings: [String]?
     @Binding var endReplySpellings: [String]?
     @Binding var cancelReplySpellings: [String]?
+    @Binding var stopSpeakingSpellings: [String]?
     let similar: Bool
     let readiness: () -> NotificationReplyCoordinator.Readiness
-    private enum Control: CaseIterable { case reply, end, cancel
+    private enum Control: CaseIterable { case reply, end, cancel, stop
         var phrase: String {
             switch self {
             case .reply: return NotificationReplyCore.Commands.replyPhrase
             case .end: return NotificationReplyCore.Commands.endReplyPhrase
             case .cancel: return NotificationReplyCore.Commands.cancelReplyPhrase
+            case .stop: return NotificationReplyCore.Commands.stopSpeakingPhrase
             }
         }
         var builtIn: [String] {
@@ -37,6 +39,7 @@ struct NotificationReplySettingsSection: View {
             case .reply: return NotificationReplyCore.Commands.defaultReplySpellings
             case .end: return NotificationReplyCore.Commands.defaultEndReplySpellings
             case .cancel: return NotificationReplyCore.Commands.defaultCancelReplySpellings
+            case .stop: return NotificationReplyCore.Commands.defaultStopSpeakingSpellings
             }
         }
         var identifier: String {
@@ -44,6 +47,7 @@ struct NotificationReplySettingsSection: View {
             case .reply: return "notificationReplySpellings"
             case .end: return "notificationEndReplySpellings"
             case .cancel: return "notificationCancelReplySpellings"
+            case .stop: return "notificationStopSpeakingSpellings"
             }
         }
     }
@@ -52,6 +56,8 @@ struct NotificationReplySettingsSection: View {
         Section("Notification Replies") {
             Toggle("Enabled", isOn: $settings.enabled).accessibilityIdentifier("notificationRepliesEnabled")
             Text("Say Reply within \(Int(settings.limits.commandSeconds)) seconds after a notification finishes, or when Say Reply appears if speech was skipped. \(NotificationReplyCore.Commands.finishHint) Pauses keep listening.")
+                .foregroundStyle(.secondary)
+            Text("Say \(NotificationReplyCore.Commands.stopSpeakingPhrase) while a notification is speaking to stop it.")
                 .foregroundStyle(.secondary)
             ForEach(Control.allCases, id: \.self) { spellingRow($0) }
             Text(readiness().message).foregroundStyle(.secondary).accessibilityIdentifier("notificationReplyReadiness")
@@ -64,13 +70,13 @@ struct NotificationReplySettingsSection: View {
         }
     }
     private func dictionary(_ control: Control) -> Binding<[String]?> {
-        switch control { case .reply: return $replySpellings; case .end: return $endReplySpellings; case .cancel: return $cancelReplySpellings }
+        switch control { case .reply: return $replySpellings; case .end: return $endReplySpellings; case .cancel: return $cancelReplySpellings; case .stop: return $stopSpeakingSpellings }
     }
     private func spellingRow(_ control: Control) -> some View {
         let listed = dictionary(control).wrappedValue ?? control.builtIn
         let forms = NotificationReplyCore.Commands(replySpellings: replySpellings, endReplySpellings: endReplySpellings,
-            cancelReplySpellings: cancelReplySpellings, alternateSpellings: similar)
-        let used: [[String]] = switch control { case .reply: forms.replyForms; case .end: forms.endReplyForms; case .cancel: forms.cancelReplyForms }
+            cancelReplySpellings: cancelReplySpellings, stopSpeakingSpellings: stopSpeakingSpellings, alternateSpellings: similar)
+        let used: [[String]] = switch control { case .reply: forms.replyForms; case .end: forms.endReplyForms; case .cancel: forms.cancelReplyForms; case .stop: forms.stopSpeakingForms }
         let main = PhraseMatcher.words(control.phrase).joined(separator: " ")
         let recognized = Set(used.map { $0.joined(separator: " ") }).subtracting([main])
         let unused = similar ? listed.filter { !recognized.contains(PhraseMatcher.words($0).joined(separator: " ")) }.count : 0
@@ -83,7 +89,8 @@ struct NotificationReplySettingsSection: View {
     private func spellingConflict(_ entries: [String], control: Control) -> String? {
         let forms = NotificationReplyCore.Commands(replySpellings: control == .reply ? entries : replySpellings,
             endReplySpellings: control == .end ? entries : endReplySpellings,
-            cancelReplySpellings: control == .cancel ? entries : cancelReplySpellings)
+            cancelReplySpellings: control == .cancel ? entries : cancelReplySpellings,
+            stopSpeakingSpellings: control == .stop ? entries : stopSpeakingSpellings)
         let starts = Set(forms.replyForms), ends = Set(forms.endReplyForms), cancels = Set(forms.cancelReplyForms)
         if forms.hasConflictingFinishes { return NotificationReplyCore.Commands.finishConflict }
         if !starts.isDisjoint(with: ends) || !starts.isDisjoint(with: cancels) || !ends.isDisjoint(with: cancels) {
@@ -233,7 +240,9 @@ struct NotificationReplyHUDContent: View {
         case .waiting: return "Say Reply"
         case .composing: return "Listening to your reply"
         case .releasing: return "Finishing reply…"
-        case .cancelled: return reason == "no-command" ? "No reply" : "Reply cancelled"
+        case .cancelled:
+            if reason == "user-stop-speaking" { return "Stop requested" }
+            return reason == "no-command" ? "No reply" : "Reply cancelled"
         case .unavailable:
             if reason == NotificationReplyOrigin.Failure.submissionUnknown.rawValue { return "Delivery unconfirmed" }
             if reason == NotificationReplyOrigin.Failure.duplicateDispatch.rawValue { return "Reply already reserved" }
@@ -245,7 +254,7 @@ struct NotificationReplyHUDContent: View {
     private var detail: String {
         switch presentation.phase {
         case .preparing: return "Getting the original chat ready."
-        case .announcing: return "Wait for the notification to finish."
+        case .announcing: return presentation.canSayStopSpeaking ? "Say \(NotificationReplyCore.Commands.stopSpeakingPhrase) to stop speaking." : "Wait for the notification to finish."
         case .waiting: return presentation.confirmingReply ? "" : "Start within \(Int(presentation.commandSeconds)) seconds."
         case .composing: return ""
         case .releasing: return "Finishing notification cleanup."
