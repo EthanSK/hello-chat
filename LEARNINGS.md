@@ -16,6 +16,11 @@
 - Bind the first fresh, verified Voice identity before waiting for its exact composer title. A different active identity or a proven inactive result after that binding must retire the request; a transient unknown read may keep the same binding. Otherwise a replacement call in the same desktop process can inherit a prior call's unfinished speed request. The inert regression reproduces the old inheritance and verifies replacement/End retirement plus same-call recovery.
 - Retain the typed readiness gate once per transition and at expiry, using only enum/boolean fields. Do not infer the local failure from `voice.peer.checked`: that event logs the other Mac's response. A saved session End proves the call ended, but an `outcome: ended` payload does not establish who ended it or why. A brief naturally ended call without relay success is not positive speed acceptance or proof of a launch regression; never widen a timer or relax identity guards from that alone.
 
+## 27 November 2026 — Short Voice speaker-silence command
+
+Ethan’s “shush with all the spellings” belongs to the existing Voice speaker-silence action, not microphone mute or global Mac audio. Keep its short forms direct-addressed and bounded by the existing editable spelling limits. It does not add an utterance-end wait. Moving the Voice display groups does not change declaration/detection order, command identities, sounds or other rows’ relative order. Injected text/occurrence tests do not establish live ASR or audible speaker silence.
+
+
 ## 27 November 2026 — Command microphone priority order
 
 - Keep the optional order with `MicrophoneInputs`, alongside the existing single UID. Default it off without migration writes, retain disconnected UID/name rows, use the first connected exact UID, and fall back to H Chat's existing system-default rule. Turning it off restores the saved single choice. Agent Flow's list is the reference; its built-in-first and model-UID substitution policies are not H Chat's fallback policy.
