@@ -26,6 +26,23 @@ import Foundation
             preconditionFailure("Overlapping commands must not both claim one phrase")
         } catch CustomScriptPhrases.ConfigError.duplicatePhrase {}
 
+        let file = directory.appendingPathComponent("CustomPhrases.json")
+        try config.save(replacing: [], to: file)
+        let loaded = try CustomScriptPhrases.load(from: file)
+        precondition(loaded.entries == config.entries)
+        let added = CustomScriptPhrases.Command(name: "Another", phrases: ["Local test"],
+                                                executable: "/usr/bin/true", arguments: nil, workingDirectory: nil)
+        let edited = try CustomScriptPhrases(entries: loaded.entries + [added])
+        try edited.save(replacing: loaded.entries, to: file)
+        let reloaded = try CustomScriptPhrases.load(from: file)
+        precondition(reloaded.entries == edited.entries && reloaded.command(for: "finger bot") == loaded.entries.first)
+        do {
+            try config.save(replacing: loaded.entries, to: file)
+            preconditionFailure("A stale editor must preserve newer changes")
+        } catch CustomScriptPhrases.ConfigError.changed {}
+        let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+        precondition(permissions?.intValue == 0o600)
+
         var finals = CustomSpeechFinals()
         for (text, start, end) in [("I said finger bots", 0.0, 1.0), ("Finger bots", 1.5, 2.0),
                                    ("finger-bots", 1.5, 2.0), ("fingerboard", 1.501, 2.02)] {
@@ -46,6 +63,23 @@ import Foundation
         timed.update("Fingerbot. Finger bot.", timings: both)
         precondition(timed.completed(through: 7.0, quietFinals: []) == ["finger bot"])
         precondition(timed.completed(through: 7.5, quietFinals: ["Fingerbot finger bot"]).isEmpty)
+        for forms in [[("fingerbot", 1.4, 1.8)], [("finger", 1.4, 1.6), ("bot", 1.6, 1.8)]] {
+            var between = TimedCustomSpeech()
+            let words = [("test", 0.1, 0.5)] + forms + [("another", 2.7, 2.9), ("word", 2.9, 3.2)]
+            let phrase = words.map { $0.0 }.joined(separator: " ")
+            between.update(phrase, timings: words)
+            let detections = between.completed(through: 4.0, quietFinals: []).compactMap { config.command(for: $0) }
+            precondition(detections.count == 1)
+            between.update(phrase, timings: words)
+            precondition(between.completed(through: 4.1, quietFinals: []).allSatisfy { config.command(for: $0) == nil })
+        }
+        // The recording's decoder placed a 640 ms gap between the two words
+        // and the punctuation at the first following word's start time.
+        var modelClock = TimedCustomSpeech()
+        let decoded = [("test", 1.92, 2.0), ("finger", 3.52, 3.84), ("bot", 4.48, 4.64),
+                       ("this", 4.64, 4.72), ("is", 4.80, 4.88), ("different", 5.12, 5.20)]
+        modelClock.update("Test finger bot. This is different.", timings: decoded)
+        precondition(modelClock.completed(through: 8, quietFinals: []).compactMap { config.command(for: $0) }.count == 1)
         for lead in ["I said", "Don't"] {
             var quoted = TimedCustomSpeech()
             let words = PhraseMatcher.words(lead)
@@ -53,6 +87,9 @@ import Foundation
             quoted.update(lead + ". Fingerbot.", timings: spans + [("fingerbot", 3.0, 3.6)])
             precondition(quoted.completed(through: 6, quietFinals: []).allSatisfy { config.command(for: $0) == nil })
         }
+        var mentionedAcrossPause = TimedCustomSpeech()
+        mentionedAcrossPause.update("Fingerbot was mentioned", timings: first + [("was", 1.95, 2.1), ("mentioned", 2.1, 2.5)])
+        precondition(mentionedAcrossPause.completed(through: 5, quietFinals: []).allSatisfy { config.command(for: $0) == nil })
         var extended = TimedCustomSpeech()
         extended.update("Fingerbot", timings: first)
         precondition(extended.completed(through: 2.0, quietFinals: []).isEmpty)

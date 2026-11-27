@@ -1,7 +1,8 @@
 import Foundation
+import Darwin
 
 struct CustomScriptPhrases {
-    struct Command: Decodable {
+    struct Command: Codable, Equatable {
         let name: String
         let phrases: [String]
         let executable: String
@@ -11,10 +12,14 @@ struct CustomScriptPhrases {
 
     static let file = AppPaths.support.appendingPathComponent("CustomPhrases.json")
     private let commands: [String: Command]
-    let count: Int
+    let entries: [Command]
+    var count: Int { entries.count }
 
     init(data: Data = Data("[]".utf8)) throws {
-        let entries = try JSONDecoder().decode([Command].self, from: data)
+        try self.init(entries: JSONDecoder().decode([Command].self, from: data))
+    }
+
+    init(entries: [Command]) throws {
         var commands: [String: Command] = [:]
         for entry in entries {
             let keys = Set(entry.phrases.map(PhraseList.key))
@@ -27,7 +32,7 @@ struct CustomScriptPhrases {
             }
         }
         self.commands = commands
-        count = entries.count
+        self.entries = entries
     }
 
     func command(for utterance: String) -> Command? {
@@ -39,6 +44,26 @@ struct CustomScriptPhrases {
         return try .init(data: Data(contentsOf: file))
     }
 
+    // An editor may be open while the JSON file is changed or reloaded elsewhere.
+    // Keep the old file intact if its current entries differ or fail to decode.
+    func save(replacing expected: [Command], to file: URL = file) throws {
+        let directory = file.deletingLastPathComponent()
+        let temporary = directory.appendingPathComponent(".custom-phrases-\(UUID().uuidString)")
+        let manager = FileManager.default
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(entries) + Data([0x0a])
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard manager.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? manager.removeItem(at: temporary) }
+        guard try Self.load(from: file).entries == expected else { throw ConfigError.changed }
+        guard rename(temporary.path, file.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
     static func openableFile() throws -> URL {
         if !FileManager.default.fileExists(atPath: file.path) {
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -48,11 +73,12 @@ struct CustomScriptPhrases {
     }
 
     enum ConfigError: LocalizedError {
-        case invalidEntry, duplicatePhrase
+        case invalidEntry, duplicatePhrase, changed
         var errorDescription: String? {
             switch self {
             case .invalidEntry: return "Give each command a name, a phrase and a full executable path."
             case .duplicatePhrase: return "Two custom commands use the same phrase."
+            case .changed: return "Custom commands changed while you were editing. Close this editor and try again."
             }
         }
     }
@@ -85,6 +111,10 @@ struct CustomSpeechFinals {
 }
 
 struct TimedCustomSpeech {
+    // Nemotron emits word spans on an encoder clock. Live-style fixtures put
+    // up to 640 ms between the two words of one command. Punctuation can still
+    // close the sentence when it shares a frame with the first following word.
+    private static let groupGap = 0.72
     private struct Segment {
         let text: String?
         let start: Double
@@ -107,17 +137,23 @@ struct TimedCustomSpeech {
             return
         }
         hasTimings = true
-        let boundaries = [0] + DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: SpeechOnset.pauseSeconds)
-            + [words.count]
         var context = StandaloneWake()
         context.update(text, at: 0, timings: timings)
+        let audioBoundaries = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: Self.groupGap)
+        let boundaries = Set([0, words.count] + audioBoundaries + context.sentenceStarts).sorted()
         pending = zip(boundaries, boundaries.dropFirst()).map { start, end in
             let spans = timings[start..<end]
             let lead = words.prefix(start)
             let negated = lead.last.map(["no", "not", "never", "dont"].contains) == true
                 || lead.suffix(2).elementsEqual(["don", "t"])
+            // A hesitation in a reference is shorter than a new utterance.
+            let leftReference = start > 0 && timings[start].start - timings[start - 1].end < SpeechOnset.pauseSeconds
+                && ["say", "said", "saying", "called", "named", "mention", "mentioned",
+                    "example", "phrase", "word", "words", "spelling", "the", "your", "my"].contains(words[start - 1])
+            let rightReference = end < words.count && timings[end].start - timings[end - 1].end < SpeechOnset.pauseSeconds
+                && ["phrase", "command", "spelling", "is", "was", "works", "worked", "should"].contains(words[end])
             let direct = context.permitsDirectCommand(in: start..<end)
-                && !negated
+                && !negated && !leftReference && !rightReference
                 && !DesktopSpeechBoundaries.introducesQuotation(words: words, before: start, sentences: [])
             return Segment(text: direct ? words[start..<end].joined(separator: " ") : nil,
                            start: spans.first!.start, end: spans.map(\.end).max()!)

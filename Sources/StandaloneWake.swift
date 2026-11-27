@@ -79,7 +79,7 @@ struct StandaloneWake {
     private static let tokenizer = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+|[.!?;\\n]+")
     private var context: [String] = []
     private var wordTimings: [(word: String, start: Double, end: Double)]?
-    private var sentenceStarts: [Int] = []
+    private(set) var sentenceStarts: [Int] = []
     private var desktopBoundaries: [Int] = []
     private var audioBoundary = 0
     private var directAudioBoundaries: [Int] = []

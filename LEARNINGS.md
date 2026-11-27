@@ -2,8 +2,10 @@
 
 ## 27 November 2026 — Custom script phrases
 
+- macOS attributes Bluetooth access by a custom script to H Chat’s signed app identity. A successful terminal run does not show that H Chat has Bluetooth access. If the first-use prompt is unavailable, add the installed app under Privacy & Security → Bluetooth with native authorization, use H Chat’s call-preserving quit and relaunch, and verify with a read-only controller action before any separately authorized write. A command cue marks script launch. A device acknowledgement and physical motion are separate evidence.
 - Custom script phrases match a completed utterance as a whole, using the same case, spacing and punctuation normalization as saved phrases. Keep script execution out of partial recognition, notification replies and recorded checks. Apple finals for the same or overlapping audio can be revised, so only a new audio span is eligible. Configuration is Mac-local. Launch the executable directly with separate arguments and leave retries to a fresh spoken request.
 - Nemotron decoded a configured phrase in steady room noise without reporting an utterance end. For custom scripts, use the existing pause duration on real decoded word spans as well as the microphone's quiet boundary. Use the complete group of words, reject quoted and negated requests, and consume each span once. The recorded custom-command check reports matches without launching their scripts.
+- Nemotron's word times describe token emission. An offline reproduction put 640 ms between two words of one configured phrase, while the punctuation and the following word shared a frame. Use a separate grouping pause and sentence boundaries for custom commands. Keep the longer end-of-group confirmation and reject references across short gaps. The inert dispatch check uses the normal decoder, grouping, matcher and process launcher with a fixed harmless executable.
 
 ## 25 November 2026 — Bind a pending speed handoff before its title is ready
 

@@ -11,7 +11,8 @@ import SwiftUI
     @Published private(set) var status = "Off"
     @Published private(set) var customScriptStatus = ""
     @Published private(set) var runningCustomScript = false
-    private var customScriptPhrases: CustomScriptPhrases?
+    @Published private var customScriptPhrases: CustomScriptPhrases?
+    var customCommands: [CustomScriptPhrases.Command]? { customScriptPhrases?.entries }
     private var customScript: Process?
     @Published private(set) var detail = "Start listening for Hello Chat."
     @Published var soundEffects = UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true {
@@ -1313,14 +1314,59 @@ import SwiftUI
         }
     }
 
-    private func runCustomScript(for utterance: String) {
-        guard enabled, detectionRunning, !quitting, !checkingSpeech, !runningCustomScript,
-              !notificationReplies.interceptsSpeech,
-              let command = customScriptPhrases?.command(for: utterance) else { return }
-        // Saved built-in phrases retain precedence even when their command is disabled. — GPT-6.2 Sol
+    func saveCustomCommand(_ command: CustomScriptPhrases.Command, at index: Int?,
+                           replacing expected: [CustomScriptPhrases.Command]) throws {
+        guard customCommands == expected else { throw CustomScriptPhrases.ConfigError.changed }
+        var updated = expected
+        if let index {
+            guard updated.indices.contains(index) else { throw CustomScriptPhrases.ConfigError.changed }
+            updated[index] = command
+        } else {
+            updated.append(command)
+        }
+        let validated = try CustomScriptPhrases(entries: updated)
+        if let conflict = command.phrases.first(where: { reservesCustomPhrase($0, includeDisabledSpeakers: true) }) {
+            throw BridgeError.message("Another command already uses “\(conflict)”.")
+        }
+        let files = FileManager.default
+        var executableIsDirectory = ObjCBool(false)
+        guard files.fileExists(atPath: command.executable, isDirectory: &executableIsDirectory),
+              !executableIsDirectory.boolValue, files.isExecutableFile(atPath: command.executable) else {
+            throw BridgeError.message("Choose an executable file.")
+        }
+        if let folder = command.workingDirectory {
+            var isDirectory = ObjCBool(false)
+            guard files.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw BridgeError.message("Choose an existing working folder.")
+            }
+        }
+        do { try validated.save(replacing: expected) }
+        catch {
+            loadCustomScriptPhrases()
+            throw error
+        }
+        loadCustomScriptPhrases()
+    }
+
+    // Saved built-in phrases keep precedence even when their command is disabled.
+    private func reservesCustomPhrase(_ utterance: String, includeDisabledSpeakers: Bool = false) -> Bool {
         let words = PhraseMatcher.words(utterance)
-        guard !configuredPatterns.values.joined().contains(where: { !$0.matches(in: words, forReservation: true).isEmpty }),
-              !activeSpeakerCommands.contains(where: { !$0.pattern.matches(in: words).isEmpty }) else { return }
+        let speakers = includeDisabledSpeakers ? configuredSpeakerCommands : activeSpeakerCommands
+        return configuredPatterns.values.joined().contains { !$0.matches(in: words, forReservation: true).isEmpty }
+            || speakers.contains { !$0.pattern.matches(in: words).isEmpty }
+    }
+
+    private func runCustomScript(for utterance: String) {
+        guard let command = customScriptPhrases?.command(for: utterance) else { return }
+        let reserved = reservesCustomPhrase(utterance)
+        guard enabled, detectionRunning, !quitting, !checkingSpeech, !runningCustomScript,
+              !notificationReplies.interceptsSpeech, !reserved else {
+            Diagnostics.shared.record("custom_script.blocked", info: [
+                "running": String(runningCustomScript), "recognition": String(enabled && detectionRunning),
+                "reserved": String(reserved), "notification": String(notificationReplies.interceptsSpeech)
+            ])
+            return
+        }
         do {
             customScript = try command.launch { [weak self] status in
                 Task { @MainActor [weak self] in

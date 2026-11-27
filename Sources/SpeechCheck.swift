@@ -17,9 +17,10 @@ struct SpeechCheckResult {
     var startupReady = false
     var startupAtVoiceOpen = ""
     var startupBoundary = ""
+    var fixtureWordSpans: [[String: Any]] = []
 }
 @MainActor final class SpeechCheck {
-    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false, captureStartup: Bool = false, customPhrases: CustomScriptPhrases? = nil) async -> SpeechCheckResult {
+    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false, captureStartup: Bool = false, customPhrases: CustomScriptPhrases? = nil, runFixture: Bool = false) async -> SpeechCheckResult {
         let listener = SpeechListener(diagnostics: nil)
         listener.model = model
         var matcher = PhraseMatcher()
@@ -37,10 +38,19 @@ struct SpeechCheckResult {
         var startupReady = false
         var startupAtVoiceOpen = ""
         var startupBoundary = ""
+        var fixtureWordSpans: [[String: Any]] = []
         if let customPhrases {
             listener.onRecordedCommandUtterance = { utterance in
                 guard let command = customPhrases.command(for: utterance) else { return }
-                detections.append(["command": "custom", "name": command.name, "utterance": utterance])
+                var result: [String: Any] = ["command": "custom", "name": command.name, "utterance": utterance]
+                if runFixture, command.executable == "/usr/bin/true", command.arguments == nil, command.workingDirectory == nil {
+                    do {
+                        let process = try command.launch { _ in }
+                        process.waitUntilExit()
+                        result["exit_status"] = Int(process.terminationStatus)
+                    } catch { result["launch_failed"] = true }
+                }
+                detections.append(result)
             }
         }
         listener.onDelay = { gaps += 1 }
@@ -94,6 +104,9 @@ struct SpeechCheckResult {
         }
         listener.onText = { [weak listener] value, timings in
             text = value
+            if runFixture {
+                fixtureWordSpans = timings.map { ["word": $0.word, "start": $0.start, "end": $0.end] }
+            }
             if !startupReady { startup?.observe(value) }
             standaloneWake.update(value, at: Diagnostics.now, timings: timings)
             standaloneEnd.update(value, at: Diagnostics.now, timings: timings)
@@ -116,7 +129,7 @@ struct SpeechCheckResult {
             return .init(text: failure ?? text, commands: failure == nil ? commands : [], neuralShare: share,
                          cpuSeconds: Self.cpuTime() - cpuStart, audioSeconds: audioSeconds, detections: detections, segments: segments + [text], gaps: gaps, resets: max(0, sessions - 1), utteranceEnds: utteranceEnds,
                          startupSpeech: startup?.text ?? "", startupReady: startupReady, startupAtVoiceOpen: startupAtVoiceOpen,
-                         startupBoundary: startupBoundary)
+                         startupBoundary: startupBoundary, fixtureWordSpans: fixtureWordSpans)
         } catch {
             listener.stop(); listener.onText = nil; listener.onSession = nil
             await listener.waitUntilStopped()

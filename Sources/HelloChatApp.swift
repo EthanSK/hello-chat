@@ -209,22 +209,38 @@ import Darwin
             selectedModel = model
         } else { selectedModel = .defaultModel }
         let customRecording = CommandLine.arguments.firstIndex(of: "--check-custom-recording")
-        if let index = customRecording ?? CommandLine.arguments.firstIndex(of: "--check-recording") ?? CommandLine.arguments.firstIndex(of: "--check-standalone-recording") ?? CommandLine.arguments.firstIndex(of: "--check-startup-recording") {
+        let customDispatch = CommandLine.arguments.firstIndex(of: "--check-custom-dispatch-recording")
+        if let index = customDispatch ?? customRecording ?? CommandLine.arguments.firstIndex(of: "--check-recording") ?? CommandLine.arguments.firstIndex(of: "--check-standalone-recording") ?? CommandLine.arguments.firstIndex(of: "--check-startup-recording") {
             guard index + 1 < CommandLine.arguments.count else { exit(2) }
             let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
             Task { @MainActor in
                 let startup = CommandLine.arguments.contains("--check-startup-recording")
                 let customPhrases: CustomScriptPhrases?
-                do { customPhrases = customRecording == nil ? nil : try CustomScriptPhrases.load() }
+                do {
+                    if customDispatch != nil {
+                        // Always use an inert process. A recording must never run commands from the user's file.
+                        let args = CommandLine.arguments
+                        let phrases = args.indices.dropLast().filter { args[$0] == "--fixture-phrase" }.map { args[$0 + 1] }
+                        let fixture = CustomScriptPhrases.Command(name: "Fixture", phrases: phrases,
+                                                                  executable: "/usr/bin/true", arguments: nil, workingDirectory: nil)
+                        customPhrases = try CustomScriptPhrases(entries: [fixture])
+                    } else {
+                        customPhrases = customRecording == nil ? nil : try CustomScriptPhrases.load()
+                    }
+                }
                 catch { fputs("Couldn't load custom phrases.\n", stderr); exit(2) }
-                let result = await SpeechCheck().run(url: url, model: selectedModel, standalone: CommandLine.arguments.contains("--check-standalone-recording"), captureStartup: startup, customPhrases: customPhrases)
-                let report: [String: Any] = ["model": selectedModel.rawValue, "text": result.text, "segments": result.segments, "detections": result.detections,
+                let result = await SpeechCheck().run(url: url, model: selectedModel, standalone: CommandLine.arguments.contains("--check-standalone-recording"), captureStartup: startup, customPhrases: customPhrases, runFixture: customDispatch != nil)
+                var report: [String: Any] = ["model": selectedModel.rawValue, "text": result.text, "segments": result.segments, "detections": result.detections,
                     "gaps": result.gaps, "resets": result.resets, "utteranceEnds": result.utteranceEnds,
                     "startupSpeech": result.startupSpeech, "startupReady": result.startupReady, "startupAtVoiceOpen": result.startupAtVoiceOpen,
                     "startupBoundary": result.startupBoundary,
                     "cpuSeconds": result.cpuSeconds, "audioSeconds": result.audioSeconds,
                     "memoryMB": ResourceUsage.footprintMB(), "anePlanShare": selectedModel.neuralPlacementKnown ? result.neuralShare as Any : NSNull()]
+                if customDispatch != nil { report["word_spans"] = result.fixtureWordSpans }
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) { print(String(decoding: data, as: UTF8.self)) }
+                if customDispatch != nil {
+                    exit(result.detections.contains { ($0["exit_status"] as? Int) == 0 } ? 0 : 1)
+                }
                 if customRecording != nil { exit(result.detections.isEmpty ? 1 : 0) }
                 exit(startup ? (result.startupReady && !result.startupSpeech.isEmpty ? 0 : 1) : (result.commands.isEmpty ? 1 : 0))
             }
@@ -651,7 +667,7 @@ struct MainView: View {
                             .foregroundStyle(.red).accessibilityIdentifier("speakerOutputConflict")
                     }
                 }
-
+                CustomCommandsSection(model: model)
             }
             .formStyle(.grouped)
             .font(.system(size: 13 * zoom.scale))
