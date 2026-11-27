@@ -141,7 +141,12 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     var controlsDot: Bool { [.callDotPhrase, .hangUpDotPhrase].contains(self) }
     static let dotSlots = allCases.filter(\.controlsDot)
     var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase].contains(self) }
-    static let voiceSlots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop && !$0.controlsDot }
+    // Ethan wants the Voice speaker-silence command first. This changes presentation only;
+    // declaration/detection order and all existing saved command identities stay intact. — GPT-6.1 Sol
+    static let voiceSlots: [Self] = {
+        let slots = allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop && !$0.controlsDot }
+        return slots.filter { $0.action == .silenceSpeakers } + slots.filter { $0.action != .silenceSpeakers }
+    }()
     static let videoSlots = allCases.filter(\.controlsVideo)
     static let musicSlots = allCases.filter(\.controlsMusic)
     static let desktopSlots = allCases.filter(\.controlsDesktop)
@@ -182,7 +187,11 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
             .mutePhrase: ["Mute Chat": ["Mute Chatt"], "Mute mic": ["Mute Mike", "Mute the mic", "Mute microphone"]],
             .unmutePhrase: ["Unmute Chat": ["Unmute Chatt", "Unmute mic", "Unmute Mike", "Unmute the mic", "Unmute microphone"]],
             .silentPhrase: ["Silent Chat": ["Silent Chatt"], "Mute speakers": ["Mute the speakers", "Mute speaker", "Mute the speaker"],
-                            "Silent speakers": ["Silent the speakers"], "Silent speaker": ["Silent the speaker"]],
+                            "Silent speakers": ["Silent the speakers"], "Silent speaker": ["Silent the speaker"],
+                            // Keep “shush” and its repeated-h transcriptions in one editable dictionary,
+                            // bounded by the existing 120-character spelling limit. No global fuzzy rule. — GPT-6.1 Sol
+                            "Shush": ["Shoosh"] + (2...119).map { "S" + String(repeating: "h", count: $0) }
+                                + (2...116).map { "Shus" + String(repeating: "h", count: $0) }],
             .silencePhrase: ["Silence Chat": ["Silence Chatt"], "Silence speakers": ["Silence the speakers"],
                              "Silence speaker": ["Silence the speaker"]],
             .unsilencePhrase: ["Unsilence Chat": ["Unsilence Chatt", "Unsilenced shot", "Unmute speakers", "Unmute speaker", "Unmute the speakers", "Unmute the speaker"], "Unsilent speakers": ["Unsilent the speakers"],
@@ -358,7 +367,9 @@ enum PhraseList {
                 (.unsilencePhrase, ["Unmute speakers", "Unmute speaker", "Unsilence", "Unmute"])]),
             // Ethan, 20 November 2026: "Show app Codex", "Show Codex", "Show me Codex". Keep each prefix editable.
             // The short forms require an exact app name or spelling. Show voice has its own slot.
-            ("appShowPrefixDefaults20261121", [(.openAppPhrase, ["Show app", "Show me", "Show", "Open"])])
+            ("appShowPrefixDefaults20261121", [(.openAppPhrase, ["Show app", "Show me", "Show", "Open"])]),
+            // Add once after older rows; deletion and custom primary phrases stay effective. — GPT-6.1 Sol
+            ("speakerShushPhrase20261127", [(.silentPhrase, ["Shush"])])
         ]
         for batch in batches where !defaults.bool(forKey: batch.key) {
             let saved = defaults.object(forKey: defaultsKey)
@@ -591,6 +602,9 @@ struct PhrasePattern: Equatable {
         slot == .unsilencePhrase && words.elementsEqual(["unsilenced", "shot"])
             && !words.elementsEqual(PhraseMatcher.words(text))
     }
+    // The short “shush” family addresses Voice directly; quoted examples and unrelated
+    // words must not silence it. Existing longer speaker phrases keep their policy. — GPT-6.1 Sol
+    var isBareSpeakerSilence: Bool { slot?.action == .silenceSpeakers && PhraseList.key(text) == "shush" }
     func isBareSpeakerRestore(_ words: ArraySlice<String>) -> Bool {
         guard slot == .unsilencePhrase else { return false }
         let spoken = words.joined()

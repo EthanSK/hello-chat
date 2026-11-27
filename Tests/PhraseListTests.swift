@@ -26,7 +26,7 @@ import Foundation
             check(!detector.poll(at: 1, phrase: slot.defaultText, similar: false, rejectNegated: true, ending: slot.ending, patterns: patterns), "New default row preserves the mention guard")
         }
         check((savedDefaults.dictionary(forKey: PhraseList.defaultsKey)?["futurePhrase"] as? [String]) == ["Keep me"], "Future-build preferences survive seeding")
-        check(seeded[.mutePhrase] == ["Mute mic"] && seeded[.silentPhrase] == ["Mute speakers", "Silent speakers", "Silent speaker"], "New installs list both mute aliases")
+        check(seeded[.mutePhrase] == ["Mute mic"] && seeded[.silentPhrase] == ["Mute speakers", "Silent speakers", "Silent speaker", "Shush"], "New installs list both mute aliases")
         check(PhraseAction.allCases.filter { $0.settingsTitle.hasSuffix(" (Codex Voice)") } == [.wake, .end, .muteMicrophone, .unmuteMicrophone, .silenceSpeakers, .unsilenceSpeakers], "Call start, end and audio controls carry the Codex Voice scope in the list and its editor")
         let configuration = PhraseConfiguration(rows: Dictionary(uniqueKeysWithValues: PhraseSlot.allCases.map {
             ($0, [$0.savedValue(in: savedDefaults)] + (seeded[$0] ?? []))
@@ -62,7 +62,7 @@ import Foundation
         savedDefaults.set(["zoomInPhrase": ["Mute-mic"]], forKey: PhraseList.defaultsKey)
         PhraseList.seedDefaults(in: savedDefaults)
         let upgraded = PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))
-        check(upgraded[.zoomInPhrase] == ["Mute-mic"] && upgraded[.silentPhrase] == ["Mute speakers", "Silent speakers", "Silent speaker"] && upgraded[.wakePhrase] == ["Start chat"] && upgraded[.mutePhrase] == nil, "Upgrade respects existing ownership and deleted old defaults")
+        check(upgraded[.zoomInPhrase] == ["Mute-mic"] && upgraded[.silentPhrase] == ["Mute speakers", "Silent speakers", "Silent speaker", "Shush"] && upgraded[.wakePhrase] == ["Start chat"] && upgraded[.mutePhrase] == nil, "Upgrade respects existing ownership and deleted old defaults")
         savedDefaults.set(["zoomInPhrase": ["Mute-mic"]], forKey: PhraseList.defaultsKey)
         PhraseList.seedDefaults(in: savedDefaults)
         check(PhraseList.decode(savedDefaults.object(forKey: PhraseList.defaultsKey))[.silentPhrase] == nil, "Removed mute alias stays removed")

@@ -213,9 +213,15 @@ struct StandaloneWake {
             let range = match.start..<match.end
             let pattern = patternByRange[range].map { patterns[$0.index] }
             let bareSpeakerRestore = pattern?.isBareSpeakerRestore(context[range]) ?? false
-            if bareSpeakerRestore || pattern?.needsStandaloneUnsilence(context[range]) == true {
+            let bareSpeakerSilence = pattern?.isBareSpeakerSilence ?? false
+            if bareSpeakerRestore || bareSpeakerSilence || pattern?.needsStandaloneUnsilence(context[range]) == true {
                 let (_, end) = contextBounds(start: match.start, end: match.end, directOnly: true)
-                let trailing = context[match.end..<(bareSpeakerRestore ? context.count : end)]
+                var trailing = Array(context[match.end..<(bareSpeakerRestore ? context.count : end)])
+                // Shush stays immediate, including the existing explicit repeat syntax; unlike
+                // bare restore it never waits for an utterance-end signal. — GPT-6.1 Sol
+                if bareSpeakerSilence, case .value(_, let used) = CommandRepetition.count(in: trailing, after: 0) {
+                    trailing.removeFirst(used)
+                }
                 if !isDirectCommand(start: match.start, end: match.end, allowEmbedded: embeddedCommand) || !trailing.allSatisfy({ $0 == "please" || $0 == "now" }) {
                     consumed = index + 1
                     rememberConsumed(audioRanges[index])
