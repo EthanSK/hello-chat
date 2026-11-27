@@ -15,6 +15,8 @@ swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift So
 "$build_dir/NotificationReplySpeechTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyOrigin.swift Tests/NotificationReplyOriginTests.swift -o "$build_dir/NotificationReplyOriginTests" -lsqlite3
 "$build_dir/NotificationReplyOriginTests"
+swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyOrigin.swift Tests/NotificationReplyRelayArrivalTests.swift -o "$build_dir/NotificationReplyRelayArrivalTests" -lsqlite3
+"$build_dir/NotificationReplyRelayArrivalTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/TranscriptArchive.swift Sources/AgentControlMailbox.swift Sources/AgentControlArchive.swift Tests/AgentControlTests.swift -o "$build_dir/AgentControlTests"
 "$build_dir/AgentControlTests"
 swiftc -swift-version 5 -parse-as-library Sources/CommandRepetition.swift Tests/CommandRepetitionTests.swift -o "$build_dir/CommandRepetitionTests"
@@ -54,7 +56,7 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/CoreTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/SpeechPCM.swift Tests/SpeechPCMTests.swift -o "$build_dir/SpeechPCMTests" -framework AVFoundation
 "$build_dir/SpeechPCMTests"
-swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/Diagnostics.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/CodexVoiceSpeed.swift Sources/NativeVoice.swift Tests/NativeVoiceTests.swift Sources/AppActivation.swift -o "$build_dir/NativeVoiceTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/VoiceBridge.swift Sources/Diagnostics.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/CodexConfigClient.swift Sources/CodexVoiceSpeed.swift Sources/NativeVoice.swift Tests/NativeVoiceTests.swift Sources/AppActivation.swift -o "$build_dir/NativeVoiceTests" -framework AppKit -framework ApplicationServices -framework CoreAudio -lsqlite3
 # Keep the real configuration protocol's diagnostics in the fixture's home.
 mkdir -p "$build_dir/native-test-home"
 CFFIXED_USER_HOME="${build_dir:A}/native-test-home" "$build_dir/NativeVoiceTests"

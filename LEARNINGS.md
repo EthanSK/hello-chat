@@ -424,3 +424,11 @@ native speaker must check the exact private app status in the existing playback 
 only through a metadata worker can stall behind that worker's bounded status IPC. Synthetic timed
 recognition, owned inert children and native offscreen rendering qualify those boundaries
 separately from physical-microphone recognition or audible stop latency.
+
+## 27 November 2026 — Exact-origin relay and callback ownership
+
+A fresh external stdio app-server cannot steer the Desktop server's active turn. A metadata-only thread/start can return an ID without persisting a rollout. The supported route verified here is ASC first-turn lookup, fork before that first turn, independent empty history/pin/goal checks, orderly creator EOF, one broker prompt and the Desktop wake deep link. Real native host-tool delivery was observed in a busy origin; metadata-only pin inheritance and canonical entity escaping were checked separately. Do not infer Desktop tool inheritance from a generic headless model or queue exit.
+
+The existing three-second mediaReleased request gates durable admission, not an arbitrarily late reuse of that callback. An admitted app-owned sixty-second stage uses a new one-shot claim callback immediately before opaque host-tool send. Broker admission is not target delivery. Keep human/newer-input checks strict and match only the exact native delegation/source/envelope; cache uncertainty must never resend. Defer inherited goals and clear only the owned fork's goal before wake. Archive only its exact terminal turn, keeping private cleanup metadata for interrupted archival.
+
+- A notification cancellation labelled `voiceUnknown` identifies the guard decision, not the underlying native failure or a proven active call. Preserve the existing snapshot's bounded error/numeric metadata at the collector, without another read or transcript logging. A later complete scan cannot explain an earlier incomplete one; keep the genuine unknown/active gate intact and distinguish diagnostic deployment from a verified cancellation repair.

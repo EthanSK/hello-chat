@@ -25,8 +25,8 @@ import SQLite3
         let database = root.appendingPathComponent("state_5.sqlite")
         var db: OpaquePointer?; sqlite3_open(database.path, &db)
         defer { sqlite3_close(db) }
-        check(sqlite3_exec(db, "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT);", nil, nil, nil) == SQLITE_OK, "fixture table")
-        check(sqlite3_exec(db, "INSERT INTO threads VALUES ('\(thread.uuidString.lowercased())','\(file.path)');", nil, nil, nil) == SQLITE_OK, "fixture row")
+        check(sqlite3_exec(db, "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, archived INTEGER NOT NULL DEFAULT 0);", nil, nil, nil) == SQLITE_OK, "fixture table")
+        check(sqlite3_exec(db, "INSERT INTO threads(id,rollout_path) VALUES ('\(thread.uuidString.lowercased())','\(file.path)');", nil, nil, nil) == SQLITE_OK, "fixture row")
         let origin = try NotificationReplyOrigin.capture(thread: thread, turn: turn, question: "", home: home)
         try origin.validate(); checks += 1
         fails("unknown thread cannot select latest") { _ = try NotificationReplyOrigin.capture(thread: UUID(), turn: nil, question: "", home: home) }
