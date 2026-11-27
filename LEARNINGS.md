@@ -1,5 +1,10 @@
 # Hello Chat engineering notes
 
+## 27 November 2026 — Short Voice speaker-silence command
+
+Ethan’s “shush with all the spellings” belongs to the existing Voice speaker-silence action, not microphone mute or global Mac audio. Keep its short forms direct-addressed and bounded by the existing editable spelling limits. It does not add an utterance-end wait. Moving the Voice display groups does not change declaration/detection order, command identities, sounds or other rows’ relative order. Injected text/occurrence tests do not establish live ASR or audible speaker silence.
+
+
 ## 27 November 2026 — Command microphone priority order
 
 - Keep the optional order with `MicrophoneInputs`, alongside the existing single UID. Default it off without migration writes, retain disconnected UID/name rows, use the first connected exact UID, and fall back to H Chat's existing system-default rule. Turning it off restores the saved single choice. Agent Flow's list is the reference; its built-in-first and model-UID substitution policies are not H Chat's fallback policy.

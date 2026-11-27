@@ -207,6 +207,40 @@ import Foundation
             defaults.set("my CuSTom phrase", forKey: slot.rawValue)
             check(slot.savedValue(in: defaults) == "my CuSTom phrase", "Custom saved text is preserved verbatim")
         }
+        // Ethan's Shush controls only Voice output, using the existing speaker action and
+        // occurrence ownership. These are injected words, never a live shortcut. — GPT-6.1 Sol
+        let shush = PhrasePattern(slot: .silentPhrase, text: "Shush", similar: true, dictionaries: configured)
+        let shushForms = ["Shush"] + PhraseSlot.silentPhrase.stockSpellings(for: "Shush")
+        check(HomeCommand.all.first?.slots == [.silentPhrase, .silencePhrase], "Speaker silence is the first command group")
+        let oldOrder = PhraseSlot.settingsGroups(PhraseSlot.allCases.filter { !$0.controlsVideo && !$0.controlsMusic && !$0.controlsDesktop && !$0.controlsDot })
+        check(PhraseSlot.settingsGroups(PhraseSlot.voiceSlots).dropFirst().elementsEqual(oldOrder.filter { $0.first?.action != .silenceSpeakers }, by: ==), "Other Voice rows retain their relative order")
+        check(PhraseSlot.silentPhrase.action == .silenceSpeakers && VoiceAudioAction.silenceSpeakers.controlsSpeakers, "Shush keeps the speaker channel")
+        func detectsShush(_ text: String, finalized: Bool = false) -> Bool {
+            var detector = StandaloneWake()
+            detector.audio(level: 0.2, seconds: 0.1)
+            detector.update(text, at: 1)
+            let result = detector.poll(at: 1, phrase: shush.text, similar: true, rejectNegated: true, patterns: [shush], utteranceEnded: finalized)
+            check(!detector.poll(at: 2, phrase: shush.text, similar: true, rejectNegated: true, patterns: [shush], utteranceEnded: finalized), "One Shush occurrence cannot toggle twice")
+            return result
+        }
+        for form in shushForms {
+            check(detectsShush(form), "Shush spelling acts immediately: " + form)
+        }
+        for text in ["Please shush", "Can you shush", "Shush now", "Shush please", "Shush three times"] {
+            check(detectsShush(text), "Direct Shush request: " + text)
+        }
+        for text in ["do not shush", "don't shush", "never ever shush", "I said shush", "the word shush", "say shush", "she said please shush", "shush money", "shush later", "shushing", "shushed", "shhhhark", "Shush settings", "I can shush", "un shush"] {
+            check(!detectsShush(text), "Discussion or another word cannot silence Voice: " + text)
+        }
+        check(PhrasePattern(slot: .silentPhrase, text: "Shush", similar: false, dictionaries: configured).kind(for: "Shhh") == nil, "Exact-only keeps aliases inactive")
+        let removed = PhraseDictionaries(savedByTrigger: [PhraseSlot.silentPhrase.spellingKey(for: "Shush"): []], active: active)
+        check(PhrasePattern(slot: .silentPhrase, text: "Shush", similar: true, dictionaries: removed).kind(for: "Shhh") == nil, "An empty user spelling override stays empty")
+        check(try PhraseDictionary.parse(shushForms.joined(separator: "\n"), for: .silentPhrase).count == shushForms.count, "Every stock Shush spelling fits the existing editable dictionary")
+        var deleted = PhraseList.decode(stockDefaults.object(forKey: PhraseList.defaultsKey))
+        deleted[.silentPhrase]?.removeAll { $0 == "Shush" }
+        stockDefaults.set(PhraseList.encode(deleted, preserving: nil), forKey: PhraseList.defaultsKey)
+        PhraseList.seedDefaults(in: stockDefaults)
+        check(!(PhraseList.decode(stockDefaults.object(forKey: PhraseList.defaultsKey))[.silentPhrase] ?? []).contains("Shush"), "Removing Shush stays effective after defaults reload")
         print("Passed \(checks) phrase dictionary checks")
     }
 }
