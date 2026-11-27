@@ -1,5 +1,15 @@
 # Hello Chat engineering notes
 
+## 27 November 2026 — Retain the failed control read and protect private update order
+
+- A notification cancellation labelled `voiceUnknown` identifies the guard decision, not the underlying native failure or a proven active call. Preserve the existing snapshot's bounded error/numeric metadata at the collector, without another read or transcript logging. A later complete scan cannot explain an earlier incomplete one; keep the genuine unknown/active gate intact and distinguish diagnostic deployment from a verified cancellation repair.
+- Pinned Sparkle uses `CFBundleVersion` for update ordering, even when the displayed short version is higher. Before publishing common builds while a private M1 candidate is held, qualify its actual numeric build against the next public build. A metadata-only signed refresh can retain identical unsigned executable bytes and all sealed resources; verify those plus the normal detach, settings and listening state instead of treating a changed signed executable hash as changed runtime code.
+
+## 27 November 2026 — Keep the evidence behind unknown Voice and updater ordering
+
+- A `voiceUnknown` cancellation plus `controls=incomplete saved=none` does not identify a native timeout, stale element or active call. Retain the existing snapshot's bounded failure code, node/depth/timeout counts and readiness booleans at the collector, without chat labels or speech. Keep genuine unknown fail-closed; later complete reads and diagnostic-only tests do not establish the historical cause or a repaired human Reply.
+- Pinned Sparkle2.10.1 compares the host CFBundleVersion to the appcast build; a higher private short version does not protect a lower private build from a newer common update. Before publishing a common build while M1 qualification remains held, check that numeric ordering and refresh only the necessary private metadata through the normal signed installer. Verify unchanged code by comparing disposable signature-stripped executables, unchanged sealed resource entries and the exact metadata-only source diff; re-signing necessarily changes the full executable hash.
+
 ## 25 November 2026 — Bind a pending speed handoff before its title is ready
 
 - Bind the first fresh, verified Voice identity before waiting for its exact composer title. A different active identity or a proven inactive result after that binding must retire the request; a transient unknown read may keep the same binding. Otherwise a replacement call in the same desktop process can inherit a prior call's unfinished speed request. The inert regression reproduces the old inheritance and verifies replacement/End retirement plus same-call recovery.
