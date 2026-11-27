@@ -244,26 +244,26 @@ struct NotificationReplyHUDContent: View {
             if reason == "user-stop-speaking" { return "Stop requested" }
             return reason == "no-command" ? "No reply" : "Reply cancelled"
         case .unavailable:
-            if reason == NotificationReplyOrigin.Failure.submissionUnknown.rawValue { return "Delivery unconfirmed" }
+            if reason == NotificationReplyOrigin.Failure.submissionUnknown.rawValue || reason == "relay-send-unconfirmed" { return "Delivery unconfirmed" }
             if reason == NotificationReplyOrigin.Failure.duplicateDispatch.rawValue { return "Reply already reserved" }
             return "Reply unavailable"
         case .queued: return "Reply queued"
         case .delivered: return "Reply sent"
         }
     }
-    private var detail: String {
+    var detail: String {
         switch presentation.phase {
         case .preparing: return "Getting the original chat ready."
         case .announcing: return presentation.canSayStopSpeaking ? "Say \(NotificationReplyCore.Commands.stopSpeakingPhrase) to stop speaking." : "Wait for the notification to finish."
         case .waiting: return presentation.confirmingReply ? "" : "Start within \(Int(presentation.commandSeconds)) seconds."
         case .composing: return ""
-        case .releasing: return "Finishing notification cleanup."
+        case .releasing: return presentation.deliveryPending ? "Sending to the original chat." : "Finishing notification cleanup."
         case .queued: return "Waiting for your reply to appear in the original chat."
         case .delivered: return "Saved in the original chat."
         case .cancelled, .unavailable:
             if presentation.reason == "command-spellings-conflict" { return NotificationReplyCore.Commands.finishConflict + " Edit spellings in Settings." }
             if presentation.reason == "end-command-unconfirmed" { return "End reply wasn't confirmed. Nothing sent." }
-            if presentation.reason == NotificationReplyOrigin.Failure.submissionUnknown.rawValue {
+            if presentation.reason == NotificationReplyOrigin.Failure.submissionUnknown.rawValue || presentation.reason == "relay-send-unconfirmed" {
                 return "Delivery is unconfirmed. It won't be sent again."
             }
             if presentation.reason == NotificationReplyOrigin.Failure.duplicateDispatch.rawValue {
@@ -285,7 +285,7 @@ struct NotificationReplyHUDContent: View {
                 if let dismiss {
                     Button(action: dismiss) { Image(systemName: "xmark").frame(width: 20, height: 20) }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(presentation.phase == .preparing || presentation.phase == .announcing || presentation.phase == .waiting || presentation.phase == .composing || presentation.phase == .releasing ? "Cancel reply" : "Close")
+                        .accessibilityLabel(presentation.phase == .preparing || presentation.phase == .announcing || presentation.phase == .waiting || presentation.phase == .composing || (presentation.phase == .releasing && !presentation.deliveryCommitted) ? "Cancel reply" : "Close")
                         .accessibilityIdentifier("dismissNotificationReply")
                 }
             }

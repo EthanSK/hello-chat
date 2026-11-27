@@ -22,19 +22,31 @@ struct NotificationReplyOrigin {
     let inode: UInt64
     let offset: UInt64
     let home: URL
+    let database: URL
 
     /// Retain only a digest of the exact app-generated message, not another copy of reply text.
     /// A marker mentioned inside a human message or mixed content is never our own arrival. — GPT-6.1 Sol
     struct ReplyIdentity: Equatable {
         fileprivate let digest: Data
         fileprivate let bytes: Int
+        private let relayThread: UUID?
         fileprivate init(message: String) {
             let data = Data(message.utf8)
-            digest = Data(SHA256.hash(data: data)); bytes = data.count
+            digest = Data(SHA256.hash(data: data)); bytes = data.count; relayThread = nil
         }
+        private init(digest: Data, bytes: Int, relayThread: UUID) {
+            self.digest = digest; self.bytes = bytes; self.relayThread = relayThread
+        }
+
+        /// Bind the same complete envelope to its one app-owned throwaway chat, without retaining text. — GPT-6.1 Sol
+        func acceptingRelay(from thread: UUID) -> Self {
+            .init(digest: digest, bytes: bytes, relayThread: thread)
+        }
+
         fileprivate func matches(_ row: [String: Any]) -> Bool {
             guard let payload = row["payload"] as? [String: Any],
                   ["images", "local_images", "text_elements"].allSatisfy({ payload[$0] == nil || (payload[$0] as? [Any])?.isEmpty == true }) else { return false }
+            if let relayThread { return matchesRelay(row, payload: payload, from: relayThread) }
             let text: String?
             if row["type"] as? String == "event_msg", payload["type"] as? String == "user_message" {
                 text = payload["message"] as? String
@@ -44,6 +56,32 @@ struct NotificationReplyOrigin {
                 text = content[0]["text"] as? String
             } else { return false }
             guard let text, text.utf8.count == bytes else { return false }
+            return Data(SHA256.hash(data: Data(text.utf8))) == digest
+        }
+
+        /// Accept only the native host-tool record and its complete, canonically escaped delegation body. — GPT-6.1 Sol
+        private func matchesRelay(_ row: [String: Any], payload: [String: Any], from thread: UUID) -> Bool {
+            guard row["type"] as? String == "response_item",
+                  payload["type"] as? String == "function_call_output",
+                  payload["namespace"] as? String == "codex_app",
+                  payload["name"] as? String == "send_message_to_thread",
+                  payload["role"] == nil, payload["content"] == nil, payload["message"] == nil,
+                  let recordID = payload["id"] as? String, !recordID.isEmpty,
+                  let output = payload["output"] as? String else { return false }
+            let prefix = "<codex_delegation>\n  <source_thread_id>\(thread.uuidString.lowercased())</source_thread_id>\n  <input>"
+            let suffix = "</input>\n</codex_delegation>"
+            guard output.utf8.count <= bytes * 5 + prefix.utf8.count + suffix.utf8.count,
+                  output.hasPrefix(prefix), output.hasSuffix(suffix) else { return false }
+            let encoded = String(output.dropFirst(prefix.count).dropLast(suffix.count))
+            // Same one-pass entity order as Desktop's delegation reader; never parse markup or resolve entities. — GPT-6.1 Sol
+            let text = encoded.replacingOccurrences(of: "&lt;", with: "<")
+                .replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "&amp;", with: "&")
+            guard text.utf8.count == bytes else { return false }
+            let canonical = text.replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            guard canonical == encoded else { return false }
             return Data(SHA256.hash(data: Data(text.utf8))) == digest
         }
     }
@@ -62,7 +100,7 @@ struct NotificationReplyOrigin {
         defer { sqlite3_close(db) }
         sqlite3_busy_timeout(db, 100)
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT rollout_path FROM threads WHERE id=?", -1, &statement, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT rollout_path FROM threads WHERE id=? AND archived=0", -1, &statement, nil) == SQLITE_OK,
               let statement else { throw Failure.originUnavailable }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, thread.uuidString.lowercased(), -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
@@ -76,7 +114,7 @@ struct NotificationReplyOrigin {
         var info = stat()
         guard fstat(handle.fileDescriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw Failure.originUnavailable }
         let origin = Self(thread: thread, turn: turn, question: question, rollout: file, inode: UInt64(info.st_ino),
-                          offset: UInt64(info.st_size), home: home)
+                          offset: UInt64(info.st_size), home: home, database: database)
         try origin.validateQuestion()
         if let turn {
             // A delayed completion from an earlier turn must not capture an answer to newer work. — GPT-6.1 Sol
@@ -95,6 +133,20 @@ struct NotificationReplyOrigin {
     }
 
     func validate(reply: ReplyIdentity? = nil) throws {
+        // Never wake/unarchive a source the user has archived while a reply was pending. — GPT-6.1 Sol
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK, let db else {
+            if let db { sqlite3_close(db) }; throw Failure.originUnavailable
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 100)
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT rollout_path FROM threads WHERE id=? AND archived=0", -1, &statement, nil) == SQLITE_OK,
+              let statement else { throw Failure.originUnavailable }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, thread.uuidString.lowercased(), -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        guard sqlite3_step(statement) == SQLITE_ROW, let raw = sqlite3_column_text(statement, 0),
+              String(cString: raw) == rollout.path else { throw Failure.originStale }
         try validateQuestion()
         for row in try appendedRows() {
             guard let payload = row["payload"] as? [String: Any] else { continue }
@@ -128,6 +180,14 @@ struct NotificationReplyOrigin {
                   validate: (() throws -> Void)? = nil, valid: () -> Bool, run: ([String]) throws -> Int32) throws {
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, body.utf8.count <= 32_768,
               spokenText.count <= 2048 else { throw Failure.invalidContent }
+        try reserve(event: event, claims: claims, validate: validate, valid: valid)
+        let message = try candidateMessage(event: event, spokenText: spokenText, body: body)
+        guard valid() else { throw Failure.originUnavailable }
+        guard try run([executable.path, "queue", "--thread", thread.uuidString.lowercased(), "--message=" + message]) == 0 else { throw Failure.submissionUnknown }
+    }
+
+    // MOVED FROM dispatch: one durable event claim now also covers blank-fork relay provisioning. — GPT-6.1 Sol
+    func reserve(event: UUID, claims: URL, validate: (() throws -> Void)? = nil, valid: () -> Bool) throws {
         if let validate { try validate() } else { try self.validate() }
         guard valid() else { throw Failure.originUnavailable }
         try FileManager.default.createDirectory(at: claims, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -137,10 +197,7 @@ struct NotificationReplyOrigin {
         defer { close(fd) }
         let metadata = Data((thread.uuidString.lowercased() + "\n").utf8)
         guard metadata.withUnsafeBytes({ write(fd, $0.baseAddress, $0.count) }) == metadata.count, fsync(fd) == 0 else { throw Failure.submissionUnknown }
-        // A claim stays uncertain after a crash or submission failure; no second writer or automatic retry. — GPT-6.1 Sol
-        let message = try candidateMessage(event: event, spokenText: spokenText, body: body)
-        guard valid() else { throw Failure.originUnavailable }
-        guard try run([executable.path, "queue", "--thread", thread.uuidString.lowercased(), "--message=" + message]) == 0 else { throw Failure.submissionUnknown }
+        // Crashes/unknown submissions retain this claim; neither the original queue nor a second relay may resend. — GPT-6.1 Sol
     }
 
     private func appendedRows() throws -> [[String: Any]] {
@@ -159,7 +216,7 @@ struct NotificationReplyOrigin {
         }
     }
     private static func marker(_ event: UUID) -> String { "[H CHAT NOTIFICATION REPLY \(event.uuidString.lowercased())]" }
-    private func candidateMessage(event: UUID, spokenText: String, body: String) throws -> String {
+    func candidateMessage(event: UUID, spokenText: String, body: String) throws -> String {
         let context: [String: Any] = ["eventID": event.uuidString.lowercased(), "originThreadID": thread.uuidString.lowercased(),
                                     "originTurnID": turn?.uuidString.lowercased() ?? "", "questionID": question,
                                     "spokenMessage": spokenText, "observedReply": body, "finish": "end-reply"]

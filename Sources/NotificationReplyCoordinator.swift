@@ -35,7 +35,7 @@ import Foundation
 @MainActor final class NotificationReplyCoordinator: ObservableObject {
     enum Readiness: String { case ready, disabled, listeningOff, listenerUnavailable, voiceActive, voiceUnknown, desktopUnavailable, codexUnavailable }
     enum Failure: String, Error { case invalidEvent, busy, differentInstance, unavailable }
-    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = ""; var commandSeconds = NotificationReplyCore.Limits().commandSeconds; var confirmingReply = false; var canSayStopSpeaking = false }
+    struct Presentation { let event: UUID; let phase: NotificationReplyCore.Phase; let reason: String; let spokenText: String; var replyText = ""; var commandSeconds = NotificationReplyCore.Limits().commandSeconds; var confirmingReply = false; var canSayStopSpeaking = false; var deliveryPending = false; var deliveryCommitted = false }
     let settings: NotificationReplySettings
     let instance = UUID()
     @Published private(set) var lastPhase: NotificationReplyCore.Phase?
@@ -59,7 +59,14 @@ import Foundation
     private var originTasks: [UUID: Task<Void, Never>] = [:]
     private var originAgain: Set<UUID> = []
     private var deliveryTasks: [UUID: Task<Void, Never>] = [:]
+    private var relayCleanupTasks: [UUID: Task<Void, Never>] = [:]
     var queueCommand: ([String]) throws -> Int32 = NotificationReplyCoordinator.runQueue
+    var provisionRelay: (NotificationReplyOrigin, URL, () -> Bool) throws -> NotificationReplyRelay = NotificationReplyRelay.prepare
+    var wakeRelay: (Int32, UUID) async -> Bool = { pid, id in
+        guard let link = URL(string: "codex://threads/wake/" + id.uuidString.lowercased()) else { return false }
+        return await VoiceBridge.openChat(pid, link, activate: false)
+    }
+    var archiveRelay: (NotificationReplyRelay, URL) throws -> Void = { try $0.archive(executable: $1) }
     var clock: () -> Double = { Diagnostics.now }
     var wallClock: () -> Double = { Date().timeIntervalSince1970 }
     var captureOrigin: (UUID, UUID?, String) async throws -> NotificationReplyOrigin = { thread, turn, question in
@@ -75,7 +82,7 @@ import Foundation
     private var now: Double { clock() }
     var interceptsSpeech: Bool { active.flatMap { sessions[$0]?.core.interceptsSpeech } ?? false }
     var isComposing: Bool { active.flatMap { sessions[$0]?.core.phase } == .composing }
-    var hasOpenAttempt: Bool { sessions.values.contains { !$0.releaseAcknowledged } || !deliveryTasks.isEmpty }
+    var hasOpenAttempt: Bool { sessions.values.contains { !$0.releaseAcknowledged || ($0.relay != nil && $0.core.canDispatch) } || !deliveryTasks.isEmpty }
     // Ethan permits Reply while Agent Flow records. Speech suppression belongs to the speaker;
     // this existing shared listener still respects Voice, desktop, settings and frame-loss guards. — GPT-6.1 Sol
     var readiness: Readiness { !settings.enabled ? .disabled : currentReadiness() }
@@ -88,9 +95,11 @@ import Foundation
         self.settings = settings ?? NotificationReplySettings()
         files = NotificationReplyFiles(directory: directory)
         self.settings.changed = { [weak self] in self?.cancelAll("settings-changed") }
+        recoverRelayCleanup()
     }
 
     func prepare(event: UUID, thread: UUID, turn: UUID?, question: String, spokenText: String, manualFinish: Bool = false, stopSpeaking: Bool = false) async throws -> [String: Any] {
+        recoverRelayCleanup()
         guard !spokenText.isEmpty, spokenText.count <= 2048, question.count <= 160 else { throw Failure.invalidEvent }
         if let existing = sessions[event] {
             guard existing.thread == thread, existing.turn == turn, existing.question == question,
@@ -187,7 +196,7 @@ import Foundation
         let session = try selected(event, instance)
         guard !session.releaseAcknowledged else { return snapshot(session) }
         session.releaseAcknowledged = true
-        if shown == event { shown = nil; showPresentation?(nil) }
+        if shown == event, !released || !session.core.canDispatch { shown = nil; showPresentation?(nil) }
         guard released, session.core.canDispatch, readiness == .ready, let origin = session.origin,
               let body = session.core.body, let desktop = currentDesktop() else {
             if session.core.interceptsSpeech { session.core.cancel(released ? "media-release-before-dispatch" : "media-release-unconfirmed") }
@@ -195,23 +204,52 @@ import Foundation
         }
         let claims = files.directory.appendingPathComponent("dispatch-claims"), lease = session.lease
         let executable = desktop.executable, pid = desktop.pid
-        let spokenText = session.spokenText, run = queueCommand, validate = validateOrigin, wall = wallClock
+        let spokenText = session.spokenText, validate = validateOrigin, wall = wallClock
+        let provision = provisionRelay
+        // The short client callback must admit the durable transition before expiry. The app then owns
+        // the existing finite arrival budget; the later host send gets its own fresh guarded request. — GPT-6.1 Sol
+        let deadline = wall() + 60
         session.replyIdentity = try origin.replyIdentity(event: event, spokenText: spokenText, body: body)
-        // No body leaves the app before the exact speaker/FIFO has released and a durable claim is reserved. — GPT-6.1 Sol
+        // Reserve before provisioning; the original chat is NEVER queued as a fallback for an uncertain relay. — GPT-6.1 Sol
         deliveryTasks[event] = Task { [weak self, weak session] in
-            let result: Result<Void, Error> = await Task.detached(priority: .utility) {
+            let result: Result<NotificationReplyRelay, Error> = await Task.detached(priority: .utility) {
                 Result {
-                    try origin.dispatch(event: event, spokenText: spokenText, body: body, executable: executable, claims: claims,
-                        validate: { try validate(origin) },
-                        valid: { lease.valid && wall() < expiresAt && kill(pid, 0) == 0 }, run: run)
+                    let valid = { lease.valid && wall() < deadline && kill(pid, 0) == 0 }
+                    try origin.reserve(event: event, claims: claims, validate: { try validate(origin) }, valid: {
+                        valid() && wall() < expiresAt
+                    })
+                    return try provision(origin, executable, valid)
                 }
             }.value
             guard let self, let session, self.sessions[event] === session else { return }
             switch result {
-            case .success:
-                session.core.queued()
-                self.publish(session) // Queue acceptance is authoritative even if navigation fails.
-                await self.openAcceptedOrigin(session, origin: origin, desktop: desktop)
+            case .success(let relay):
+                session.relay = .init(relay: relay, executable: executable, pid: pid, expires: deadline)
+                session.replyIdentity = session.replyIdentity?.acceptingRelay(from: relay.thread)
+                do {
+                    guard lease.valid, self.readiness == .ready, wall() < deadline,
+                          let current = self.currentDesktop(), current.pid == pid, current.executable == executable,
+                          let appExecutable = Bundle.main.executableURL else { throw Failure.unavailable }
+                    try validate(origin)
+                    let prompt = try relay.brokerPrompt(event: event, instance: self.instance, appExecutable: appExecutable, expiresAt: deadline)
+                    let relay = relay.bindingBroker(prompt)
+                    session.relay = .init(relay: relay, executable: executable, pid: pid, expires: deadline)
+                    self.installRelayObserver(session)
+                    try self.files.recordRelay(relay, event: event, executable: executable)
+                    let run = self.queueCommand
+                    try await Task.detached(priority: .utility) {
+                        guard lease.valid, wall() < deadline else { throw Failure.unavailable }
+                        guard try run([executable.path, "queue", "--thread", relay.thread.uuidString.lowercased(), "--message=" + prompt]) == 0 else {
+                            throw NotificationReplyOrigin.Failure.submissionUnknown
+                        }
+                    }.value
+                    guard lease.valid, wall() < deadline, self.readiness == .ready,
+                          let latest = self.currentDesktop(), latest.pid == pid, latest.executable == executable,
+                          await self.wakeRelay(pid, relay.thread) else { throw NotificationReplyRelay.Failure.relayWakeUnknown }
+                    // This accepted a broker prompt, not the reply at its destination. Keep that distinction until actual arrival. — GPT-6.1 Sol
+                } catch {
+                    session.lease.cancel(); session.core.cancel("relay-start-unconfirmed", unavailable: true)
+                }
             case .failure(let error): session.core.cancel(Self.reason(error), unavailable: true)
             }
             self.deliveryTasks[event] = nil
@@ -219,6 +257,34 @@ import Foundation
             self.checkOrigin(session)
         }
         return snapshot(session)
+    }
+
+    /// The relay may obtain the exact envelope once, at the host-send boundary; never from its initial prompt. — GPT-6.1 Sol
+    func claimRelaySend(event: UUID, instance: UUID, relayThread: UUID, expiresAt: Double) async throws -> [String: Any] {
+        let session = try selected(event, instance)
+        guard let relay = session.relay, relay.relay.thread == relayThread, !relay.sendClaimed,
+              session.releaseAcknowledged, session.core.canDispatch, session.lease.valid,
+              readiness == .ready, !session.presentationDismissed, wallClock() < relay.expires,
+              wallClock() < expiresAt, let origin = session.origin, let body = session.core.body,
+              let current = currentDesktop(), current.pid == relay.pid, current.executable == relay.executable else { throw Failure.unavailable }
+        let validate = validateSubmittedOrigin, identity = session.replyIdentity
+        guard let identity else { throw Failure.unavailable }
+        try await Task.detached(priority: .utility) {
+            try validate(origin, identity)
+            guard try relay.relay.isActiveBroker() else { throw Failure.unavailable }
+        }.value
+        // Actor suspension can admit a cancellation, different process, or a competing claim. Recheck before disclosing data. — GPT-6.1 Sol
+        guard sessions[event] === session, session.relay === relay, !relay.sendClaimed, session.lease.valid,
+              session.core.canDispatch, readiness == .ready, !session.presentationDismissed,
+              wallClock() < min(relay.expires, expiresAt), let latest = currentDesktop(),
+              latest.pid == relay.pid, latest.executable == relay.executable else { throw Failure.unavailable }
+        try files.claimRelaySend(event)
+        relay.sendClaimed = true
+        publish(session)
+        return ["eventID": event.uuidString.lowercased(), "instance": instance.uuidString.lowercased(),
+                "relayThreadID": relayThread.uuidString.lowercased(), "threadID": session.thread.uuidString.lowercased(),
+                "message": try origin.candidateMessage(event: event, spokenText: session.spokenText, body: body),
+                "sendBeforeWall": min(relay.expires, expiresAt)]
     }
 
     func recognized(_ recognition: NotificationReplyCore.Recognition) {
@@ -238,7 +304,7 @@ import Foundation
         session.presentationDismissed = true
         if shown == event { shown = nil; showPresentation?(nil) }
         // Hiding cannot retract a queue already in flight; the eventual receipt remains authoritative. — GPT-6.1 Sol
-        if deliveryTasks[event] == nil, session.core.interceptsSpeech { cancelSession(session, reason: "user-dismissed") }
+        if session.core.interceptsSpeech { cancelSession(session, reason: "user-dismissed") }
     }
     func cancelAll(_ reason: String) {
         for session in sessions.values where session.core.interceptsSpeech || session.core.canDispatch || deliveryTasks[session.event] != nil {
@@ -250,12 +316,16 @@ import Foundation
         timer?.invalidate(); timer = nil
         for task in originTasks.values { task.cancel() }; originTasks.removeAll()
         for task in deliveryTasks.values { await task.value }
+        for task in relayCleanupTasks.values { await task.value }
         showPresentation?(nil); await files.flush()
     }
     private func cancelSession(_ session: Session, reason: String) {
         session.lease.cancel()
         // An in-flight queue command may already have succeeded. Its receipt decides queued/unknown; cancellation cannot promise unsent. — GPT-6.1 Sol
-        if deliveryTasks[session.event] == nil { session.core.cancel(reason) }
+        if deliveryTasks[session.event] == nil {
+            session.core.cancel(session.relay?.sendClaimed == true ? "relay-send-unconfirmed" : reason,
+                                unavailable: session.relay?.sendClaimed == true)
+        }
         publish(session)
     }
 
@@ -276,6 +346,19 @@ import Foundation
         var releaseRequestedAt: Double?
         var replyIdentity: NotificationReplyOrigin.ReplyIdentity?
         var navigationAttempted = false
+        final class Relay {
+            let relay: NotificationReplyRelay
+            let executable: URL
+            let pid: Int32
+            let expires: Double
+            var sendClaimed = false, checkingCleanup = false, cleanupFinished = false
+            var observer: DispatchSourceFileSystemObject?
+            init(relay: NotificationReplyRelay, executable: URL, pid: Int32, expires: Double) {
+                self.relay = relay; self.executable = executable; self.pid = pid; self.expires = expires
+            }
+            deinit { observer?.cancel() }
+        }
+        var relay: Relay?
         var revision = 0, signature = ""
         var presentedTextRevision = -1
         var observers: [DispatchSourceFileSystemObject] = []
@@ -322,7 +405,7 @@ import Foundation
         if session.core.releaseRequested, active == session.event {
             active = nil; resetRecognition?()
         }
-        let signature = session.core.phase.rawValue + ":" + session.core.reason + ":" + String(session.core.confirmingReply)
+        let signature = session.core.phase.rawValue + ":" + session.core.reason + ":" + String(session.core.confirmingReply) + ":" + String(session.releaseAcknowledged) + ":" + String(session.relay?.sendClaimed ?? false)
         guard session.signature != signature else {
             if session.core.phase == .composing, session.presentedTextRevision != session.core.textRevision {
                 present(session)
@@ -337,6 +420,9 @@ import Foundation
             "confirming_start": String(session.core.confirmingReply)])
         outcome?(session.event, session.core.phase, session.core.reason, first)
         present(session)
+        if session.releaseAcknowledged, !session.core.canDispatch, shown == session.event {
+            shown = nil; showPresentation?(nil)
+        }
         if session.core.phase == .queued {
             session.queuedAt = now
             if session.releaseAcknowledged { session.spokenText = "" }
@@ -344,11 +430,12 @@ import Foundation
         if [.cancelled, .unavailable, .delivered].contains(session.core.phase) { retireHeavyState(session) }
     }
     private func present(_ session: Session) {
-        guard !session.releaseAcknowledged, !session.presentationDismissed, active == nil || active == session.event else { return }
+        guard (!session.releaseAcknowledged || session.core.canDispatch), !session.presentationDismissed, active == nil || active == session.event else { return }
         session.presentedTextRevision = session.core.textRevision; shown = session.event
         showPresentation?(.init(event: session.event, phase: session.core.phase, reason: session.core.reason,
             spokenText: session.spokenText, replyText: session.core.phase == .composing ? session.core.draftText : "", commandSeconds: session.core.limits.commandSeconds,
-            confirmingReply: session.core.confirmingReply, canSayStopSpeaking: session.core.canSayStopSpeaking))
+            confirmingReply: session.core.confirmingReply, canSayStopSpeaking: session.core.canSayStopSpeaking,
+            deliveryPending: session.releaseAcknowledged && session.core.canDispatch, deliveryCommitted: session.relay?.sendClaimed ?? false))
     }
     private func startTimer() {
         guard timer == nil else { return }
@@ -359,6 +446,12 @@ import Foundation
         for session in sessions.values {
             if session.core.interceptsSpeech, readiness != .ready { cancelSession(session, reason: readiness.rawValue) }
             session.core.tick(now: now); publish(session)
+            if let relay = session.relay, wallClock() >= relay.expires {
+                if session.core.canDispatch { cancelSession(session, reason: "relay-send-unconfirmed") }
+                if !relay.cleanupFinished { checkRelayCleanup(session) }
+                relay.observer?.cancel(); relay.observer = nil
+                retireHeavyState(session)
+            }
             if session.started == nil, session.core.opportunityAt == nil, session.core.releaseRequested, !session.releaseAcknowledged, now - session.core.preparedAt > 10 {
                 session.releaseAcknowledged = true
                 if shown == session.event { shown = nil; showPresentation?(nil) }
@@ -373,7 +466,10 @@ import Foundation
                 if shown == session.event { shown = nil; showPresentation?(nil) }
             }
         }
-        let observingArrival = sessions.values.contains { $0.core.phase == .queued && $0.origin != nil }
+        let observingArrival = sessions.values.contains { session in
+            (session.core.phase == .queued && session.origin != nil) ||
+            (session.relay.map { wallClock() < $0.expires && (!$0.cleanupFinished || session.origin != nil) } ?? false)
+        }
         if active == nil, deliveryTasks.isEmpty, !observingArrival, sessions.values.allSatisfy({ $0.releaseAcknowledged }) {
             timer?.invalidate(); timer = nil
         }
@@ -393,14 +489,83 @@ import Foundation
             session.observers.append(source); source.resume()
         }
     }
+    private func installRelayObserver(_ session: Session) {
+        guard let relay = session.relay else { return }
+        let fd = open(relay.relay.rollout.path, O_EVTONLY | O_NOFOLLOW)
+        guard fd >= 0 else { cancelSession(session, reason: "relay-watch-unavailable"); return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: [.write, .extend, .delete, .rename, .revoke], queue: .main)
+        source.setCancelHandler { close(fd) }
+        source.setEventHandler { [weak self, weak session] in if let session { self?.checkRelayCleanup(session) } }
+        relay.observer = source; source.resume()
+    }
+    private func checkRelayCleanup(_ session: Session) {
+        guard let relay = session.relay, !relay.checkingCleanup, !relay.cleanupFinished else { return }
+        relay.checkingCleanup = true
+        let archive = archiveRelay
+        relayCleanupTasks[session.event] = Task { [weak self, weak session] in
+            let result: Result<NotificationReplyRelay.Ownership, Error> = await Task.detached(priority: .utility) {
+                Result {
+                    let owner = try relay.relay.ownership()
+                    guard owner == .completed else { return owner }
+                    do { try archive(relay.relay, relay.executable) }
+                    catch NotificationReplyRelay.Failure.relayTakenOver { return .relinquished }
+                    return .completed
+                }
+            }.value
+            guard let self, let session else { return }
+            self.relayCleanupTasks[session.event] = nil
+            relay.checkingCleanup = false
+            if case .success(let owner) = result, owner != .running {
+                relay.cleanupFinished = true; relay.observer?.cancel(); relay.observer = nil
+                self.files.forgetRelay(session.event)
+                if owner == .relinquished { self.cancelSession(session, reason: "relay-no-longer-owned") }
+                self.checkOrigin(session)
+            }
+            if case .failure = result {
+                Diagnostics.shared.record("notification.reply.relay_archive_unconfirmed", info: ["notification_event": session.event.uuidString])
+            }
+            if self.wallClock() >= relay.expires { self.retireHeavyState(session) }
+        }
+    }
+    private var recoveringRelays = false
+    private func recoverRelayCleanup() {
+        let directory = files.directory.appendingPathComponent("dispatch-claims")
+        guard !recoveringRelays,
+              ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).contains(where: { $0.hasSuffix(".relay.json") }),
+              let desktop = currentDesktop() else { return }
+        let live = Set(sessions.values.compactMap { $0.relay?.relay.thread })
+        recoveringRelays = true
+        Task { [weak self] in
+            await Task.detached(priority: .utility) {
+                // Only terminal, durably registered owned relays are recoverable; this path can NEVER send a reply. — GPT-6.1 Sol
+                let candidates = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+                let deadline = ProcessInfo.processInfo.systemUptime + 8
+                for path in candidates.filter({ $0.lastPathComponent.hasSuffix(".relay.json") }).prefix(96) {
+                    guard ProcessInfo.processInfo.systemUptime < deadline else { break }
+                    guard let record = try? NotificationReplyRelay.CleanupRecord.read(path), !live.contains(record.relay.thread),
+                          record.executable == desktop.executable else { continue }
+                    do {
+                        let owner = try record.relay.ownership()
+                        if owner == .relinquished { try? FileManager.default.removeItem(at: path) }
+                        else if owner == .completed {
+                            do { try record.relay.archive(executable: desktop.executable); try? FileManager.default.removeItem(at: path) }
+                            catch NotificationReplyRelay.Failure.relayTakenOver { try? FileManager.default.removeItem(at: path) }
+                        }
+                    } catch { if record.alreadyArchived { try? FileManager.default.removeItem(at: path) } }
+                }
+            }.value
+            self?.recoveringRelays = false
+        }
+    }
     func waitForPendingDelivery() async {
         for task in deliveryTasks.values { await task.value }
+        for task in relayCleanupTasks.values { await task.value }
         await files.flush()
     }
     private func checkOrigin(_ session: Session) {
         guard let origin = session.origin else { return }
         guard originTasks[session.event] == nil else { originAgain.insert(session.event); return }
-        let queued = session.core.phase == .queued
+        let queued = session.core.phase == .queued || session.relay?.sendClaimed == true
         let event = session.event
         let reply = session.replyIdentity, validate = validateSubmittedOrigin
         originTasks[session.event] = Task { [weak self, weak session] in
@@ -414,7 +579,14 @@ import Foundation
             guard let self, let session else { return }
             self.originTasks[session.event] = nil
             switch result {
-            case .success(let arrived): if arrived { session.core.delivered() }
+            case .success(let arrived):
+                if arrived {
+                    if let relay = session.relay, relay.sendClaimed {
+                        // Saved exact host-tool arrival is authoritative even if a later cancellation made navigation ineligible. — GPT-6.1 Sol
+                        session.core.relayDelivered()
+                        await self.openAcceptedOrigin(session, origin: origin, desktop: (relay.executable, relay.pid))
+                    } else { session.core.delivered() }
+                }
             case .failure(let error):
                 // A pre-dispatch check may finish after our own exact message arrives.
                 // Recheck with its new digest; do not revoke another cancellation reason. — GPT-6.1 Sol
@@ -448,6 +620,10 @@ import Foundation
         }
     }
     private func retireHeavyState(_ session: Session) {
+        session.spokenText = ""
+        // A claimed host send may arrive after cancellation. Retain only its digest and existing watcher until the same finite bound. — GPT-6.1 Sol
+        if let relay = session.relay, relay.sendClaimed, wallClock() < relay.expires,
+           session.core.phase != .delivered { return }
         session.observers.forEach { $0.cancel() }; session.observers.removeAll()
         originTasks[session.event]?.cancel(); originTasks[session.event] = nil; originAgain.remove(session.event)
         session.spokenText = ""; session.origin = nil; session.replyIdentity = nil
@@ -482,6 +658,25 @@ private final class NotificationReplyFiles {
     private let queue = DispatchQueue(label: "HelloChat.notification-reply-files", qos: .utility)
     private var revisions: [UUID: Int] = [:]
     init(directory: URL) { self.directory = directory }
+    func recordRelay(_ relay: NotificationReplyRelay, event: UUID, executable: URL) throws {
+        let path = directory.appendingPathComponent("dispatch-claims/" + event.uuidString.lowercased() + ".relay.json")
+        let bytes = try JSONEncoder().encode(NotificationReplyRelay.CleanupRecord(relay: relay, executable: executable))
+        let fd = open(path.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw NotificationReplyCoordinator.Failure.unavailable }
+        defer { close(fd) }
+        guard bytes.withUnsafeBytes({ Darwin.write(fd, $0.baseAddress, $0.count) }) == bytes.count, fsync(fd) == 0 else { throw NotificationReplyCoordinator.Failure.unavailable }
+    }
+    func forgetRelay(_ event: UUID) {
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent("dispatch-claims/" + event.uuidString.lowercased() + ".relay.json"))
+    }
+    func claimRelaySend(_ event: UUID) throws {
+        let claims = directory.appendingPathComponent("dispatch-claims")
+        try FileManager.default.createDirectory(at: claims, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fd = open(claims.appendingPathComponent(event.uuidString.lowercased() + ".relay-send").path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw NotificationReplyCoordinator.Failure.unavailable }
+        defer { close(fd) }
+        guard fsync(fd) == 0 else { throw NotificationReplyCoordinator.Failure.unavailable }
+    }
     func path(_ event: UUID) -> URL { directory.appendingPathComponent(event.uuidString.lowercased() + ".json") }
     func write(_ object: [String: Any], event: UUID, revision: Int) {
         queue.async { [self] in

@@ -80,18 +80,24 @@ struct VoiceBridge {
     }
 
     // Shared native deep-link navigation, previously ShowVoiceCommand.openThread. — GPT-6.1 Sol
+    // Preserve the original function-value signature used by existing Voice callers. — GPT-6.1 Sol
     @MainActor static func openChat(_ pid: Int32?, _ link: URL) async -> Bool {
+        await openChat(pid, link, activate: true)
+    }
+    @MainActor static func openChat(_ pid: Int32?, _ link: URL, activate: Bool) async -> Bool {
         guard DesktopSessionState.current == .interactive, !Task.isCancelled,
               let url = try? applicationURL() else { return false }
         if let pid, currentApplication()?.processIdentifier != pid { return false }
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
+        configuration.activates = activate
         configuration.createsNewApplicationInstance = false
         do {
             let opened = try await NSWorkspace.shared.open([link], withApplicationAt: url, configuration: configuration)
             guard opened.bundleIdentifier == "com.openai.codex", !opened.isTerminated,
                   opened.bundleURL == url, pid == nil || opened.processIdentifier == pid,
                   !Task.isCancelled, DesktopSessionState.current == .interactive else { return false }
+            // The owned relay wake URL is a background route, not a request to bring Codex forward. — GPT-6.1 Sol
+            if !activate { return true }
             let foreground = await AppActivation.request(pid: opened.processIdentifier,
                 bundleID: "com.openai.codex", url: url, requireFrontmost: true)
             Diagnostics.shared.record("voice.chat.navigation", numbers: ["target_pid": Double(opened.processIdentifier)],
