@@ -1,5 +1,12 @@
 # Hello Chat engineering notes
 
+## 27 November 2026 — Command microphone priority order
+
+- Keep the optional order with `MicrophoneInputs`, alongside the existing single UID. Default it off without migration writes, retain disconnected UID/name rows, use the first connected exact UID, and fall back to H Chat's existing system-default rule. Turning it off restores the saved single choice. Agent Flow's list is the reference; its built-in-first and model-UID substitution policies are not H Chat's fallback policy.
+- CoreAudio can reuse a numeric device ID for a different permanent UID. Compare both when deciding to restart capture, preserving idempotence for name-only changes. The actual-class inert regression changed UID with ID 2 reused: the old callback count was zero; the corrected count is one. No physical unplug or microphone capture was used.
+- An explicit agent microphone selection must take over from priority mode through the same owner. Include the saved priority configuration in the existing settings revision so newer UI edits reject stale agent writes. Actual API tests cover that rejection and a valid single-input selection; the native control operation names and schemas remain unchanged.
+- Keep the editor and device-change preview on injected inventories and temporary preferences for display-only checks. Native renders and fake disconnect/reconnect checks establish UI and selection behavior, separately from physical microphone handoff.
+
 ## 27 November 2026 — Retain the failed control read and protect private update order
 
 - A notification cancellation labelled `voiceUnknown` identifies the guard decision, not the underlying native failure or a proven active call. Preserve the existing snapshot's bounded error/numeric metadata at the collector, without another read or transcript logging. A later complete scan cannot explain an earlier incomplete one; keep the genuine unknown/active gate intact and distinguish diagnostic deployment from a verified cancellation repair.

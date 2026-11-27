@@ -926,7 +926,13 @@ import SwiftUI
             guard let input = self?.inputs.selected else { throw BridgeError.message("Selected microphone is unavailable. Choose a microphone on Home.") }
             return input.id
         }
-        inputs.onRouteChange = { [weak self] in self?.restartMicrophone(settle: true) }
+        inputs.onRouteChange = { [weak self] in
+            guard let self else { return }
+            // Logs which rule chose the new command microphone, never its name or UID. — Claude Opus 5.5
+            Diagnostics.shared.record("speech.input.route_changed", info: ["rule": self.inputs.routeRule.rawValue,
+                "available": String(self.inputs.selected != nil)])
+            self.restartMicrophone(settle: true)
+        }
         listener.onConfigurationChange = { [weak self] in self?.restartMicrophone(settle: true) }
         dock.onChange = { [weak self] in
             guard let self else { return }

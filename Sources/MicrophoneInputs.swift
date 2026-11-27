@@ -16,25 +16,169 @@ enum MicrophoneRoute {
     static func resolve(uid: String, devices: [MicrophoneInput], systemDefault: AudioDeviceID) -> MicrophoneInput? {
         uid.isEmpty ? devices.first { $0.id == systemDefault } : devices.first { $0.uid == uid }
     }
+    /// Priority order uses the first connected saved microphone, matched by its stable UID. With none
+    /// connected H Chat keeps its system-default rule; Agent Flow uses a built-in-first fallback.
+    /// It never substitutes a different device with the same model UID. — Claude Opus 5.5; GPT-6.1 Sol
+    static func resolve(priority: [MicrophonePriority.Entry], devices: [MicrophoneInput], systemDefault: AudioDeviceID) -> MicrophoneInput? {
+        firstConnected(priority, devices: devices) ?? resolve(uid: "", devices: devices, systemDefault: systemDefault)
+    }
+    static func firstConnected(_ priority: [MicrophonePriority.Entry], devices: [MicrophoneInput]) -> MicrophoneInput? {
+        for entry in priority {
+            if let input = devices.first(where: { $0.uid == entry.uid }) { return input }
+        }
+        return nil
+    }
+    /// Device numbers can be reused after a disconnect. Compare the permanent UID too, while a
+    /// name-only change keeps capture running. Found and fixed by GPT-6.1 Sol.
+    static func sameInput(_ lhs: MicrophoneInput?, _ rhs: MicrophoneInput?) -> Bool {
+        lhs?.id == rhs?.id && lhs?.uid == rhs?.uid
+    }
+    /// Which rule chose the command microphone. Home and diagnostics use it, so logs never need the
+    /// device's name or UID. — Claude Opus 5.5
+    enum Rule: String {
+        case systemDefault = "system_default"
+        case chosen
+        case priorityOrder = "priority_order"
+        case priorityFallback = "priority_fallback"
+    }
+}
+
+/// Ethan's “priority order” for the Command microphone, translated from Agent Flow's Audio Input
+/// Priority Order. It's off by default, so an upgrade keeps the current route. The single
+/// `inputDeviceUID` choice stays saved separately and applies again when this is turned off.
+/// Disconnected rows keep their UID and last known name. — Claude Opus 5.5
+struct MicrophonePriority: Equatable {
+    struct Entry: Identifiable, Equatable {
+        let uid: String
+        var name: String
+        var id: String { uid }
+    }
+    var enabled = false
+    private(set) var entries: [Entry] = []
+
+    init(enabled: Bool = false, entries: [Entry] = []) {
+        self.enabled = enabled
+        self.entries = Self.sanitized(entries)
+    }
+    /// Reads `["enabled": Bool, "devices": [["uid": String, "name": String]]]`. A malformed value is
+    /// off and empty; malformed rows are skipped, and a repeated UID keeps its first place. — Claude Opus 5.5
+    init(saved: Any?) {
+        let saved = saved as? [String: Any] ?? [:]
+        let rows = (saved["devices"] as? [Any] ?? []).compactMap { row -> Entry? in
+            guard let row = row as? [String: Any], let uid = row["uid"] as? String else { return nil }
+            return Entry(uid: uid, name: row["name"] as? String ?? "")
+        }
+        self.init(enabled: saved["enabled"] as? Bool ?? false, entries: rows)
+    }
+    var saved: [String: Any] {
+        ["enabled": enabled, "devices": entries.map { ["uid": $0.uid, "name": $0.name] }]
+    }
+    mutating func add(_ input: MicrophoneInput) {
+        entries = Self.sanitized(entries + [Entry(uid: input.uid, name: input.name)])
+    }
+    mutating func move(uid: String, by offset: Int) {
+        guard let index = entries.firstIndex(where: { $0.uid == uid }), entries.indices.contains(index + offset) else { return }
+        entries.insert(entries.remove(at: index), at: index + offset)
+    }
+    mutating func remove(uid: String) {
+        entries.removeAll { $0.uid == uid }
+    }
+    /// A connected microphone's current name replaces its saved one, so a later disconnected row
+    /// still shows a recent name. Renaming never changes the route. — Claude Opus 5.5
+    mutating func updateNames(from devices: [MicrophoneInput]) {
+        for index in entries.indices {
+            if let input = devices.first(where: { $0.uid == entries[index].uid }), !input.name.isEmpty {
+                entries[index].name = input.name
+            }
+        }
+    }
+    private static func sanitized(_ entries: [Entry]) -> [Entry] {
+        var seen = Set<String>()
+        return entries.filter { !$0.uid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && seen.insert($0.uid).inserted }
+    }
+    static let defaultsKey = "inputDevicePriority"
 }
 
 @MainActor final class MicrophoneInputs: ObservableObject {
     @Published private(set) var devices: [MicrophoneInput] = []
     @Published private(set) var systemDefault: AudioDeviceID = 0
-    @Published var selectedUID = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? "" {
+    @Published var selectedUID: String {
         didSet {
             guard selectedUID != oldValue else { return }
-            UserDefaults.standard.set(selectedUID, forKey: "inputDeviceUID")
-            onRouteChange?()
+            defaults.set(selectedUID, forKey: Self.selectedUIDKey)
+            // Priority order owns the route while it's on. This single choice is kept for when it's
+            // turned off, so changing it meanwhile doesn't restart listening. — Claude Opus 5.5
+            if !priority.enabled { onRouteChange?() }
         }
     }
+    // The one home for priority order. Its edits save at once and notify only when the chosen
+    // microphone actually changes, so reordering lower rows or a rename keeps audio running. — Claude Opus 5.5
+    @Published private(set) var priority: MicrophonePriority
     var onRouteChange: (() -> Void)?
+    private let defaults: UserDefaults
+    private let hardware: Hardware
     private var registrations: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
-    var selected: MicrophoneInput? { MicrophoneRoute.resolve(uid: selectedUID, devices: devices, systemDefault: systemDefault) }
+    var selected: MicrophoneInput? {
+        priority.enabled
+            ? MicrophoneRoute.resolve(priority: priority.entries, devices: devices, systemDefault: systemDefault)
+            : MicrophoneRoute.resolve(uid: selectedUID, devices: devices, systemDefault: systemDefault)
+    }
     var selectedName: String { selected?.name ?? "Microphone unavailable" }
+    var routeRule: MicrophoneRoute.Rule {
+        guard priority.enabled else { return selectedUID.isEmpty ? .systemDefault : .chosen }
+        return activePriorityUID == nil ? .priorityFallback : .priorityOrder
+    }
+    /// The saved row actually in use. Nil while priority order is off or nothing listed is connected,
+    /// so the editor never marks an unused or disconnected row Active. — Claude Opus 5.5
+    var activePriorityUID: String? {
+        priority.enabled ? MicrophoneRoute.firstConnected(priority.entries, devices: devices)?.uid : nil
+    }
 
-    init() {
+    convenience init() {
+        self.init(defaults: .standard, hardware: .coreAudio)
+        observeHardware()
+    }
+    /// Injected preferences and device reads let tests and display-only previews use the real
+    /// selection rules without CoreAudio listeners. Loading never writes a migration. — Claude Opus 5.5
+    init(defaults: UserDefaults, hardware: Hardware) {
+        self.defaults = defaults
+        self.hardware = hardware
+        selectedUID = defaults.string(forKey: Self.selectedUIDKey) ?? ""
+        priority = MicrophonePriority(saved: defaults.object(forKey: MicrophonePriority.defaultsKey))
         refresh()
+    }
+    deinit {
+        for (var address, block) in registrations {
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, block)
+        }
+    }
+    func refresh() {
+        let old = selected
+        devices = hardware.devices()
+        systemDefault = hardware.systemDefault()
+        updatePriority { $0.updateNames(from: devices) }
+        if !MicrophoneRoute.sameInput(old, selected) { onRouteChange?() }
+    }
+    /// An explicit single-microphone request takes over from priority order in one route decision.
+    /// The saved order remains available. Found by Claude Opus 5.5. Fixed by GPT-6.1 Sol.
+    func selectSingle(uid: String) {
+        selectedUID = uid
+        setPriorityEnabled(false)
+    }
+    func setPriorityEnabled(_ enabled: Bool) { updatePriority { $0.enabled = enabled } }
+    func addToPriority(_ input: MicrophoneInput) { updatePriority { $0.add(input) } }
+    func movePriority(uid: String, by offset: Int) { updatePriority { $0.move(uid: uid, by: offset) } }
+    func removeFromPriority(uid: String) { updatePriority { $0.remove(uid: uid) } }
+    private func updatePriority(_ change: (inout MicrophonePriority) -> Void) {
+        let old = selected
+        var next = priority
+        change(&next)
+        guard next != priority else { return }
+        priority = next
+        defaults.set(next.saved, forKey: MicrophonePriority.defaultsKey)
+        if !MicrophoneRoute.sameInput(old, selected) { onRouteChange?() }
+    }
+    private func observeHardware() {
         for selector in [kAudioHardwarePropertyDevices, kAudioHardwarePropertyDefaultInputDevice] {
             var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
@@ -45,21 +189,13 @@ enum MicrophoneRoute {
             }
         }
     }
-    deinit {
-        for (var address, block) in registrations {
-            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, block)
-        }
+    /// Read-only device sources. Neither can change the macOS default input or output. — Claude Opus 5.5
+    struct Hardware {
+        let devices: () -> [MicrophoneInput]
+        let systemDefault: () -> AudioDeviceID
+        static var coreAudio: Hardware { Hardware(devices: MicrophoneInputs.available, systemDefault: MicrophoneInputs.defaultInputDevice) }
     }
-    func refresh() {
-        let old = selected
-        devices = Self.available()
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var value: AudioDeviceID = 0; var size = UInt32(MemoryLayout.size(ofValue: value))
-        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &value) != noErr { value = 0 }
-        systemDefault = value
-        if old?.id != selected?.id { onRouteChange?() }
-    }
-    static func available() -> [MicrophoneInput] {
+    nonisolated static func available() -> [MicrophoneInput] {
         var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr else { return [] }
@@ -85,7 +221,13 @@ enum MicrophoneRoute {
             return MicrophoneInput(id: id, uid: uid, name: name)
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
-    private static func string(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
+    nonisolated static func defaultInputDevice() -> AudioDeviceID {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: AudioDeviceID = 0; var size = UInt32(MemoryLayout.size(ofValue: value))
+        if AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &value) != noErr { value = 0 }
+        return value
+    }
+    nonisolated private static func string(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var value: Unmanaged<CFString>?; var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr else { return nil }
@@ -128,4 +270,5 @@ enum MicrophoneRoute {
         }
         return values
     }
+    private static let selectedUIDKey = "inputDeviceUID"
 }

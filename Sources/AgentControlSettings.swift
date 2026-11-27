@@ -48,7 +48,7 @@ extension HAgentControl {
         write("settings.microphone", ["uid": .text]) { [model] request in
             let uid = request.string("uid")
             guard uid.isEmpty || model.inputs.devices.contains(where: { $0.uid == uid }) else { throw HControlFailure.unavailable("Unknown microphone.") }
-            model.inputs.selectedUID = uid
+            model.inputs.selectSingle(uid: uid)
         }
         write("settings.display", ["id": .text]) { request in
             let id = request.string("id")
@@ -208,6 +208,9 @@ extension HAgentControl {
             "notificationStopSpeakingSpellings": model.phraseDictionaries[NotificationReplyCore.Commands.stopSpeakingSpellingKey] ?? NotificationReplyCore.Commands.defaultStopSpeakingSpellings,
             "ultrafastForNewVoiceChats": UserDefaults.standard.object(forKey: CodexVoiceSpeed.preferenceKey) as? Bool ?? true,
             "speechModel": model.speechModel.rawValue, "microphone": model.inputs.selectedUID,
+            // Include the same owner state in the revision so a newer priority edit cannot be
+            // overwritten by a stale agent request. Found by Claude Opus 5.5. Fixed by GPT-6.1 Sol.
+            "microphonePriority": model.inputs.priority.saved,
             "display": UserDefaults.standard.string(forKey: WindowDisplay.preferenceKey) ?? "", "rewindVideoSeconds": model.rewindVideoSeconds,
             "automaticChecks": updater.automaticChecks, "automaticDownloads": updater.automaticDownloads,
             "phrases": phrases, "appSpellings": model.appNameSpellings.overrides, "speakerDestinations": try HControlField.json(speaker),

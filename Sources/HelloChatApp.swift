@@ -160,6 +160,10 @@ import Darwin
         if CommandLine.arguments.contains("--preview-speaker-settings") {
             SpeakerOutputPreviewApp.main(); return // Isolated editor: no listening, routing or saved preferences.
         }
+        if CommandLine.arguments.contains("--preview-microphone-priority") {
+            // Listed devices and a temporary preferences domain: no CoreAudio listener, capture or route change. — Claude Opus 5.5
+            MicrophonePriorityPreviewApp.main(); return
+        }
         ModelHub.offlineMode = true
         if CommandLine.arguments.contains("--preview-phrase-highlights") || Bundle.main.object(forInfoDictionaryKey: "HelloChatPhrasePreview") as? Bool == true {
             // Shared view only: no GateModel, capture, archive, Voice or sound.
@@ -530,6 +534,7 @@ struct MainView: View {
     @ObservedObject var zoom: InterfaceZoom
     @ObservedObject var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
+    @State private var editingMicrophonePriority = false
     private var preparing: Bool { (model.busy && model.status == "Starting") || model.changingModel }
     private var connecting: Bool { model.status == "Connecting" }
     var body: some View {
@@ -616,7 +621,9 @@ struct MainView: View {
                     }
                     // Ethan wants to change the microphone from the home page.
                     // Home owns the only microphone editor; Settings keeps advanced options.
-                    MicrophoneSettings(inputs: model.inputs)
+                    MicrophoneSettings(inputs: model.inputs, editingDisabled: model.commandEditor != nil) {
+                        editingMicrophonePriority = true
+                    }
                     NativeMeter(meter: model.meter, active: model.detectionRunning)
                     Picker(selection: $model.speechModel) {
                         ForEach(SpeechModel.allCases) { choice in
@@ -652,6 +659,8 @@ struct MainView: View {
             .font(.system(size: 13 * zoom.scale))
             .controlSize(zoom.scale >= 1.3 ? .large : .regular)
             .coordinateSpace(name: TranscriptPane.coordinateSpace)
+            // Presented from the whole Form, not its row, so live layout changes can't dismiss it. — Claude Opus 5.5
+            .sheet(isPresented: $editingMicrophonePriority) { MicrophonePriorityEditor(inputs: model.inputs) }
         }
         .frame(minWidth: 380, minHeight: 380)
         .modifier(CommandSettingsHost(model: model, origin: .home))
@@ -751,6 +760,59 @@ private struct SpeakerOutputPreviewApp: App {
             SpeakerOutputEditor(initial: settings, otherPatterns: []) { settings = $0; return true }
         }
     }
+}
+
+// Display-only fixture for the Command microphone row and its priority order editor, with an
+// Active row, a disconnected row and connected microphones to add. The button simulates unplugging
+// the USB microphone so the system default fallback can be checked. — Claude Opus 5.5
+private struct MicrophonePriorityPreviewApp: App {
+    @StateObject private var preview = MicrophonePriorityPreview()
+    @State private var editing = true
+    var body: some Scene {
+        Window("Command microphone preview", id: "microphone-preview") {
+            Form {
+                Section("Commands") {
+                    MicrophoneSettings(inputs: preview.inputs) { editing = true }
+                    Button(preview.unplugged ? "Plug in USB microphone" : "Unplug USB microphone") { preview.toggleUSB() }
+                        .accessibilityIdentifier("microphonePreviewToggleUSB")
+                }
+            }
+            .formStyle(.grouped)
+            .frame(minWidth: 380, minHeight: 220)
+            .sheet(isPresented: $editing) { MicrophonePriorityEditor(inputs: preview.inputs) }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in preview.discard() }
+        }
+        .defaultSize(width: 560, height: 360)
+    }
+}
+
+@MainActor private final class MicrophonePriorityPreview: ObservableObject {
+    private final class Devices { var connected: [MicrophoneInput] = [] }
+    private static let builtIn = MicrophoneInput(id: 1, uid: "preview-built-in", name: "MacBook Pro Microphone")
+    private static let usb = MicrophoneInput(id: 2, uid: "preview-usb", name: "Studio USB Microphone")
+    private static let webcam = MicrophoneInput(id: 3, uid: "preview-webcam", name: "Desk Webcam")
+    let inputs: MicrophoneInputs
+    @Published private(set) var unplugged = false
+    private let devices: Devices
+    private let defaults: UserDefaults
+    private let suite: String
+    init() {
+        let devices = Devices(), suite = "HelloChat.MicrophonePriorityPreview." + UUID().uuidString
+        // A unique, non-global suite name always yields a domain; standard preferences are never used.
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(MicrophonePriority(enabled: true, entries: [.init(uid: Self.usb.uid, name: Self.usb.name),
+            .init(uid: "preview-headset", name: "Travel Headset")]).saved, forKey: MicrophonePriority.defaultsKey)
+        devices.connected = [Self.builtIn, Self.usb, Self.webcam]
+        let systemDefault = Self.builtIn.id
+        inputs = MicrophoneInputs(defaults: defaults, hardware: .init(devices: { devices.connected }, systemDefault: { systemDefault }))
+        self.devices = devices; self.defaults = defaults; self.suite = suite
+    }
+    func toggleUSB() {
+        unplugged.toggle()
+        devices.connected = unplugged ? [Self.builtIn, Self.webcam] : [Self.builtIn, Self.usb, Self.webcam]
+        inputs.refresh() // What the CoreAudio device-list listener calls in the app.
+    }
+    func discard() { defaults.removePersistentDomain(forName: suite) }
 }
 
 // One saved editor for speaker command prefixes and destination names. Editing the draft does
@@ -1933,21 +1995,157 @@ struct DiagnosticsView: View {
 // The resolved device is shown in the menu itself, so there's no separate “Using” line.
 struct MicrophoneSettings: View {
     @ObservedObject var inputs: MicrophoneInputs
+    var editingDisabled = false
+    let editPriority: () -> Void
     var body: some View {
-        let systemName = inputs.devices.first { $0.id == inputs.systemDefault }?.name
-        Picker(selection: $inputs.selectedUID) {
-            Text(systemName.map { "System default (\($0))" } ?? "System default").tag("")
-            ForEach(inputs.devices) { input in Text(input.name).tag(input.uid) }
-            if !inputs.selectedUID.isEmpty && inputs.selected == nil {
-                Text("Selected microphone isn't connected").tag(inputs.selectedUID)
+        // The title and gear follow the command rows' layout. With priority order on, the single
+        // menu doesn't apply, so the row names the microphone the order chose instead. — Claude Opus 5.5
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("Command microphone")
+                    CommandInfoButton(title: "Command microphone", detail: "Choose the microphone H Chat uses to hear phrases. Choose the call microphone in Codex Voice.")
+                }
+                if inputs.priority.enabled {
+                    Text("Priority order").font(.caption).foregroundStyle(.secondary)
+                }
             }
-        } label: {
-            HStack(spacing: 6) {
-                Text("Command microphone")
-                CommandInfoButton(title: "Command microphone", detail: "Choose the microphone H Chat uses to hear phrases. Choose the call microphone in Codex Voice.")
+            Spacer(minLength: 12)
+            if inputs.priority.enabled {
+                Text(inputs.routeRule == .priorityFallback && inputs.selected != nil ? "System default (\(inputs.selectedName))" : inputs.selectedName)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("microphonePriorityResolved")
+            } else {
+                let systemName = inputs.devices.first { $0.id == inputs.systemDefault }?.name
+                Picker(selection: $inputs.selectedUID) {
+                    Text(systemName.map { "System default (\($0))" } ?? "System default").tag("")
+                    ForEach(inputs.devices) { input in Text(input.name).tag(input.uid) }
+                    if !inputs.selectedUID.isEmpty && inputs.selected == nil {
+                        Text("Selected microphone isn't connected").tag(inputs.selectedUID)
+                    }
+                } label: {
+                    Text("Command microphone")
+                }
+                .labelsHidden()
+                .accessibilityIdentifier("microphonePicker")
             }
+            CommandSettingsButton(title: "Command microphone", open: editPriority)
+                .disabled(editingDisabled)
+                .accessibilityIdentifier("commandMicrophoneSettings")
         }
-        .accessibilityIdentifier("microphonePicker")
+    }
+}
+
+// Ethan's “priority order” editor, translated from Agent Flow's Audio Input Priority Order list:
+// add connected microphones, move them up or down and remove them. Rows save at once like phrase
+// rows, so Done only closes. MicrophoneInputs restarts listening only when the chosen microphone
+// changes. The list stays editable while off, so an order can be ready before it takes over. The
+// last row shows where priority order goes when nothing listed is connected. — Claude Opus 5.5
+struct MicrophonePriorityEditor: View {
+    @ObservedObject var inputs: MicrophoneInputs
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        let entries = inputs.priority.entries
+        let unlisted = inputs.devices.filter { input in !entries.contains { $0.uid == input.uid } }
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Command microphone").font(.headline).accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("microphonePriorityDone")
+                }
+                Toggle("Priority order", isOn: Binding(get: { inputs.priority.enabled }, set: { inputs.setPriorityEnabled($0) }))
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("microphonePriorityEnabled")
+                Text("When on, H Chat uses the first connected microphone below.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding([.horizontal, .top], 20).padding(.bottom, 4)
+            Form {
+                Section {
+                    if entries.isEmpty {
+                        Text("Add microphones in the order H Chat should try them.").foregroundStyle(.secondary)
+                    }
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        priorityRow(entry, index: index, count: entries.count)
+                    }
+                    systemDefaultRow
+                }
+                if !unlisted.isEmpty {
+                    Section {
+                        ForEach(Array(unlisted.enumerated()), id: \.element.id) { index, input in
+                            addRow(input, index: index)
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(minWidth: 440, idealWidth: 520, maxWidth: 640, minHeight: 300, idealHeight: 420, maxHeight: 640)
+    }
+    private func priorityRow(_ entry: MicrophonePriority.Entry, index: Int, count: Int) -> some View {
+        let connected = inputs.devices.first { $0.uid == entry.uid }
+        let name = connected?.name ?? (entry.name.isEmpty ? entry.uid : entry.name)
+        return HStack(spacing: 8) {
+            Text("\(index + 1)").monospacedDigit().foregroundStyle(.secondary)
+                .frame(width: 22, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).foregroundStyle(connected == nil ? .secondary : .primary).lineLimit(1)
+                if connected == nil {
+                    Text("Not connected").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if inputs.activePriorityUID == entry.uid { activeLabel }
+            HStack(spacing: 4) {
+                Button { inputs.movePriority(uid: entry.uid, by: -1) } label: { Image(systemName: "chevron.up") }
+                    .disabled(index == 0)
+                    .help("Move up").accessibilityLabel("Move \(name) up")
+                    .accessibilityIdentifier("microphonePriorityMoveUp\(index + 1)")
+                Button { inputs.movePriority(uid: entry.uid, by: 1) } label: { Image(systemName: "chevron.down") }
+                    .disabled(index == count - 1)
+                    .help("Move down").accessibilityLabel("Move \(name) down")
+                    .accessibilityIdentifier("microphonePriorityMoveDown\(index + 1)")
+                Button { inputs.removeFromPriority(uid: entry.uid) } label: { Image(systemName: "minus.circle") }
+                    .help("Remove").accessibilityLabel("Remove \(name)")
+                    .accessibilityIdentifier("microphonePriorityRemove\(index + 1)")
+            }
+            .buttonStyle(.borderless).controlSize(.small)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("microphonePriorityRow\(index + 1)")
+    }
+    private var systemDefaultRow: some View {
+        let systemName = inputs.devices.first { $0.id == inputs.systemDefault }?.name
+        return HStack(spacing: 8) {
+            Text(systemName.map { "System default (\($0))" } ?? "System default")
+                .foregroundStyle(.secondary).lineLimit(1)
+            Spacer()
+            if inputs.routeRule == .priorityFallback && inputs.selected != nil { activeLabel }
+        }
+        .padding(.leading, 30) // Lines up with the numbered names above.
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("microphonePrioritySystemDefault")
+    }
+    private func addRow(_ input: MicrophoneInput, index: Int) -> some View {
+        Button { inputs.addToPriority(input) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle").frame(width: 22, alignment: .leading)
+                Text(input.name).lineLimit(1)
+                Spacer()
+                Text("Add").foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add \(input.name)")
+        .accessibilityIdentifier("microphonePriorityAdd\(index + 1)")
+    }
+    private var activeLabel: some View {
+        Label("Active", systemImage: "checkmark.circle.fill")
+            .font(.caption).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
     }
 }
 
