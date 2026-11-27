@@ -55,6 +55,11 @@ extension HAgentControl {
             let ids = try request.notificationReplyIDs()
             return try replies.status(event: ids.event, instance: ids.instance)
         }
+        add("claimRelaySend", fields: event.merging(["relayThreadID": .uuid]) { $1 }) { request in
+            let ids = try request.notificationReplyIDs()
+            guard let relay = UUID(uuidString: request.string("relayThreadID")) else { throw NotificationReplyCoordinator.Failure.invalidEvent }
+            return try await replies.claimRelaySend(event: ids.event, instance: ids.instance, relayThread: relay, expiresAt: request.expires)
+        }
     }
 }
 

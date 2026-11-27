@@ -7,6 +7,30 @@ import SQLite3
     static func main() throws {
         let url = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Inert collector evidence: a passing read stays silent; an incomplete
+        // read retains its actual failure without native UI or transcript data. — GPT-6.1 Sol
+        let diagnosticURL = url.deletingLastPathComponent().appendingPathComponent("voice-read-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: diagnosticURL) }
+        let diagnostics = Diagnostics(directory: diagnosticURL)
+        var snapshot = VoiceSnapshot(pid: 123, inputRunning: false, recorderRunning: false,
+                                     microphone: nil, accessibilityAllowed: true)
+        VoiceCallMonitor.recordIncompleteRead(snapshot, readAudio: false, diagnostics: diagnostics)
+        _ = try diagnostics.commandHistory(limit: 1) // Flush the existing serialized writer.
+        precondition(!FileManager.default.fileExists(atPath: diagnosticURL.appendingPathComponent("events.jsonl").path))
+        snapshot.controlsComplete = false
+        snapshot.scanFailure = "attribute:AXRole:-25204"
+        snapshot.scanNodes = 12; snapshot.scanTimeouts = 1; snapshot.scanDepth = 8
+        VoiceCallMonitor.recordIncompleteRead(snapshot, readAudio: true, diagnostics: diagnostics)
+        _ = try diagnostics.commandHistory(limit: 1)
+        let recorded = try Data(contentsOf: diagnosticURL.appendingPathComponent("events.jsonl"))
+        let entry = try JSONSerialization.jsonObject(with: recorded) as! [String: Any]
+        precondition(entry["event"] as? String == "voice.controls.incomplete")
+        precondition(entry["failure"] as? String == snapshot.scanFailure)
+        precondition(entry["read_audio"] as? String == "true")
+        precondition(entry["codex_pid"] as? Int == 123 && entry["scan_nodes"] as? Int == 12)
+        precondition(entry["scan_timeouts"] as? Int == 1 && entry["scan_depth"] as? Int == 8)
+        precondition(Set(entry.keys) == ["time", "event", "codex_pid", "scan_nodes", "scan_timeouts", "scan_depth",
+                                         "failure", "accessibility_allowed", "application_ready", "application_has_window", "read_audio"])
         try? FileManager.default.removeItem(at: url)
         var db: OpaquePointer?
         precondition(sqlite3_open(url.path, &db) == SQLITE_OK)

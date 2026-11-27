@@ -131,6 +131,19 @@ struct VoiceTimeline {
 }
 
 @MainActor final class VoiceCallMonitor {
+    // An unknown guard alone cannot explain a failed native read. Preserve only
+    // the collector's numeric/error evidence, never chat labels or speech. — GPT-6.1 Sol
+    nonisolated static func recordIncompleteRead(_ state: VoiceSnapshot, readAudio: Bool,
+                                                diagnostics: Diagnostics = .shared) {
+        guard !state.controlsComplete else { return }
+        diagnostics.record("voice.controls.incomplete", numbers: [
+            "codex_pid": Double(state.pid ?? 0), "scan_nodes": Double(state.scanNodes),
+            "scan_timeouts": Double(state.scanTimeouts), "scan_depth": Double(state.scanDepth)
+        ], info: ["failure": state.scanFailure, "accessibility_allowed": String(state.accessibilityAllowed),
+                  "application_ready": String(state.applicationReady),
+                  "application_has_window": String(state.applicationHasWindow), "read_audio": String(readAudio)])
+    }
+
     var onChange: ((VoiceCallObservation) -> Void)?
     var onSessionStarted: ((Date) -> Void)?
     var onMetadataChanged: (() -> Void)?
@@ -203,6 +216,7 @@ struct VoiceTimeline {
                     var audioElements: [AXUIElement] = []
                     let state = VoiceBridge.snapshot(requireEnd: true, readCallAudioState: readAudio,
                         observeCallElements: { callElements = $0 }, observeAudioElements: { audioElements = $0 })
+                    Self.recordIncompleteRead(state, readAudio: readAudio)
                     let launch = state.pid != nil && app?.processIdentifier == state.pid ? app?.launchDate : nil
                     let ledger = launch.flatMap { VoiceTimeline.sessions(database: database, since: $0) }
                     let sameCall = readAudio && ledger?.active.count == 1 && previousLedger?.active == ledger?.active

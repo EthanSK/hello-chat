@@ -10,14 +10,24 @@ import SwiftUI
     private final class Clock { var time = 100.0; let wallBase = 1_795_500_000.0 }
     private final class Calls: @unchecked Sendable {
         let lock = NSLock(); private var values: [[String]] = []
-        func append(_ value: [String]) { lock.lock(); values.append(value); lock.unlock() }
+        var didQueue: (([String]) -> Void)?
+        func append(_ value: [String]) { lock.lock(); values.append(value); lock.unlock(); didQueue?(value) }
         var count: Int { lock.lock(); defer { lock.unlock() }; return values.count }
+    }
+    private final class Relays: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: NotificationReplyRelay?
+        private var all: [UUID: NotificationReplyRelay] = [:]
+        func set(_ relay: NotificationReplyRelay) { lock.lock(); value = relay; all[relay.thread] = relay; lock.unlock() }
+        var latest: NotificationReplyRelay? { lock.lock(); defer { lock.unlock() }; return value }
+        func get(_ id: UUID) -> NotificationReplyRelay? { lock.lock(); defer { lock.unlock() }; return all[id] }
     }
     private struct Fixture {
         let coordinator: NotificationReplyCoordinator
         let origin: NotificationReplyOrigin
         let clock: Clock
         let calls: Calls
+        let relays: Relays
         let root: URL
     }
     private func fixture(coordinator supplied: NotificationReplyCoordinator? = nil) throws -> Fixture {
@@ -30,22 +40,66 @@ import SwiftUI
         let database = codex.appendingPathComponent("state_5.sqlite")
         var db: OpaquePointer?; sqlite3_open(database.path, &db)
         defer { sqlite3_close(db) }
-        XCTAssertEqual(sqlite3_exec(db, "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT); INSERT INTO threads VALUES ('\(thread.uuidString.lowercased())','\(file.path)');", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, archived INTEGER NOT NULL DEFAULT 0); INSERT INTO threads(id,rollout_path) VALUES ('\(thread.uuidString.lowercased())','\(file.path)');", nil, nil, nil), SQLITE_OK)
         let origin = try NotificationReplyOrigin.capture(thread: thread, turn: nil, question: "", home: home)
         let name = "HChatNotificationTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let settings = NotificationReplySettings(defaults: defaults); settings.enabled = true
         let coordinator = supplied ?? NotificationReplyCoordinator(settings: settings, directory: root.appendingPathComponent("status"))
         coordinator.settings.enabled = true
-        let clock = Clock(), calls = Calls()
+        let clock = Clock(), calls = Calls(), relays = Relays()
+        calls.didQueue = { command in
+            guard command.count == 5, command[1] == "queue", let id = UUID(uuidString: command[3]),
+                  let relay = relays.get(id), command[4].hasPrefix("--message=") else { XCTFail("Expected only the owned broker queue"); return }
+            do {
+                // Model the observed Desktop record shape with data only, including its one real broker turn. — GPT-6.1 Sol
+                let turn = UUID().uuidString, text = String(command[4].dropFirst("--message=".count))
+                let handle = try FileHandle(forWritingTo: relay.rollout); defer { try? handle.close() }; try handle.seekToEnd()
+                for row: [String: Any] in [
+                    ["type": "event_msg", "payload": ["type": "task_started", "turn_id": turn]],
+                    ["type": "response_item", "payload": ["type": "message", "role": "user", "content": [["type": "input_text", "text": text]]]]
+                ] { try handle.write(contentsOf: JSONSerialization.data(withJSONObject: row) + Data([10])) }
+            } catch { XCTFail("Cannot write inert broker fixture: \(error)") }
+        }
         coordinator.clock = { clock.time }; coordinator.wallClock = { clock.wallBase + clock.time }
         coordinator.currentReadiness = { .ready }
         coordinator.captureOrigin = { _, _, _ in origin }
         coordinator.currentDesktop = { (URL(fileURLWithPath: "/fixture/codex"), getpid()) }
         coordinator.queueCommand = { calls.append($0); return 0 }
+        coordinator.provisionRelay = { _, _, valid in
+            guard valid() else { throw NotificationReplyOrigin.Failure.originUnavailable }
+            let id = UUID(), file = sessions.appendingPathComponent("relay-" + id.uuidString.lowercased() + ".jsonl")
+            let row: [String: Any] = ["type": "session_meta", "payload": ["id": id.uuidString.lowercased()]]
+            try (JSONSerialization.data(withJSONObject: row) + Data([10])).write(to: file)
+            let relay = try NotificationReplyRelay.verifyBlank(thread: id, rollout: file)
+            relays.set(relay); return relay
+        }
+        coordinator.wakeRelay = { _, _ in true } // Never start a Desktop/model turn.
+        coordinator.archiveRelay = { _, _ in } // Never archive a real chat.
         coordinator.openOrigin = { _, _ in false } // Never open a real app in coordinator tests.
         addTeardownBlock { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
-        return .init(coordinator: coordinator, origin: origin, clock: clock, calls: calls, root: root)
+        return .init(coordinator: coordinator, origin: origin, clock: clock, calls: calls, relays: relays, root: root)
+    }
+    private func claim(_ f: Fixture, event: UUID) async throws -> [String: Any] {
+        let relay = try XCTUnwrap(f.relays.latest)
+        return try await f.coordinator.claimRelaySend(event: event, instance: f.coordinator.instance,
+            relayThread: relay.thread, expiresAt: f.clock.wallBase + f.clock.time + 2)
+    }
+    private func arrive(_ f: Fixture, event: UUID, envelope: [String: Any]) async throws {
+        let relay = try XCTUnwrap(f.relays.latest), message = try XCTUnwrap(envelope["message"] as? String)
+        let escaped = message.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        let output = "<codex_delegation>\n  <source_thread_id>\(relay.thread.uuidString.lowercased())</source_thread_id>\n  <input>" + escaped + "</input>\n</codex_delegation>"
+        let row: [String: Any] = ["type": "response_item", "payload": ["type": "function_call_output", "namespace": "codex_app",
+            "name": "send_message_to_thread", "id": "fco_fixture", "output": output]]
+        let delivered = expectation(description: "exact saved relay arrival"), previous = f.coordinator.outcome
+        f.coordinator.outcome = { id, phase, reason, first in
+            previous?(id, phase, reason, first)
+            if id == event && phase == .delivered { delivered.fulfill() }
+        }
+        let handle = try FileHandle(forWritingTo: f.origin.rollout)
+        try handle.seekToEnd(); try handle.write(contentsOf: JSONSerialization.data(withJSONObject: row) + Data([10])); try handle.close()
+        await fulfillment(of: [delivered], timeout: 3)
+        f.coordinator.outcome = previous
     }
     private func prepare(_ fixture: Fixture, event: UUID) async throws -> [String: Any] {
         try await fixture.coordinator.prepare(event: event, thread: fixture.origin.thread, turn: nil, question: "", spokenText: "Fixture notification ready.")
@@ -295,112 +349,200 @@ import SwiftUI
         }
         await f.coordinator.shutdown()
     }
-    func testAcceptedReplyOpensExactOriginOnceWithoutWaitingForArrival() async throws {
+    func testBrokerQueueDoesNotClaimDeliveryOrOpenOrigin() async throws {
         let f = try fixture(), event = UUID()
         var opened: [(Int32, UUID)] = []
         f.coordinator.openOrigin = { opened.append(($0, $1)); return true }
         _ = try await prepare(f, event: event); try finish(f, event: event)
-        XCTAssertTrue(opened.isEmpty)
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
         await f.coordinator.waitForPendingDelivery()
-        XCTAssertEqual(f.calls.count, 1)
+        XCTAssertEqual(f.calls.count, 1); XCTAssertTrue(opened.isEmpty)
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "releasing")
+        let envelope = try await claim(f, event: event)
+        XCTAssertEqual(envelope["threadID"] as? String, f.origin.thread.uuidString.lowercased())
+        try await arrive(f, event: event, envelope: envelope)
         XCTAssertEqual(opened.count, 1)
         XCTAssertEqual(opened.first?.0, getpid()); XCTAssertEqual(opened.first?.1, f.origin.thread)
-        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued", "Opening does not claim saved arrival")
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "delivered")
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
         XCTAssertEqual(opened.count, 1); XCTAssertEqual(f.calls.count, 1)
         await f.coordinator.shutdown()
     }
-    func testOwnExactArrivalBeforeQueueReturnsStillOpens() async throws {
+    func testExactHostArrivalBeforeBrokerQueueReturnsStillOpens() async throws {
         let f = try fixture(), event = UUID()
-        let entered = DispatchSemaphore(value: 0), observed = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
         var opens = 0
         f.coordinator.openOrigin = { _, thread in XCTAssertEqual(thread, f.origin.thread); opens += 1; return true }
-        f.coordinator.validateSubmittedOrigin = { origin, reply in try origin.validate(reply: reply); observed.signal() }
         f.coordinator.queueCommand = { command in
-            f.calls.append(command)
-            let message = String(command.last!.dropFirst("--message=".count))
-            let handle = try FileHandle(forWritingTo: f.origin.rollout); defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: JSONSerialization.data(withJSONObject: ["type":"event_msg", "payload":["type":"user_message", "message":message, "images":[], "local_images":[]]]) + Data([10]))
-            entered.signal()
-            guard release.wait(timeout: .now() + 4) == .success else { return 1 }
-            return 0
+            f.calls.append(command); entered.signal()
+            return release.wait(timeout: .now() + 5) == .success ? 0 : 1
         }
         _ = try await prepare(f, event: event); try finish(f, event: event)
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
-        let queued = await Task.detached { entered.wait(timeout: .now() + 3) == .success }.value
-        XCTAssertTrue(queued)
-        let checked = await Task.detached { observed.wait(timeout: .now() + 3) == .success }.value
-        XCTAssertTrue(checked, "The actual origin watcher must inspect our own arrival while the runner is still in flight")
-        XCTAssertEqual(opens, 0)
+        let running = await Task.detached { entered.wait(timeout: .now() + 3) == .success }.value
+        XCTAssertTrue(running)
+        let envelope = try await claim(f, event: event)
+        try await arrive(f, event: event, envelope: envelope)
+        XCTAssertEqual(opens, 1, "Actual target arrival is authoritative even before broker runner returns")
         release.signal(); await f.coordinator.waitForPendingDelivery()
         XCTAssertEqual(opens, 1); XCTAssertEqual(f.calls.count, 1)
         await f.coordinator.shutdown()
     }
-    func testNavigationFailureNeverResendsOrChangesAcceptedOutcome() async throws {
+    func testNavigationFailureNeverResendsOrChangesDeliveredOutcome() async throws {
         let f = try fixture(), event = UUID()
         var opens = 0
         f.coordinator.openOrigin = { _, _ in opens += 1; return false }
         _ = try await prepare(f, event: event); try finish(f, event: event)
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
         await f.coordinator.waitForPendingDelivery()
+        try await arrive(f, event: event, envelope: claim(f, event: event))
         XCTAssertEqual(opens, 1); XCTAssertEqual(f.calls.count, 1)
-        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "delivered")
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
         XCTAssertEqual(opens, 1); XCTAssertEqual(f.calls.count, 1)
         await f.coordinator.shutdown()
     }
-    func testCancellationNewerInputAndDesktopReplacementPreventNavigationAfterAcceptance() async throws {
-        for reason in ["settings-changed", "recognition-audio-gap", "voiceActive", "new-user-input", "desktop-replaced", "desktop-pid", "submission-unknown", "user-dismissed"] {
+    func testFreshRelayGuardRejectsCancellationNewInputAndChangedDesktop() async throws {
+        for reason in ["settings-changed", "recognition-audio-gap", "voiceActive", "new-user-input", "desktop-replaced", "desktop-pid", "user-dismissed", "expired"] {
             let f = try fixture(), event = UUID()
-            let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
             var opens = 0
             f.coordinator.openOrigin = { _, _ in opens += 1; return true }
-            f.coordinator.queueCommand = { command in
-                f.calls.append(command); entered.signal()
-                guard release.wait(timeout: .now() + 3) == .success else { return 1 }
-                return reason == "submission-unknown" ? 1 : 0
-            }
             _ = try await prepare(f, event: event); try finish(f, event: event)
             _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
-            let running = await Task.detached { entered.wait(timeout: .now() + 2) == .success }.value
-            XCTAssertTrue(running)
+            await f.coordinator.waitForPendingDelivery()
             if reason == "new-user-input" {
                 let handle = try FileHandle(forWritingTo: f.origin.rollout); defer { try? handle.close() }
                 try handle.seekToEnd(); try handle.write(contentsOf: Data("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"A genuinely newer instruction\"}}\n".utf8))
-            } else if reason == "desktop-replaced" {
-                f.coordinator.currentDesktop = { (URL(fileURLWithPath: "/other/codex"), getpid()) }
-            } else if reason == "desktop-pid" {
-                f.coordinator.currentDesktop = { (URL(fileURLWithPath: "/fixture/codex"), getpid() + 1) }
-            } else if reason == "user-dismissed" { f.coordinator.dismiss(event: event) }
-            else if reason != "submission-unknown" { f.coordinator.interrupted(reason) }
-            release.signal(); await f.coordinator.waitForPendingDelivery()
-            XCTAssertEqual(opens, 0, reason); XCTAssertEqual(f.calls.count, 1, reason)
-            XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String,
-                reason == "submission-unknown" ? "unavailable" : "queued", "Accepted sends remain accepted even if focus is cancelled")
+            } else if reason == "desktop-replaced" { f.coordinator.currentDesktop = { (URL(fileURLWithPath: "/other/codex"), getpid()) } }
+            else if reason == "desktop-pid" { f.coordinator.currentDesktop = { (URL(fileURLWithPath: "/fixture/codex"), getpid() + 1) } }
+            else if reason == "user-dismissed" { f.coordinator.dismiss(event: event) }
+            else if reason == "expired" { f.clock.time += 61 }
+            else { f.coordinator.interrupted(reason) }
+            do { _ = try await claim(f, event: event); XCTFail("A cancelled/stale relay must not obtain the body: " + reason) } catch {}
+            XCTAssertEqual(opens, 0); XCTAssertEqual(f.calls.count, 1)
+            _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+            XCTAssertEqual(f.calls.count, 1, "No original-queue or second-relay fallback")
             await f.coordinator.shutdown()
         }
     }
-    func testCancellationDuringPostAcceptanceValidationSuppressesOnlyNavigation() async throws {
+    func testCancellationDuringRelayClaimValidationPreventsBodyDisclosure() async throws {
         let f = try fixture(), event = UUID()
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        await f.coordinator.waitForPendingDelivery()
         let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
-        var opens = 0
-        f.coordinator.openOrigin = { _, _ in opens += 1; return true }
         f.coordinator.validateSubmittedOrigin = { origin, reply in
             try origin.validate(reply: reply); entered.signal()
-            guard release.wait(timeout: .now() + 3) == .success else { throw NotificationReplyOrigin.Failure.originUnavailable }
+            guard release.wait(timeout: .now() + 4) == .success else { throw NotificationReplyOrigin.Failure.originUnavailable }
+        }
+        let task = Task { try await claim(f, event: event) }
+        let validating = await Task.detached { entered.wait(timeout: .now() + 2) == .success }.value
+        XCTAssertTrue(validating)
+        f.coordinator.interrupted("recognition-audio-gap"); release.signal()
+        do { _ = try await task.value; XCTFail("No envelope after cancellation during the current guard") } catch {}
+        XCTAssertEqual(f.calls.count, 1)
+        await f.coordinator.shutdown()
+    }
+    func testClaimIsOnceOnlyAndLateCancellationDoesNotRetractArrival() async throws {
+        let f = try fixture(), event = UUID()
+        var opens = 0
+        f.coordinator.openOrigin = { _, _ in opens += 1; return true }
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        await f.coordinator.waitForPendingDelivery()
+        let envelope = try await claim(f, event: event)
+        do { _ = try await claim(f, event: event); XCTFail("A new request ID cannot reclaim the same event") } catch {}
+        f.coordinator.interrupted("voiceActive")
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["reason"] as? String, "relay-send-unconfirmed")
+        try await arrive(f, event: event, envelope: envelope)
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "delivered")
+        XCTAssertEqual(opens, 0, "The cancellation still suppresses navigation")
+        XCTAssertEqual(f.calls.count, 1)
+        await f.coordinator.shutdown()
+    }
+    func testAdmittedHandoffOutlivesOldCallbackButFreshGuardStillExpires() async throws {
+        let f = try fixture(), event = UUID()
+        let original = f.coordinator.provisionRelay, entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        f.coordinator.provisionRelay = { origin, exe, valid in
+            let relay = try original(origin, exe, valid); entered.signal()
+            guard release.wait(timeout: .now() + 4) == .success else { throw NotificationReplyOrigin.Failure.originUnavailable }
+            return relay
+        }
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true, expiresAt: f.clock.wallBase + f.clock.time + 1)
+        let reserved = await Task.detached { entered.wait(timeout: .now() + 2) == .success }.value
+        XCTAssertTrue(reserved)
+        f.clock.time += 4; release.signal(); await f.coordinator.waitForPendingDelivery()
+        XCTAssertEqual(f.calls.count, 1, "An admitted app-owned stage does not reuse the old expired callback")
+        let validating = DispatchSemaphore(value: 0), finishValidation = DispatchSemaphore(value: 0)
+        f.coordinator.validateSubmittedOrigin = { origin, reply in
+            try origin.validate(reply: reply); validating.signal()
+            guard finishValidation.wait(timeout: .now() + 4) == .success else { throw NotificationReplyOrigin.Failure.originUnavailable }
+        }
+        let fresh = Task { try await claim(f, event: event) }
+        let begun = await Task.detached { validating.wait(timeout: .now() + 2) == .success }.value
+        XCTAssertTrue(begun); f.clock.time += 3; finishValidation.signal()
+        do { _ = try await fresh.value; XCTFail("The new request's own expiry still gates disclosure after validation") } catch {}
+        await f.coordinator.shutdown()
+    }
+    func testRelayClaimNeedsExactInstanceIdentityAndFinalFIFO() async throws {
+        let f = try fixture(), event = UUID()
+        _ = try await prepare(f, event: event); try finish(f, event: event)
+        do {
+            _ = try await f.coordinator.claimRelaySend(event: event, instance: f.coordinator.instance, relayThread: UUID(), expiresAt: f.clock.wallBase + f.clock.time + 1)
+            XCTFail("No body before final FIFO acknowledgement")
+        } catch {}
+        XCTAssertEqual(f.calls.count, 0); XCTAssertNil(f.relays.latest)
+        _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
+        await f.coordinator.waitForPendingDelivery()
+        let relay = try XCTUnwrap(f.relays.latest)
+        for (instance, target) in [(UUID(), relay.thread), (f.coordinator.instance, UUID())] {
+            do {
+                _ = try await f.coordinator.claimRelaySend(event: event, instance: instance, relayThread: target, expiresAt: f.clock.wallBase + f.clock.time + 1)
+                XCTFail("Mismatched identity cannot disclose the envelope")
+            } catch {}
+        }
+        XCTAssertEqual(f.calls.count, 1)
+        await f.coordinator.shutdown()
+    }
+    func testOwnedRelayArchivesAfterMatchingTerminalTurnWithoutAnotherSend() async throws {
+        for claimed in [false, true] {
+        let f = try fixture(), event = UUID()
+        let archived = expectation(description: "archive exact owned terminal relay")
+        f.coordinator.archiveRelay = { relay, exe in
+            XCTAssertEqual(relay.thread, f.relays.latest?.thread); XCTAssertEqual(exe.path, "/fixture/codex")
+            archived.fulfill()
         }
         _ = try await prepare(f, event: event); try finish(f, event: event)
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
-        let validating = await Task.detached { entered.wait(timeout: .now() + 2) == .success }.value
-        XCTAssertTrue(validating)
-        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
-        f.coordinator.interrupted("recognition-audio-gap")
-        release.signal(); await f.coordinator.waitForPendingDelivery()
-        XCTAssertEqual(opens, 0); XCTAssertEqual(f.calls.count, 1)
-        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        await f.coordinator.waitForPendingDelivery()
+        if claimed { _ = try await claim(f, event: event) }
+        let relay = try XCTUnwrap(f.relays.latest), handle = try FileHandle(forWritingTo: relay.rollout)
+        let records = try Data(contentsOf: relay.rollout).split(separator: 10).map { try JSONSerialization.jsonObject(with: Data($0)) as! [String: Any] }
+        let terminal = try XCTUnwrap(records.compactMap { ($0["payload"] as? [String: Any])?["turn_id"] as? String }.first)
+        try handle.seekToEnd()
+        for kind in ["task_complete"] {
+            try handle.write(contentsOf: JSONSerialization.data(withJSONObject: ["type": "event_msg", "payload": ["type": kind, "turn_id": terminal]]) + Data([10]))
+        }
+        try handle.close(); await fulfillment(of: [archived], timeout: 3)
+        XCTAssertEqual(f.calls.count, 1)
+        let record = f.root.appendingPathComponent("status/dispatch-claims/" + event.uuidString.lowercased() + ".relay.json")
+        // Archive work retires only private cleanup metadata; dispatch claims remain durable. — GPT-6.1 Sol
+        await f.coordinator.waitForPendingDelivery()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: record.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: record.deletingLastPathComponent().appendingPathComponent(event.uuidString.lowercased() + ".claim").path))
+        XCTAssertTrue(f.coordinator.hasOpenAttempt, "Archival does not erase pending target delivery")
+        f.clock.time += 61; f.coordinator.checkBounds()
+        await f.coordinator.waitForPendingDelivery()
+        XCTAssertFalse(f.coordinator.hasOpenAttempt)
+        XCTAssertEqual(f.coordinator.lifecycleCounts.textBytes, 0)
+        XCTAssertEqual(f.coordinator.lifecycleCounts.watchers, 0)
+        XCTAssertFalse(f.coordinator.lifecycleCounts.checkingBounds)
+        XCTAssertEqual(f.calls.count, 1, "Expiry never retries the original or relay send")
+        let terminalPhase = try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String
+        XCTAssertEqual(terminalPhase, claimed ? "unavailable" : "cancelled")
         await f.coordinator.shutdown()
+        }
     }
     func testVisualFallbackStartsAtNewHUDAndFinalizesOnce() async throws {
         let f = try fixture(), event = UUID()
@@ -531,7 +673,7 @@ import SwiftUI
         _ = try f.coordinator.mediaReleased(event: first, instance: f.coordinator.instance, released: true)
         await f.coordinator.waitForPendingDelivery()
         XCTAssertEqual(f.calls.count, 1)
-        XCTAssertEqual(try f.coordinator.status(event: first, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        XCTAssertEqual(try f.coordinator.status(event: first, instance: f.coordinator.instance)["phase"] as? String, "releasing")
         XCTAssertEqual(try f.coordinator.status(event: second, instance: f.coordinator.instance)["phase"] as? String, "preparing")
         XCTAssertEqual(latest, second, "An older pending delivery must not take over the newest command outcome")
         _ = try f.coordinator.mediaReleased(event: first, instance: f.coordinator.instance, released: true)
@@ -562,19 +704,20 @@ import SwiftUI
         XCTAssertEqual(presentations.last?.spokenText, "Fixture notification ready.")
         await f.coordinator.shutdown()
     }
-    func testLastQueuedAttemptRetiresItsObserverWithoutAnotherNotification() async throws {
+    func testExpiredUnclaimedRelayRetiresItsObserverWithoutAnotherNotification() async throws {
         let f = try fixture(), event = UUID()
         _ = try await prepare(f, event: event); try finish(f, event: event)
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
         await f.coordinator.waitForPendingDelivery()
-        XCTAssertEqual(f.coordinator.lifecycleCounts.textBytes, 0)
+        XCTAssertGreaterThan(f.coordinator.lifecycleCounts.textBytes, 0, "Body stays app-owned until the relay claims or expires")
         XCTAssertGreaterThan(f.coordinator.lifecycleCounts.watchers, 0)
         f.coordinator.checkBounds()
         XCTAssertTrue(f.coordinator.lifecycleCounts.checkingBounds)
         f.clock.time += 61; f.coordinator.checkBounds()
+        await Task.yield()
         XCTAssertEqual(f.coordinator.lifecycleCounts.watchers, 0)
         XCTAssertFalse(f.coordinator.lifecycleCounts.checkingBounds)
-        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "cancelled")
         await f.coordinator.shutdown()
     }
     func testUnavailableAttemptLeavesAmbientRecognitionAlone() async throws {
@@ -739,6 +882,13 @@ import SwiftUI
         try captureInertPanel(panel, name: "announcing-stop-speaking")
         hud.show(.init(event: event, phase: .cancelled, reason: "user-stop-speaking", spokenText: "Exact original notification remains readable."))
         try captureInertPanel(panel, name: "stop-requested")
+        hud.show(.init(event: event, phase: .releasing, reason: "end-reply", spokenText: "Exact original notification remains readable.", deliveryPending: true))
+        try captureInertPanel(panel, name: "delivery-pending")
+        let unconfirmed = NotificationReplyCoordinator.Presentation(event: event, phase: .unavailable, reason: "relay-send-unconfirmed", spokenText: "Exact original notification remains readable.")
+        XCTAssertEqual(NotificationReplyHUDContent.statusTitle(unconfirmed.phase, reason: unconfirmed.reason), "Delivery unconfirmed")
+        XCTAssertEqual(NotificationReplyHUDContent(presentation: unconfirmed).detail, "Delivery is unconfirmed. It won't be sent again.")
+        hud.show(unconfirmed)
+        try captureInertPanel(panel, name: "relay-delivery-unconfirmed")
         XCTAssertFalse(panel.isVisible)
         hud.dismissCurrent()
         XCTAssertTrue(hud.panels.isEmpty)
@@ -835,7 +985,7 @@ import SwiftUI
         XCTAssertEqual(f.coordinator.lifecycleCounts.watchers, 0)
         await f.coordinator.shutdown()
     }
-    func testPriorityAfterQueueAcceptanceDoesNotClaimUnsentOrReplay() async throws {
+    func testPriorityDuringBrokerQueueNeverSendsReplyOrRetries() async throws {
         let f = try fixture(), event = UUID()
         let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), calls = f.calls
         f.coordinator.queueCommand = {
@@ -850,7 +1000,7 @@ import SwiftUI
         XCTAssertNotEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "cancelled")
         release.signal()
         await f.coordinator.waitForPendingDelivery()
-        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "queued")
+        XCTAssertEqual(try f.coordinator.status(event: event, instance: f.coordinator.instance)["phase"] as? String, "unavailable")
         _ = try f.coordinator.mediaReleased(event: event, instance: f.coordinator.instance, released: true)
         XCTAssertEqual(f.calls.count, 1)
         await f.coordinator.shutdown()
@@ -920,7 +1070,7 @@ import SwiftUI
         _ = try model.mediaReleased(event: event, instance: model.instance, released: true)
         await model.waitForPendingDelivery()
         XCTAssertEqual(f.calls.count, 1)
-        XCTAssertEqual(try model.status(event: event, instance: model.instance)["phase"] as? String, "queued")
+        XCTAssertEqual(try model.status(event: event, instance: model.instance)["phase"] as? String, "releasing")
         await model.shutdown()
     }
 }

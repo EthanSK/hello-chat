@@ -1,7 +1,7 @@
 # Notification replies owned by H Chat
 
 H Chat owns the selected speech listener, microphone, recognition model, finite reply session,
-floating feedback, settings, stale-origin checks and single Desktop queue dispatch. The shared
+floating feedback, settings, stale-origin checks and single exact-origin relay delivery. The shared
 notification-speech skill owns synthesis, its FIFO turn, and any media pause it made. Its client
 only connects the existing speaker to this app contract. It starts no recognizer or microphone.
 
@@ -89,7 +89,9 @@ Operations, all scoped to one notification UUID:
   classified as no-media, acknowledged or disconnected. It must finish media cleanup before
   opening this first fallback opportunity; the same FIFO stays held until the app's decision.
   Do not call an earlier bridge pause no-media. A parked/failed child or unknown cleanup cannot
-  fall back, even if no audio-start receipt exists. Ordinary audio holds media until its decision.
+  fall back, even if no audio-start receipt exists. After actual audio exits, the speaker balances its browser-video pause before waiting for Reply.
+  The same FIFO and reply lease stay owned through End or Cancel; the final acknowledgement still
+  follows actual cleanup and FIFO release.
   This classification includes unavailable recording admission; it is not proof of actual capture. `audio-unavailable-before-start` is the other eligible refusal: neither provider rendered audio, with no interruption, lease, media pause or child admission.
   A forced kill, unknown outcome, Voice refusal or started/failed audio is
   not eligible. The client must prove the exact native notification was delivered and bind its
@@ -118,18 +120,49 @@ After the speaker exits and its cleanup is complete AND the original FIFO turn h
 the client sends mediaReleased once. The existing speech hook's finish callback is inside that FIFO
 turn, so finish alone cannot acknowledge release. Register the acknowledgement with the existing
 FIFO finalizer. A forced kill or a still-live original child cannot report released:true. H Chat
-then revalidates origin, question, desktop and Voice priority immediately before reserving
-one dispatch through the running Desktop's supported `codex queue --thread`. Unknown submission
-is never retried. Queue acceptance is reported as queued, not proof of arrival. Exact-chat arrival
-is checked separately against the originating chat's subsequent saved event.
+then revalidates origin, question, desktop and Voice priority before reserving one durable event
+handoff. The original three-second callback must still be valid at that reservation. The admitted
+relay then owns the existing sixty-second arrival bound and gets a fresh guarded send request;
+it does not reuse an expired client callback.
 
-After a confirmed queue acceptance, H Chat requests the exact originating chat once through the
-existing native Codex deep-link route, bound to the same Desktop process. It does not wait for
-saved arrival. Cancelled, stale, failed or uncertain sends never navigate. New input, a dismissed
-attempt, changed Desktop or revoked capture lease suppresses pending navigation. Navigation failure
-cannot retry the send or change its accepted outcome. Only the complete exact app-generated reply
-message may be excluded from newer-input checks; a quoted marker, extra text or mixed content is
-still newer input. A private digest identifies that message without retaining another body copy.
+The app asks the documented stdio protocol for the source's authoritative first turn with
+`thread/turns/list`, ascending order, then forks BEFORE that turn. It requires an ordinary,
+non-ephemeral, unpinned idle fork, an independently empty turns page with no next cursor, and a
+persisted metadata-only rollout after orderly creator EOF. It never copies user history or starts
+a headless model turn. Goal continuation is deferred; any inherited goal is cleared ONLY on the
+new owned relay and re-read absent before wake. The source goal and selected model stay unchanged.
+
+Only a fixed broker prompt containing identifiers is queued to that temporary chat. No microphone
+body is included. `codex://threads/wake/<relayUUID>` asks the running Desktop to resume that broker
+without navigation, using its normal host tools. A broker queue receipt does not establish that
+the target chat accepted or received the reply.
+
+The broker must use ONE `functions.exec` orchestration with a fresh request UUID to call
+`notificationReply.claimRelaySend` through the existing signed app mailbox. Required arguments are
+`eventID`, `instance` and `relayThreadID`. The app rechecks the exact registered relay, final FIFO
+acknowledgement, End-finished body, current Voice/readiness, lease, dismissal, desktop PID/executable,
+expiry, question and newer-user boundary before disclosing a data-only exact envelope once.
+A durable second claim refuses a duplicate even with a different request UUID. The result contains
+`eventID`, `instance`, `relayThreadID`, `threadID`, `message` and `sendBeforeWall`. Without another
+model step or intervening tool, the same exec verifies the finite deadline and calls the native
+`send_message_to_thread` once, passing message as opaque data. Missing tools, refused/accepted-only
+receipts, expiry and unknown outcomes cannot cause a resend or an original-queue fallback.
+
+Saved arrival requires ONLY the expected native `response_item/function_call_output` from
+`codex_app/send_message_to_thread`, the exact registered relay UUID and the complete canonically
+escaped envelope's byte length/digest. Human copies, quoted markers, extra text and mixed content
+remain newer input. Actual arrival can open the exact originating chat once through its existing
+native deep link, bound to the same Desktop process. New input, dismissal, process replacement or
+revoked readiness suppresses navigation. A navigation failure never resends or changes delivery.
+Delivery may arrive between the origin agent's actions; this cannot cancel an in-flight tool or
+promise zero latency.
+
+The existing file-watcher mechanism observes the relay's matching terminal turn before archiving ONLY
+that app-owned chat. A private metadata-only cleanup record permits a later app startup/prepare to
+finish an interrupted archive; it contains no reply body and can never authorize a send. Failed
+cleanup stays unconfirmed and never retries delivery. The broker is explicitly unpinned, silent,
+has an empty final response and performs no other work. Live microphone and natural relay acceptance
+remain distinct from protocol fixtures and the separately recorded synthetic host-tool proof.
 
 H Chat admits at most one listening/composing notification at a time. After its decision, it freezes
 the old event's body/origin and stops feeding it speech; the old event may await release acknowledgement
@@ -160,9 +193,9 @@ choices are unchanged. Disabled listening is unavailable, not silently enabled. 
 Agent Flow recording have separate policies. Active or unknown Codex Voice cancels only the notification reply. Agent Flow recording may continue while H Chat uses its existing selected listener for Reply; notification speech remains suppressed by the speaker’s existing guard. Ordinary H Chat commands remain available outside the bounded reply attempt. During an admitted finite attempt, its speech is consumed before ambient
 command matching, so a dictated reply cannot launch apps, switch audio or start/end a call.
 
-Reply starts composition; End reply is the only normal send. Pauses never submit. Defaults are
-60 seconds without recognized speech and 120 seconds of reply, with a configurable maximum of
-180 seconds. No command, empty content, cancellation, stale origin, listener failure or a safety
+Reply starts composition; End reply sends and Cancel reply discards. Pauses never submit.
+Negotiated manual composition stays until End/Cancel while its owner lease remains valid.
+The legacy bounded route retains its saved idle/total limits. No command, empty content, cancellation, stale origin, listener failure or a safety
 limit sends nothing. Remove only the timed control words, preserving a genuine body-leading reply.
 
 Notification control spellings reuse the existing phrase dictionary store and global alternate-spelling
@@ -190,7 +223,7 @@ Old tests and HUD screenshots are historical evidence, not verification of this 
 
 ## Visual fallback response and cleanup
 
-The existing six callback schemas and notification protocol integer remain 1. New clients discover
+The original lifecycle callback schemas and notification protocol integer remain 1. New clients discover
 `fallbackReady` before using this extension. Every event snapshot additionally exposes:
 
 ```json

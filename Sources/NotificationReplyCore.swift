@@ -271,6 +271,10 @@ struct NotificationReplyCore {
         phase = .queued; body = nil; retireRecognition()
     }
     mutating func delivered() { if phase == .queued { phase = .delivered } }
+    // Only the coordinator's exact native relay-arrival proof calls this; it never authorizes another send. — GPT-6.1 Sol
+    mutating func relayDelivered() {
+        phase = .delivered; reason = "end-reply"; body = nil; retireRecognition()
+    }
 
     // Terminal records keep their outcome, not the active attempt's compiled dictionary or word spans. — GPT-6.1 Sol
     private mutating func retireRecognition() {
