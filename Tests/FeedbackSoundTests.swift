@@ -70,7 +70,7 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
 
         // Each phrase slot owns a distinct sound, including the two ways to silence speakers.
         let slotCues = Set(PhraseSlot.allCases.map(\.cue))
-        check(slotCues.union([.microphoneDetected, .notificationReplyAccepted]) == Set(Cue.allCases) && !slotCues.contains(.microphoneDetected),
+        check(slotCues.union([.microphoneDetected, .notificationReplyAccepted, .customScript]) == Set(Cue.allCases) && !slotCues.contains(.microphoneDetected),
               "Ambient phrases, neutral audio detection and notification Reply account for every cue")
         check(slotCues.count == PhraseSlot.allCases.count, "Every phrase slot has a distinct sound")
         check(PhraseSlot.wakePhrase.cue == .wake && PhraseSlot.sleepPhrase.cue == .ended, "Wake and End keep their chimes")
@@ -157,7 +157,7 @@ private func fingerprint(_ samples: [Double], rate: Int) -> [Double] {
             let data = try Data(contentsOf: directory.appendingPathComponent("\(cue.rawValue).wav"))
             check(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == expected, "The original \(cue.rawValue) chime is unchanged")
         }
-        check(Set(original.keys).union(commandCues).union([.notificationReplyAccepted]) == Set(Cue.allCases), "Every cue has one explicit owner")
+        check(Set(original.keys).union(commandCues).union([.notificationReplyAccepted, .customScript]) == Set(Cue.allCases), "Every cue has one explicit owner")
 
         // Command sounds match the chimes' level and are clearly unlike every other cue.
         let reference = loudness(waves[.microphoneMuted]!.samples, rate: 44_100)

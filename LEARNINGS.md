@@ -1,5 +1,9 @@
 # Hello Chat engineering notes
 
+## 27 November 2026 — Custom script phrases
+
+- Custom script phrases match a completed utterance as a whole, using the same case, spacing and punctuation normalization as saved phrases. Keep script execution out of partial recognition, notification replies and recorded checks. Apple finals for the same or overlapping audio can be revised, so only a new audio span is eligible. Configuration is Mac-local. Launch the executable directly with separate arguments and leave retries to a fresh spoken request.
+
 ## 25 November 2026 — Bind a pending speed handoff before its title is ready
 
 - Bind the first fresh, verified Voice identity before waiting for its exact composer title. A different active identity or a proven inactive result after that binding must retire the request; a transient unknown read may keep the same binding. Otherwise a replacement call in the same desktop process can inherit a prior call's unfinished speed request. The inert regression reproduces the old inheritance and verifies replacement/End retirement plus same-call recovery.

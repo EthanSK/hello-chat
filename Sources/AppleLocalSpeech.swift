@@ -15,6 +15,8 @@ actor AppleLocalSpeech: SpeechBackend {
     private var converter: AVAudioConverter?
     private var latest = "", emitted = "", finalized = ""
     private var finalizedFramePending = false
+    private var customSpeechFinals = CustomSpeechFinals()
+    private var completedCommandUtterances: [String] = []
     private var latestTimings: [(word: String, start: Double, end: Double)] = []
     private var finalizedTimings: [(word: String, start: Double, end: Double)] = []
     private var failure: Error?
@@ -54,7 +56,7 @@ actor AppleLocalSpeech: SpeechBackend {
                             (word: $0, start: range.start.seconds, end: range.end.seconds)
                         }
                     }
-                    await self?.receive(String(result.text.characters), timings: timings, final: result.isFinal, token: token)
+                    await self?.receive(String(result.text.characters), timings: timings, final: result.isFinal, range: result.range, token: token)
                 }
             } catch { await self?.failed(error, token: token) }
         }
@@ -64,12 +66,15 @@ actor AppleLocalSpeech: SpeechBackend {
         try Task.checkCancellation()
         try await analyzer.start(inputSequence: stream)
     }
-    private func receive(_ text: String, timings: [(word: String, start: Double, end: Double)], final: Bool, token: UUID) {
+    private func receive(_ text: String, timings: [(word: String, start: Double, end: Double)], final: Bool, range: CMTimeRange, token: UUID) {
         guard token == generation else { return }
         recognitionRevision &+= 1
         latest = [finalized, text].filter { !$0.isEmpty }.joined(separator: " ")
         latestTimings = finalizedTimings + timings
         finalizedFramePending = finalizedFramePending || (final && !text.isEmpty)
+        if final, !text.isEmpty, customSpeechFinals.accept(start: range.start.seconds, end: range.end.seconds) {
+            completedCommandUtterances.append(text)
+        }
         if final { finalized = latest; finalizedTimings = latestTimings }
     }
     private func failed(_ error: Error, token: UUID) { if token == generation { failure = error } }
@@ -111,10 +116,13 @@ actor AppleLocalSpeech: SpeechBackend {
         let changed = latest != emitted && !latest.isEmpty
         let utteranceEnded = finalizedFramePending
         finalizedFramePending = false
+        let completed = completedCommandUtterances
+        completedCommandUtterances.removeAll(keepingCapacity: true)
         if changed { emitted = latest }
         return SpeechUpdate(text: changed ? latest : nil, audioTime: processedSeconds, reset: reset,
                             utteranceEnded: utteranceEnded, wordTimings: changed ? latestTimings : nil,
-                            finalizedWordCount: finalizedTimings.count, inputAudioTime: processedSeconds, recognitionRevision: recognitionRevision)
+                            finalizedWordCount: finalizedTimings.count, inputAudioTime: processedSeconds, recognitionRevision: recognitionRevision,
+                            completedCommandUtterances: completed)
     }
     // Finalize the existing analyzer through a candidate control word, without stopping capture or opening another recognizer. — GPT-6.1 Sol
     func finalizeRecognition(through time: Double) async throws {
@@ -141,6 +149,8 @@ actor AppleLocalSpeech: SpeechBackend {
         analyzer = nil; targetFormat = nil; converter = nil
         latest = ""; emitted = ""; finalized = ""; failure = nil; duration = 0; quiet = 0
         finalizedFramePending = false
+        customSpeechFinals = CustomSpeechFinals()
+        completedCommandUtterances.removeAll()
         processedSeconds = 0
         recognitionRevision = 0
         latestTimings = []; finalizedTimings = []

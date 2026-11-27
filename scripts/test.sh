@@ -5,6 +5,8 @@ cd "${0:A:h:h}"
 speed_sources=(Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/DesktopSession.swift Sources/AppActivation.swift Sources/VoiceBridge.swift Sources/SpotifyVolumeSession.swift Sources/VoiceCallMonitor.swift Sources/Diagnostics.swift Sources/VoicePeerPriority.swift Sources/VoicePeerMailbox.swift Sources/CodexChatSpeed.swift Sources/ModelBarVoiceSpeed.swift Sources/CodexVoiceSpeed.swift Sources/CodexVoiceDraft.swift Tests/CodexChatSpeedTests.swift)
 build_dir="${HELLOCHAT_BUILD_DIR:-$PWD/.build.noindex}"
 mkdir -p "$build_dir"
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/CustomScriptPhrases.swift Tests/CustomScriptPhraseTests.swift -o "$build_dir/CustomScriptPhraseTests"
+"$build_dir/CustomScriptPhraseTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplyCoreTests.swift -o "$build_dir/NotificationReplyCoreTests"
 "$build_dir/NotificationReplyCoreTests"
 swiftc -swift-version 5 -parse-as-library Sources/NotificationReplyCore.swift Tests/NotificationReplySpellingTests.swift -o "$build_dir/NotificationReplySpellingTests"

@@ -11,6 +11,7 @@ import CoreAudio
     var onWaiting: (() -> Void)?
     var onAudioActivity: ((Double, Double, Double) -> Void)?
     var onFrame: ((Bool) -> Void)?
+    var onCompletedCommandUtterance: ((String) -> Void)?
     var onUtteranceEnd: (() -> Void)?
     var onReplyRecognition: ((NotificationReplyCore.Recognition) -> Void)?
     var onReplyInterruption: ((String) -> Void)?
@@ -279,7 +280,8 @@ import CoreAudio
                     modelAudioTime = result.audioTime
                     var publishedNativeFinal = false
                     self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate, modelAudioTime)
-                    if self.needsReplyRecognition?() == true {
+                    let handlingReply = self.needsReplyRecognition?() == true
+                    if handlingReply {
                         let recognition = self.replySpeech.observe(text: result.text, timings: result.wordTimings,
                             inputTime: result.inputAudioTime, capturedAt: frame.capturedAt, finalWords: result.finalizedWordCount, ended: result.utteranceEnded, revision: result.recognitionRevision)
                         if let through = self.replySpeech.hostTime(forDecodedTime: result.audioTime) { self.onReplyProgress?(through) }
@@ -328,6 +330,10 @@ import CoreAudio
                     }
                     self.progress.processed(at: Diagnostics.now)
                     self.onFrame?(result.utteranceEnded)
+                    if recording == nil, !handlingReply, self.session == token,
+                       self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) {
+                        for utterance in result.completedCommandUtterances { self.onCompletedCommandUtterance?(utterance) }
+                    }
                     if Diagnostics.now - summaryAt >= 5 {
                         self.diagnostics?.record("speech.performance", numbers: ["frames": Double(frames), "text_updates": Double(textUpdates), "gaps": Double(gaps), "queue_max_ms": queueMax, "inference_max_ms": processMax, "inference_total_ms": processTotal, "audio_seconds": audioTotal])
                         summaryAt = Diagnostics.now; frames = 0; textUpdates = 0; gaps = 0; queueMax = 0; processMax = 0; processTotal = 0; audioTotal = 0

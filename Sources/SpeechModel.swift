@@ -46,6 +46,7 @@ struct SpeechUpdate {
     var inputAudioTime: Double? = nil // Full fed-input timeline, including priming, before decoder chunk rounding.
     var recognitionRevision: UInt64? = nil
     var lostAudio = false // A recovery reset after dropped input is different from a normal context rollover. — GPT-6.1 Sol
+    var completedCommandUtterances: [String] = []
 }
 
 protocol SpeechBackend: Actor {

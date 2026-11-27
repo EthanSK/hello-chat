@@ -159,6 +159,24 @@ The menu bar has **Start listening** / **Stop listening** and the same Voice con
 | Diagnostics | Timing, errors and startup request/revision metadata, which exclude recognised words. |
 | Appearance | **Bring Home forward when a phrase is heard** is on by default. Detected commands raise Home without taking keyboard focus from the app you’re using. **Open H Chat windows on** remembers your display choice and uses an available display when disconnected. Zoom starts at 100%. **View → Zoom In / Zoom Out / Actual Size** works too. |
 
+## Custom script phrases
+
+In Settings → Custom Phrases, open the configuration file, save your edits, then choose **Reload Custom Phrases**. Each entry has a name, one or more phrases, and the full path to an executable.
+
+```json
+[
+  {
+    "name": "Project check",
+    "phrases": ["Check my project", "Run project check"],
+    "executable": "/absolute/path/to/check-project",
+    "arguments": ["--quick"],
+    "workingDirectory": "/absolute/path/to/project"
+  }
+]
+```
+
+Both `arguments` and `workingDirectory` are optional. H Chat runs the executable directly after a complete matching utterance. It passes the arguments as written. Phrases embedded in longer speech do not trigger a script. Built-in commands keep priority.
+
 ## Notification replies
 
 Enable **Settings → Notification Replies** with the shared Codex notification-speech integration installed. After a notification finishes, say **Reply** within five seconds, then speak your answer. If intended speech is skipped by an Agent Flow check before audio starts or audio could not be prepared, the same five-second opportunity starts when **Say Reply** appears after confirmed notification delivery. Say **End reply** to send it to the exact chat that produced the notification, or **Cancel reply** to discard it. Once Reply is confirmed, ordinary pauses keep listening until End or Cancel; losing the listener, notification owner or eligible chat still cancels without sending. The compact floating display keeps the complete original notification in every displayed state and streams the reply words while composing. It shows a pending confirmation honestly and keeps End/Cancel hints visible after Reply starts. Short content fits without filling the maximum height. Drag its header to move it, or use its close button to cancel an unsent reply. Last command keeps the outcome. Queue acceptance is separate from a reply appearing in that chat.

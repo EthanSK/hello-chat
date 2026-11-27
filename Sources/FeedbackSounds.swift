@@ -61,6 +61,7 @@ struct VoiceEndFeedback {
         case musicPause = "MusicPause", musicPlay = "MusicPlay"
         case spotifyVolume = "SpotifyVolume"
         case setSpeed = "SetSpeed"
+        case customScript = "CustomScript"
         case callDot = "CallDot", hangUpDot = "HangUpDot"
         case switchApp = "SwitchApp", openApp = "OpenApp", zoomIn = "ZoomIn", zoomOut = "ZoomOut", showVoice = "ShowVoice"
     }

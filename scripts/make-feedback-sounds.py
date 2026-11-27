@@ -127,3 +127,4 @@ write("NotificationReplyAccepted", hits(0.18, (0.0,), (1046.5,), SPRING, 35, 0.1
 
 # A distinct ascending three-note cue after the requested chat speed is confirmed. — GPT-6.1 Sol
 write("SetSpeed", hits(0.24, (0.0, 0.065, 0.13), (493.88, 739.99, 1108.73), WOOD, 28, 0.09))
+write("CustomScript", hits(0.31, (0.0, 0.045, 0.17), (1568, 659.25, 1046.5), SPRING, 38, 0.095))

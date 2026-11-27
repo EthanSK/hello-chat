@@ -1758,6 +1758,11 @@ struct SettingsView: View {
                 cancelReplySpellings: Binding(get: { model.phraseDictionaries[NotificationReplyCore.Commands.cancelReplySpellingKey] },
                     set: { model.phraseDictionaries[NotificationReplyCore.Commands.cancelReplySpellingKey] = $0 }),
                 similar: model.similarPhrases, readiness: { model.notificationReplies.readiness })
+            Section("Custom Phrases") {
+                Button("Open Custom Phrases File…") { model.openCustomScriptPhrases() }
+                Button("Reload Custom Phrases") { model.loadCustomScriptPhrases() }
+                Text(model.customScriptStatus).foregroundStyle(.secondary)
+            }
             Section("Automatic Listening") {
                 Toggle("Listen automatically when docked", isOn: $model.automaticListening)
                     .accessibilityIdentifier("automaticListening")

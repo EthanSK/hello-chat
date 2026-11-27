@@ -9,6 +9,10 @@ import SwiftUI
         didSet { if !busy { scheduleObservedVoiceEnd() } }
     }
     @Published private(set) var status = "Off"
+    @Published private(set) var customScriptStatus = ""
+    @Published private(set) var runningCustomScript = false
+    private var customScriptPhrases: CustomScriptPhrases?
+    private var customScript: Process?
     @Published private(set) var detail = "Start listening for Hello Chat."
     @Published var soundEffects = UserDefaults.standard.object(forKey: "soundEffects") as? Bool ?? true {
         didSet { UserDefaults.standard.set(soundEffects, forKey: "soundEffects"); updateVoiceCallMonitoring() }
@@ -854,6 +858,10 @@ import SwiftUI
             }
             self?.checkStandaloneWake(utteranceEnded: utteranceEnded)
         }
+        loadCustomScriptPhrases()
+        listener.onCompletedCommandUtterance = { [weak self] utterance in
+            self?.runCustomScript(for: utterance)
+        }
         listener.onLevel = { [weak self] in self?.meter.level = $0 }
         listener.onError = { [weak self] error in
             guard let self else { return }
@@ -1285,6 +1293,54 @@ import SwiftUI
         Diagnostics.shared.record("speech.recovery.environment_changed")
         restartMicrophone(settle: true)
     }
+    func loadCustomScriptPhrases() {
+        do {
+            let phrases = try CustomScriptPhrases.load()
+            customScriptPhrases = phrases
+            customScriptStatus = phrases.count == 1 ? "1 custom command loaded." : "\(phrases.count) custom commands loaded."
+        } catch {
+            customScriptPhrases = nil
+            customScriptStatus = "Couldn't load custom phrases. " + error.localizedDescription
+        }
+    }
+
+    func openCustomScriptPhrases() {
+        do {
+            let file = try CustomScriptPhrases.openableFile()
+            if !NSWorkspace.shared.open(file) { customScriptStatus = "Couldn't open the custom phrases file." }
+        } catch {
+            customScriptStatus = "Couldn't open the custom phrases file."
+        }
+    }
+
+    private func runCustomScript(for utterance: String) {
+        guard enabled, detectionRunning, !quitting, !checkingSpeech, !runningCustomScript,
+              !notificationReplies.interceptsSpeech,
+              let command = customScriptPhrases?.command(for: utterance) else { return }
+        // Saved built-in phrases retain precedence even when their command is disabled. — GPT-6.2 Sol
+        let words = PhraseMatcher.words(utterance)
+        guard !configuredPatterns.values.joined().contains(where: { !$0.matches(in: words, forReservation: true).isEmpty }),
+              !activeSpeakerCommands.contains(where: { !$0.pattern.matches(in: words).isEmpty }) else { return }
+        do {
+            customScript = try command.launch { [weak self] status in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.customScript = nil
+                    self.runningCustomScript = false
+                    self.lastEvent = status == 0 ? "Finished: \(command.name)" : "\(command.name) exited with status \(status)."
+                    Diagnostics.shared.record("custom_script.finished", numbers: ["status": Double(status)])
+                }
+            }
+            runningCustomScript = true
+            lastEvent = "Running: \(command.name)"
+            feedback.play(control: "customScript." + command.name, default: .customScript)
+            Diagnostics.shared.record("custom_script.started")
+        } catch {
+            lastEvent = "Couldn't run \(command.name). Check the executable and its working folder."
+            Diagnostics.shared.failure("custom_script.launch_failed", error)
+        }
+    }
+
     private func resetAudioPhrases() {
         repetitions.boundary()
         spotifyVolumeRequests.removeAll()
@@ -2219,7 +2275,7 @@ import SwiftUI
         applyAutomaticListening()
     }
     func prepareToQuit(preservingSpotify: Bool = false) async -> Bool {
-        guard !quitting else { return false }
+        guard !quitting, !runningCustomScript else { return false }
         Diagnostics.shared.record("app.quit.requested")
         updateListeningDelay = dockDelay
         if enabled { updateListeningDelay?.resumeActiveSession() }
