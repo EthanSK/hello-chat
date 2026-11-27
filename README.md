@@ -50,7 +50,7 @@ Speech recognition runs on your Mac, by default with the bundled Nemotron model 
 1. Open Codex, sign in and start Voice yourself once to check it works.
 2. [Download Hello Chat](https://github.com/EthanSK/hello-chat/releases/latest), unzip it and move `HelloChat.app` to `/Applications`.
 3. Open Hello Chat. It fills unset **Voice chat hotkey** (Command-Control-Shift-V) and **End voice chat** (Control-Option-Shift-V), preserving existing choices and leaving **Toggle voice chat** alone. If Codex is already running, restart it once to apply new shortcuts. If a default shortcut is already used, resolve the conflict in Codex settings. Allow **Microphone** for local listening and **Accessibility** for Codex's Voice shortcut and End Voice control. If macOS doesn't ask for Accessibility, add Hello Chat in System Settings → Privacy & Security → Accessibility.
-4. Choose your microphone on Home. **System default** follows macOS's default input. Codex Voice keeps its own input setting.
+4. Choose your microphone on Home. **System default** follows macOS's default input. The gear beside **Command microphone** opens an optional **Priority order**: add microphones, move them up or down, and turn it on to use the first connected one. If none listed is connected, H Chat follows the system default. Turning priority order off restores your saved single choice. Codex Voice keeps its own input setting.
 5. Turn on **Listening enabled**. Hello Chat prepares the local model, then shows the live microphone level. Listening status is also in the menu bar.
 6. Say **Hello Chat**. When you're done, say **Bye Chat**.
 
