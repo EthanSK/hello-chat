@@ -1,5 +1,12 @@
 # Hello Chat engineering notes
 
+## 27 November 2026 — Command microphone priority order
+
+- Keep the optional order with `MicrophoneInputs`, alongside the existing single UID. Default it off without migration writes, retain disconnected UID/name rows, use the first connected exact UID, and fall back to H Chat's existing system-default rule. Turning it off restores the saved single choice. Agent Flow's list is the reference; its built-in-first and model-UID substitution policies are not H Chat's fallback policy.
+- CoreAudio can reuse a numeric device ID for a different permanent UID. Compare both when deciding to restart capture, preserving idempotence for name-only changes. The actual-class inert regression changed UID with ID 2 reused: the old callback count was zero; the corrected count is one. No physical unplug or microphone capture was used.
+- An explicit agent microphone selection must take over from priority mode through the same owner. Include the saved priority configuration in the existing settings revision so newer UI edits reject stale agent writes. Actual API tests cover that rejection and a valid single-input selection; the native control operation names and schemas remain unchanged.
+- Keep the editor and device-change preview on injected inventories and temporary preferences for display-only checks. Native renders and fake disconnect/reconnect checks establish UI and selection behavior, separately from physical microphone handoff.
+
 ## 25 November 2026 — App focus and visible window order are different
 
 - `orderFrontRegardless()` can put Home above an already-active target app without changing keyboard focus. A successful AppKit activation and a matching frontmost PID therefore do not prove the requested app is visibly above Home. After an explicit app switch, order only Home below the verified target's normal window and confirm the resulting WindowServer order. Keep placement, keyboard focus and notification panels unchanged. The opt-in isolated native window test reproduces and corrects this across processes, including a repeated request; WindowServer completion may arrive after the ordering call returns.
