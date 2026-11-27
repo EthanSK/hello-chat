@@ -58,20 +58,21 @@ import Foundation
         let first = [("fingerbot", 0.5, 1.1)]
         timed.update("Fingerbot", timings: first)
         precondition(timed.completed(through: 2.9, quietFinals: []).isEmpty)
-        precondition(timed.completed(through: 3.2, quietFinals: []) == ["fingerbot"])
+        precondition(timed.completed(through: 3.2, quietFinals: []) == [CustomCommandUtterance("fingerbot")])
         let both = first + [("finger", 4.0, 4.3), ("bot", 4.3, 4.65)]
         timed.update("Fingerbot. Finger bot.", timings: both)
-        precondition(timed.completed(through: 7.0, quietFinals: []) == ["finger bot"])
-        precondition(timed.completed(through: 7.5, quietFinals: ["Fingerbot finger bot"]).isEmpty)
+        precondition(timed.completed(through: 7.0, quietFinals: []) == [CustomCommandUtterance("finger bot", wordRange: 1..<3)])
+        precondition(timed.completed(through: 7.5, quietFinals: [CustomCommandUtterance("Fingerbot finger bot")]).isEmpty)
         for forms in [[("fingerbot", 1.4, 1.8)], [("finger", 1.4, 1.6), ("bot", 1.6, 1.8)]] {
             var between = TimedCustomSpeech()
             let words = [("test", 0.1, 0.5)] + forms + [("another", 2.7, 2.9), ("word", 2.9, 3.2)]
             let phrase = words.map { $0.0 }.joined(separator: " ")
             between.update(phrase, timings: words)
-            let detections = between.completed(through: 4.0, quietFinals: []).compactMap { config.command(for: $0) }
+            let detections = between.completed(through: 4.0, quietFinals: []).filter { config.command(for: $0.text) != nil }
             precondition(detections.count == 1)
+            precondition(detections.first?.wordRange == 1..<(1 + forms.count))
             between.update(phrase, timings: words)
-            precondition(between.completed(through: 4.1, quietFinals: []).allSatisfy { config.command(for: $0) == nil })
+            precondition(between.completed(through: 4.1, quietFinals: []).allSatisfy { config.command(for: $0.text) == nil })
         }
         // The recording's decoder placed a 640 ms gap between the two words
         // and the punctuation at the first following word's start time.
@@ -79,26 +80,27 @@ import Foundation
         let decoded = [("test", 1.92, 2.0), ("finger", 3.52, 3.84), ("bot", 4.48, 4.64),
                        ("this", 4.64, 4.72), ("is", 4.80, 4.88), ("different", 5.12, 5.20)]
         modelClock.update("Test finger bot. This is different.", timings: decoded)
-        precondition(modelClock.completed(through: 8, quietFinals: []).compactMap { config.command(for: $0) }.count == 1)
+        let accepted = modelClock.completed(through: 8, quietFinals: []).filter { config.command(for: $0.text) != nil }
+        precondition(accepted == [CustomCommandUtterance("finger bot", wordRange: 1..<3)])
         for lead in ["I said", "Don't"] {
             var quoted = TimedCustomSpeech()
             let words = PhraseMatcher.words(lead)
             let spans = words.enumerated().map { i, word in (word, Double(i) * 0.2, Double(i + 1) * 0.2) }
             quoted.update(lead + ". Fingerbot.", timings: spans + [("fingerbot", 3.0, 3.6)])
-            precondition(quoted.completed(through: 6, quietFinals: []).allSatisfy { config.command(for: $0) == nil })
+            precondition(quoted.completed(through: 6, quietFinals: []).allSatisfy { config.command(for: $0.text) == nil })
         }
         var mentionedAcrossPause = TimedCustomSpeech()
         mentionedAcrossPause.update("Fingerbot was mentioned", timings: first + [("was", 1.95, 2.1), ("mentioned", 2.1, 2.5)])
-        precondition(mentionedAcrossPause.completed(through: 5, quietFinals: []).allSatisfy { config.command(for: $0) == nil })
+        precondition(mentionedAcrossPause.completed(through: 5, quietFinals: []).allSatisfy { config.command(for: $0.text) == nil })
         var extended = TimedCustomSpeech()
         extended.update("Fingerbot", timings: first)
         precondition(extended.completed(through: 2.0, quietFinals: []).isEmpty)
         extended.update("Fingerbot works", timings: first + [("works", 1.25, 1.6)])
-        precondition(extended.completed(through: 4.0, quietFinals: []).allSatisfy { config.command(for: $0) == nil })
+        precondition(extended.completed(through: 4.0, quietFinals: []).allSatisfy { config.command(for: $0.text) == nil })
         var unaligned = TimedCustomSpeech()
         unaligned.update("Fingerbot", timings: [("fingerbot", 0.5, 0.5)])
         precondition(unaligned.completed(through: 4.0, quietFinals: []).isEmpty)
-        precondition(unaligned.completed(through: 4.0, quietFinals: ["Fingerbot"]) == ["Fingerbot"])
+        precondition(unaligned.completed(through: 4.0, quietFinals: [CustomCommandUtterance("Fingerbot")]) == [CustomCommandUtterance("Fingerbot")])
         print("Custom phrases: exact forms, mentions, collisions, duplicate finals and one local fixture process passed")
     }
 }

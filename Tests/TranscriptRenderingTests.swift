@@ -21,6 +21,17 @@ import SwiftUI
         let custom = HeardTranscript.HighlightCache.Configuration(phrase: "Start Lantern", endPhrase: "End Lantern", similar: false, controlPhrases: [])
         let changed = cache.render(["Start Lantern"], configuration: custom)
         precondition(changed.runs.contains { $0.foregroundColor == .green }, "Changed phrase settings replace cached highlighting")
+        let speech = "I said Finger Bought. Finger Bought!"
+        let match = PhraseHighlights.Accepted(phrase: "finger bought", range: 4..<6, in: speech)!
+        let plain = cache.render([speech], configuration: custom)
+        precondition(plain.runs.allSatisfy { $0.foregroundColor == nil })
+        var accepted = custom
+        accepted.accepted = [match]
+        let styled = cache.render([speech], configuration: accepted)
+        let colored = styled.runs.filter { $0.foregroundColor != nil }
+        precondition(colored.count == 1 && colored.first?.foregroundColor == .green
+                     && colored.first.map { String(styled.characters[$0.range]) } == "Finger Bought",
+                     "A newly accepted custom range restyles unchanged text in built-in green")
         print("Transcript rendering: full text, separate-context highlights, revisions, resets and changed phrases passed")
     }
 }

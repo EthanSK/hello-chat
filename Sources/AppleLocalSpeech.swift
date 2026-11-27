@@ -16,7 +16,7 @@ actor AppleLocalSpeech: SpeechBackend {
     private var latest = "", emitted = "", finalized = ""
     private var finalizedFramePending = false
     private var customSpeechFinals = CustomSpeechFinals()
-    private var completedCommandUtterances: [String] = []
+    private var completedCommandUtterances: [CustomCommandUtterance] = []
     private var latestTimings: [(word: String, start: Double, end: Double)] = []
     private var finalizedTimings: [(word: String, start: Double, end: Double)] = []
     private var failure: Error?
@@ -73,7 +73,9 @@ actor AppleLocalSpeech: SpeechBackend {
         latestTimings = finalizedTimings + timings
         finalizedFramePending = finalizedFramePending || (final && !text.isEmpty)
         if final, !text.isEmpty, customSpeechFinals.accept(start: range.start.seconds, end: range.end.seconds) {
-            completedCommandUtterances.append(text)
+            let start = PhraseMatcher.words(finalized).count
+            let end = start + PhraseMatcher.words(text).count
+            completedCommandUtterances.append(CustomCommandUtterance(text, wordRange: start..<end))
         }
         if final { finalized = latest; finalizedTimings = latestTimings }
     }

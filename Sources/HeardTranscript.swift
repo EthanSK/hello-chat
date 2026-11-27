@@ -36,6 +36,7 @@ struct HeardTranscript: View, Equatable {
             let similar: Bool
             let controlPhrases: [String]
             var patterns: [PhrasePattern]? = nil
+            var accepted: [PhraseHighlights.Accepted] = []
         }
         private var configuration: Configuration?
         private var sources: [String] = []
@@ -65,7 +66,8 @@ struct HeardTranscript: View, Equatable {
         private func style(_ text: String, configuration: Configuration) -> AttributedString {
             var result = AttributedString()
             for run in PhraseHighlights.runs(in: text, phrase: configuration.phrase, endPhrase: configuration.endPhrase,
-                                            similar: configuration.similar, controlPhrases: configuration.controlPhrases, patterns: configuration.patterns) {
+                                            similar: configuration.similar, controlPhrases: configuration.controlPhrases,
+                                            patterns: configuration.patterns, accepted: configuration.accepted) {
                 var part = AttributedString(run.text)
                 if let kind = run.kind {
                     let color: Color = kind == .exact ? .green : (kind == .dictionary ? .orange : .purple)

@@ -18,6 +18,7 @@ struct SpeechCheckResult {
     var startupAtVoiceOpen = ""
     var startupBoundary = ""
     var fixtureWordSpans: [[String: Any]] = []
+    var fixtureHighlights: [String] = []
 }
 @MainActor final class SpeechCheck {
     func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false, captureStartup: Bool = false, customPhrases: CustomScriptPhrases? = nil, runFixture: Bool = false) async -> SpeechCheckResult {
@@ -39,11 +40,16 @@ struct SpeechCheckResult {
         var startupAtVoiceOpen = ""
         var startupBoundary = ""
         var fixtureWordSpans: [[String: Any]] = []
+        var fixtureHighlights: [String] = []
         if let customPhrases {
             listener.onRecordedCommandUtterance = { utterance in
-                guard let command = customPhrases.command(for: utterance) else { return }
-                var result: [String: Any] = ["command": "custom", "name": command.name, "utterance": utterance]
+                guard let command = customPhrases.command(for: utterance.text) else { return }
+                var result: [String: Any] = ["command": "custom", "name": command.name, "utterance": utterance.text]
                 if runFixture, command.executable == "/usr/bin/true", command.arguments == nil, command.workingDirectory == nil {
+                    if let mark = PhraseHighlights.Accepted(phrase: utterance.text, range: utterance.wordRange, in: text) {
+                        fixtureHighlights += PhraseHighlights.runs(in: text, phrase: "", similar: false, patterns: [], accepted: [mark])
+                            .filter { $0.kind == .exact }.map(\.text)
+                    }
                     do {
                         let process = try command.launch { _ in }
                         process.waitUntilExit()
@@ -129,7 +135,7 @@ struct SpeechCheckResult {
             return .init(text: failure ?? text, commands: failure == nil ? commands : [], neuralShare: share,
                          cpuSeconds: Self.cpuTime() - cpuStart, audioSeconds: audioSeconds, detections: detections, segments: segments + [text], gaps: gaps, resets: max(0, sessions - 1), utteranceEnds: utteranceEnds,
                          startupSpeech: startup?.text ?? "", startupReady: startupReady, startupAtVoiceOpen: startupAtVoiceOpen,
-                         startupBoundary: startupBoundary, fixtureWordSpans: fixtureWordSpans)
+                         startupBoundary: startupBoundary, fixtureWordSpans: fixtureWordSpans, fixtureHighlights: fixtureHighlights)
         } catch {
             listener.stop(); listener.onText = nil; listener.onSession = nil
             await listener.waitUntilStopped()

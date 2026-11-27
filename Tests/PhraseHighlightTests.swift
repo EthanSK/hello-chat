@@ -81,6 +81,18 @@ import Foundation
                                           similar: true, patterns: listedPatterns).filter { $0.kind != nil }
         check(extra.map(\.text) == ["Hey Lantern", "bigger", "Goodnight chat"] && extra.allSatisfy { $0.kind == .exact },
               "Extra wake, End and command phrases highlight green; near misses stay neutral")
+        let transcript = "I said finger bought. Now testing. Finger Bought!"
+        let mark = PhraseHighlights.Accepted(phrase: "finger bought", range: 6..<8, in: transcript)!
+        func custom(_ text: String, accepted: [PhraseHighlights.Accepted]) -> [PhraseHighlights.Run] {
+            PhraseHighlights.runs(in: text, phrase: "", similar: false, patterns: [], accepted: accepted)
+        }
+        let highlighted = custom(transcript + " Later words.", accepted: [mark, mark])
+        check(highlighted.map(\.text).joined() == transcript + " Later words.", "Accepted marks preserve transcript text")
+        check(highlighted.filter { $0.kind != nil } == [.init(text: "Finger Bought", kind: .exact)],
+              "Only the accepted occurrence highlights with exact color, even if the earlier speech contains the same alias")
+        check(custom(transcript, accepted: []).allSatisfy { $0.kind == nil }, "Mention text alone cannot highlight as a custom command")
+        check(custom("We said finger bought. Now testing. Finger Bought!", accepted: [mark]).allSatisfy { $0.kind == nil },
+              "A changed transcript cannot inherit a mark from another occurrence")
         print("\(checks) phrase highlight checks passed")
     }
 }

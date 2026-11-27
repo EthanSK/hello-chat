@@ -291,6 +291,7 @@ import SwiftUI
     @Published private(set) var microphone: MicrophoneState? = .muted
     let meter = AudioMeter()
     @Published private(set) var transcript = ""
+    @Published private(set) var customTranscriptHighlights: [PhraseHighlights.Accepted] = []
     @Published private(set) var transcriptBatchID = UUID() // Reset the reader at the recognizer’s existing batch boundary; scrolling must not retain earlier batches.
     @Published private(set) var archiveError: String?
     @Published var saveTranscripts = UserDefaults.standard.object(forKey: "saveTranscripts") as? Bool ?? true {
@@ -814,6 +815,7 @@ import SwiftUI
         }
         listener.onSession = { [weak self] in
             self?.transcriptBatchID = UUID()
+            self?.customTranscriptHighlights.removeAll()
             self?.archive.boundary(); self?.endPhrase.resetContext(); self?.standaloneWake.resetContext(); self?.resetAudioPhrases(); self?.detectionRunning = true
             // A context reset is not the end of the opening. Keep both the M5's
             // startup capture and the independent command detector resets.
@@ -1356,9 +1358,9 @@ import SwiftUI
             || speakers.contains { !$0.pattern.matches(in: words).isEmpty }
     }
 
-    private func runCustomScript(for utterance: String) {
-        guard let command = customScriptPhrases?.command(for: utterance) else { return }
-        let reserved = reservesCustomPhrase(utterance)
+    private func runCustomScript(for utterance: CustomCommandUtterance) {
+        guard let command = customScriptPhrases?.command(for: utterance.text) else { return }
+        let reserved = reservesCustomPhrase(utterance.text)
         guard enabled, detectionRunning, !quitting, !checkingSpeech, !runningCustomScript,
               !notificationReplies.interceptsSpeech, !reserved else {
             Diagnostics.shared.record("custom_script.blocked", info: [
@@ -1366,6 +1368,9 @@ import SwiftUI
                 "reserved": String(reserved), "notification": String(notificationReplies.interceptsSpeech)
             ])
             return
+        }
+        if let mark = PhraseHighlights.Accepted(phrase: utterance.text, range: utterance.wordRange, in: transcript) {
+            customTranscriptHighlights.append(mark)
         }
         do {
             customScript = try command.launch { [weak self] status in

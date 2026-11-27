@@ -11,8 +11,8 @@ import CoreAudio
     var onWaiting: (() -> Void)?
     var onAudioActivity: ((Double, Double, Double) -> Void)?
     var onFrame: ((Bool) -> Void)?
-    var onCompletedCommandUtterance: ((String) -> Void)?
-    var onRecordedCommandUtterance: ((String) -> Void)?
+    var onCompletedCommandUtterance: ((CustomCommandUtterance) -> Void)?
+    var onRecordedCommandUtterance: ((CustomCommandUtterance) -> Void)?
     var onUtteranceEnd: (() -> Void)?
     var onReplyRecognition: ((NotificationReplyCore.Recognition) -> Void)?
     var onReplyInterruption: ((String) -> Void)?

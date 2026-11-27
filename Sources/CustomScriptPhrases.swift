@@ -110,13 +110,23 @@ struct CustomSpeechFinals {
     }
 }
 
+struct CustomCommandUtterance: Equatable {
+    let text: String
+    let wordRange: Range<Int>
+
+    init(_ text: String, wordRange: Range<Int>? = nil) {
+        self.text = text
+        self.wordRange = wordRange ?? 0..<PhraseMatcher.words(text).count
+    }
+}
+
 struct TimedCustomSpeech {
     // Nemotron emits word spans on an encoder clock. Live-style fixtures put
     // up to 640 ms between the two words of one command. Punctuation can still
     // close the sentence when it shares a frame with the first following word.
     private static let groupGap = 0.72
     private struct Segment {
-        let text: String?
+        let utterance: CustomCommandUtterance?
         let start: Double
         let end: Double
     }
@@ -155,22 +165,23 @@ struct TimedCustomSpeech {
             let direct = context.permitsDirectCommand(in: start..<end)
                 && !negated && !leftReference && !rightReference
                 && !DesktopSpeechBoundaries.introducesQuotation(words: words, before: start, sentences: [])
-            return Segment(text: direct ? words[start..<end].joined(separator: " ") : nil,
+            let utterance = direct ? CustomCommandUtterance(words[start..<end].joined(separator: " "), wordRange: start..<end) : nil
+            return Segment(utterance: utterance,
                            start: spans.first!.start, end: spans.map(\.end).max()!)
         }
     }
 
-    mutating func completed(through decodedTime: Double, quietFinals: [String]) -> [String] {
+    mutating func completed(through decodedTime: Double, quietFinals: [CustomCommandUtterance]) -> [CustomCommandUtterance] {
         guard !usedFallback else { return [] }
         if !hasTimings {
             usedFallback = !quietFinals.isEmpty
             return quietFinals
         }
-        var outputs: [String] = []
+        var outputs: [CustomCommandUtterance] = []
         while let first = pending.first,
               !quietFinals.isEmpty || decodedTime - first.end + 1e-9 >= SpeechOnset.pauseSeconds {
             pending.removeFirst()
-            if finals.accept(start: first.start, end: first.end), let text = first.text { outputs.append(text) }
+            if finals.accept(start: first.start, end: first.end), let utterance = first.utterance { outputs.append(utterance) }
         }
         return outputs
     }

@@ -4,6 +4,21 @@ import Foundation
 // Preserve the model's actual text, punctuation and case while colouring only
 // complete matcher spans. Discussion filtering still owns activation separately.
 enum PhraseHighlights {
+    struct Accepted: Equatable {
+        let range: Range<Int>
+        fileprivate let prefix: [String]
+
+        init?(phrase: String, range: Range<Int>, in transcript: String) {
+            let words = PhraseMatcher.words(transcript)
+            guard !range.isEmpty, range.lowerBound >= 0, range.upperBound <= words.count,
+                  words[range].elementsEqual(PhraseMatcher.words(phrase)) else { return nil }
+            self.range = range
+            // A revision or a held scroll position must not color a different
+            // occurrence that happens to occupy the same word indices.
+            prefix = Array(words.prefix(range.upperBound))
+        }
+    }
+
     struct Run: Equatable {
         var text: String
         var kind: PhraseMatcher.MatchKind?
@@ -17,7 +32,8 @@ enum PhraseHighlights {
     }
 
     static func runs(in text: String, phrase: String, endPhrase: String = "", similar: Bool, limit: Int? = nil,
-                     controlPhrases: [String] = PhraseMatcher.controlPhrases, dictionaries: PhraseDictionaries = .init(), patterns: [PhrasePattern]? = nil) -> [Run] {
+                     controlPhrases: [String] = PhraseMatcher.controlPhrases, dictionaries: PhraseDictionaries = .init(),
+                     patterns: [PhrasePattern]? = nil, accepted: [Accepted] = []) -> [Run] {
         let visibleLimit = limit ?? text.count
         guard !text.isEmpty, visibleLimit > 0 else { return [] }
         let visibleStart = text.index(text.endIndex, offsetBy: -min(visibleLimit, text.count))
@@ -34,6 +50,11 @@ enum PhraseHighlights {
             cursor = end
         }
         var candidates: [Span] = []
+        for mark in accepted where tokens.prefix(mark.prefix.count).elementsEqual(mark.prefix) {
+            let range = mark.range
+            guard ranges[range.lowerBound].lowerBound >= visibleStart else { continue }
+            candidates.append(Span(start: range.lowerBound, end: range.upperBound, kind: .exact))
+        }
         let phrases = patterns ?? ([PhrasePattern(text: phrase, similar: similar, dictionaries: dictionaries),
             PhrasePattern(text: endPhrase, similar: similar, ending: true, dictionaries: dictionaries)]
             + controlPhrases.map { PhrasePattern(text: $0, similar: similar, dictionaries: dictionaries) })

@@ -236,7 +236,10 @@ import Darwin
                     "startupBoundary": result.startupBoundary,
                     "cpuSeconds": result.cpuSeconds, "audioSeconds": result.audioSeconds,
                     "memoryMB": ResourceUsage.footprintMB(), "anePlanShare": selectedModel.neuralPlacementKnown ? result.neuralShare as Any : NSNull()]
-                if customDispatch != nil { report["word_spans"] = result.fixtureWordSpans }
+                if customDispatch != nil {
+                    report["word_spans"] = result.fixtureWordSpans
+                    report["highlighted"] = result.fixtureHighlights
+                }
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) { print(String(decoding: data, as: UTF8.self)) }
                 if customDispatch != nil {
                     exit(result.detections.contains { ($0["exit_status"] as? Int) == 0 } ? 0 : 1)
@@ -560,7 +563,8 @@ struct MainView: View {
                     TranscriptPane(segments: model.transcript.isEmpty ? [] : [model.transcript], phrase: model.wakePhrase, endPhrase: model.sleepPhrase,
                                    similar: model.similarPhrases, enabled: model.enabled,
                                    viewportHeight: viewport.size.height, scale: zoom.scale,
-                                   controlPhrases: model.controlPhrases, patterns: model.phrasePatterns)
+                                   controlPhrases: model.controlPhrases, patterns: model.phrasePatterns,
+                                   accepted: model.customTranscriptHighlights)
                         .id(model.transcriptBatchID) // A new recognition batch releases held text and selection from the previous batch.
                     // One place for command outcomes. The model words each result; this row shows it
                     // as written, with any reason from the command, and links to the history.
