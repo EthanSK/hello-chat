@@ -19,7 +19,7 @@ struct SpeechCheckResult {
     var startupBoundary = ""
 }
 @MainActor final class SpeechCheck {
-    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false, captureStartup: Bool = false) async -> SpeechCheckResult {
+    func run(url: URL, channels: Int = 20, similar: Bool = true, recoverBeforeAudio: Bool = false, model: SpeechModel = .defaultModel, standalone: Bool = false, captureStartup: Bool = false, customPhrases: CustomScriptPhrases? = nil) async -> SpeechCheckResult {
         let listener = SpeechListener(diagnostics: nil)
         listener.model = model
         var matcher = PhraseMatcher()
@@ -37,6 +37,12 @@ struct SpeechCheckResult {
         var startupReady = false
         var startupAtVoiceOpen = ""
         var startupBoundary = ""
+        if let customPhrases {
+            listener.onRecordedCommandUtterance = { utterance in
+                guard let command = customPhrases.command(for: utterance) else { return }
+                detections.append(["command": "custom", "name": command.name, "utterance": utterance])
+            }
+        }
         listener.onDelay = { gaps += 1 }
         listener.onSession = {
             // Same startup policy as GateModel: a context reset continues capture.

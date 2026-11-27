@@ -3,6 +3,7 @@
 ## 27 November 2026 — Custom script phrases
 
 - Custom script phrases match a completed utterance as a whole, using the same case, spacing and punctuation normalization as saved phrases. Keep script execution out of partial recognition, notification replies and recorded checks. Apple finals for the same or overlapping audio can be revised, so only a new audio span is eligible. Configuration is Mac-local. Launch the executable directly with separate arguments and leave retries to a fresh spoken request.
+- Nemotron decoded a configured phrase in steady room noise without reporting an utterance end. For custom scripts, use the existing pause duration on real decoded word spans as well as the microphone's quiet boundary. Use the complete group of words, reject quoted and negated requests, and consume each span once. The recorded custom-command check reports matches without launching their scripts.
 
 ## 25 November 2026 — Bind a pending speed handoff before its title is ready
 

@@ -83,3 +83,59 @@ struct CustomSpeechFinals {
         return true
     }
 }
+
+struct TimedCustomSpeech {
+    private struct Segment {
+        let text: String?
+        let start: Double
+        let end: Double
+    }
+
+    private var pending: [Segment] = []
+    private var finals = CustomSpeechFinals()
+    private var hasTimings = false
+    private var usedFallback = false
+
+    // Nemotron's token clock can identify a pause when room noise prevents the
+    // microphone from going quiet. Keep the same standalone pause and require real spans. — GPT-6.2 Sol
+    mutating func update(_ text: String, timings: [(word: String, start: Double, end: Double)]?) {
+        let words = PhraseMatcher.words(text)
+        let range = words.indices
+        guard let timings, timings.map(\.word) == words,
+              DesktopSpeechBoundaries.hasAudioSpans(timings, in: range) else {
+            pending.removeAll()
+            return
+        }
+        hasTimings = true
+        let boundaries = [0] + DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: SpeechOnset.pauseSeconds)
+            + [words.count]
+        var context = StandaloneWake()
+        context.update(text, at: 0, timings: timings)
+        pending = zip(boundaries, boundaries.dropFirst()).map { start, end in
+            let spans = timings[start..<end]
+            let lead = words.prefix(start)
+            let negated = lead.last.map(["no", "not", "never", "dont"].contains) == true
+                || lead.suffix(2).elementsEqual(["don", "t"])
+            let direct = context.permitsDirectCommand(in: start..<end)
+                && !negated
+                && !DesktopSpeechBoundaries.introducesQuotation(words: words, before: start, sentences: [])
+            return Segment(text: direct ? words[start..<end].joined(separator: " ") : nil,
+                           start: spans.first!.start, end: spans.map(\.end).max()!)
+        }
+    }
+
+    mutating func completed(through decodedTime: Double, quietFinals: [String]) -> [String] {
+        guard !usedFallback else { return [] }
+        if !hasTimings {
+            usedFallback = !quietFinals.isEmpty
+            return quietFinals
+        }
+        var outputs: [String] = []
+        while let first = pending.first,
+              !quietFinals.isEmpty || decodedTime - first.end + 1e-9 >= SpeechOnset.pauseSeconds {
+            pending.removeFirst()
+            if finals.accept(start: first.start, end: first.end), let text = first.text { outputs.append(text) }
+        }
+        return outputs
+    }
+}

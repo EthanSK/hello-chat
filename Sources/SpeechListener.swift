@@ -12,6 +12,7 @@ import CoreAudio
     var onAudioActivity: ((Double, Double, Double) -> Void)?
     var onFrame: ((Bool) -> Void)?
     var onCompletedCommandUtterance: ((String) -> Void)?
+    var onRecordedCommandUtterance: ((String) -> Void)?
     var onUtteranceEnd: (() -> Void)?
     var onReplyRecognition: ((NotificationReplyCore.Recognition) -> Void)?
     var onReplyInterruption: ((String) -> Void)?
@@ -234,6 +235,7 @@ import CoreAudio
         processing = Task(priority: capture == nil ? .utility : .userInitiated) { [weak self] in
             var continuity = SpeechContinuity()
             var timing = SpeechTimingTracker()
+            var customSpeech = TimedCustomSpeech()
             var frames = 0, textUpdates = 0, gaps = 0
             var modelAudioTime = 0.0
             var queueMax = 0.0, processMax = 0.0, processTotal = 0.0, audioTotal = 0.0
@@ -256,6 +258,7 @@ import CoreAudio
                         guard self.session == token else { break }
                         self.recognitionBoundary()
                         timing = SpeechTimingTracker()
+                        customSpeech = TimedCustomSpeech()
                         if !boundaryReset { self.onRecovery?() }
                         if gap { self.onReplyInterruption?("recognition-audio-gap") }
                         self.diagnostics?.record(boundaryReset ? "speech.context.discarded" : "speech.recovered", numbers: ["ms": (Diagnostics.now - resetting) * 1000])
@@ -275,7 +278,10 @@ import CoreAudio
                     frames += 1; queueMax = max(queueMax, queuedMS); processMax = max(processMax, processMS); processTotal += processMS
                     audioTotal += Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate
                     self.resultAudioSeconds = frame.audioEnd ?? audioTotal
-                    if result.reset { self.diagnostics?.record("speech.context.reset"); self.recognitionBoundary(); timing = SpeechTimingTracker() }
+                    if result.reset {
+                        self.diagnostics?.record("speech.context.reset")
+                        self.recognitionBoundary(); timing = SpeechTimingTracker(); customSpeech = TimedCustomSpeech()
+                    }
                     if result.lostAudio { self.onReplyInterruption?("recognition-audio-gap") }
                     modelAudioTime = result.audioTime
                     var publishedNativeFinal = false
@@ -330,9 +336,17 @@ import CoreAudio
                     }
                     self.progress.processed(at: Diagnostics.now)
                     self.onFrame?(result.utteranceEnded)
-                    if recording == nil, !handlingReply, self.session == token,
-                       self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) {
-                        for utterance in result.completedCommandUtterances { self.onCompletedCommandUtterance?(utterance) }
+                    let observeCommand = recording == nil ? self.onCompletedCommandUtterance : self.onRecordedCommandUtterance
+                    if let observeCommand {
+                        var completed = result.completedCommandUtterances
+                        if selectedModel == .nemotron560 {
+                            if let text = result.text { customSpeech.update(text, timings: result.wordTimings) }
+                            completed = customSpeech.completed(through: result.audioTime, quietFinals: completed)
+                        }
+                        if !handlingReply, self.session == token,
+                           self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) {
+                            for utterance in completed { observeCommand(utterance) }
+                        }
                     }
                     if Diagnostics.now - summaryAt >= 5 {
                         self.diagnostics?.record("speech.performance", numbers: ["frames": Double(frames), "text_updates": Double(textUpdates), "gaps": Double(gaps), "queue_max_ms": queueMax, "inference_max_ms": processMax, "inference_total_ms": processTotal, "audio_seconds": audioTotal])
