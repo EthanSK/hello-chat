@@ -1,5 +1,10 @@
 # Hello Chat engineering notes
 
+## 28 November 2026 — Reconcile source before allocating an update
+
+- Public main advanced normally while a local checkout kept a different history. Both signed apps could keep working while showing different commands. Fetch and compare actual Git ancestry and peer work before editing. A public build numbered below an already installed local build is ineligible for Sparkle even when it contains new source.
+- Reconcile the runtime first, preserve Mac-local settings, and commit the highest verified local build floor to the common source before triggering a release. The signed build guard exercises stale remote history, uncommitted build inputs, and missing floor cases in an isolated Git fixture. An app's displayed version, its runtime source and the release offered by the updater must each be checked.
+
 ## 27 November 2026 — Custom script phrases
 
 - macOS attributes Bluetooth access by a custom script to H Chat’s signed app identity. A successful terminal run does not show that H Chat has Bluetooth access. If the first-use prompt is unavailable, add the installed app under Privacy & Security → Bluetooth with native authorization, use H Chat’s call-preserving quit and relaunch, and verify with a read-only controller action before any separately authorized write. A command cue marks script launch. A device acknowledgement and physical motion are separate evidence.
