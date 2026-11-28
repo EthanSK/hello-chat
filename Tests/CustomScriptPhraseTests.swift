@@ -7,7 +7,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: directory) }
         let script = directory.appendingPathComponent("fixture.sh")
         try Data("printf '%s\\n' \"$1\" >> result.txt\n".utf8).write(to: script)
-        let phrases = ["Fingerbot", "Fingerbots", "Fingerboard", "Fingerboards", "finger bought", "finger both", "finger but", "finger butt"]
+        let phrases = ["Fingerbot", "Fingerbots", "Fingerboard", "Fingerboards", "finger bought", "finger both", "finger but", "finger butt", "finger pot"]
         let entry: [String: Any] = [
             "name": "Fixture", "phrases": phrases, "executable": "/bin/sh",
             "arguments": [script.path, "one literal; argument"], "workingDirectory": directory.path
@@ -110,6 +110,34 @@ import Foundation
         let final = CustomCommandUtterance("Finger bot")
         precondition(distortedClock.completed(through: 4.7, quietFinals: [final], matches: matches) == [final])
         precondition(distortedClock.completed(through: 5, quietFinals: [final], matches: matches).isEmpty)
+        var timedWhole = TimedCustomSpeech()
+        timedWhole.update("Finger bot", timings: split, matches: matches)
+        precondition(timedWhole.completed(through: 5, quietFinals: [], matches: matches).isEmpty)
+        precondition(timedWhole.completed(through: 6.1, quietFinals: [], matches: matches) == [.init("finger bot")])
+        timedWhole.update("Finger bot", timings: split, matches: matches)
+        precondition(timedWhole.completed(through: 7, quietFinals: [], matches: matches).isEmpty)
+        precondition(timedWhole.completed(through: 8, quietFinals: [final], matches: matches).isEmpty)
+        let repeats: (String) -> CustomCommandUtterance? = { config.repeatedAttempt(in: $0) }
+        let merged = "Finger but finger bought"
+        let lastTry = CustomCommandUtterance("finger bought", wordRange: 2..<4)
+        precondition(repeats(merged) == lastTry)
+        precondition(repeats("Finger pot Fingerbot") == .init("fingerbot", wordRange: 2..<3))
+        precondition(repeats("Finger pot. Finger board.") == .init("finger board", wordRange: 2..<4))
+        for mention in ["I said finger but finger bought", "Finger pot finger pot works", "Finger. Pot. Finger pot", "Finger pot hello chat"] {
+            precondition(repeats(mention) == nil, mention)
+        }
+        let other = CustomScriptPhrases.Command(name: "Different", phrases: ["Blue lamp"], executable: "/usr/bin/true", arguments: nil, workingDirectory: nil)
+        let multi = try CustomScriptPhrases(entries: config.entries + [other])
+        precondition(multi.repeatedAttempt(in: "Finger pot blue lamp") == nil)
+        var repeatFinal = TimedCustomSpeech()
+        let spans = [("finger", 0.1, 0.4), ("but", 0.4, 0.8), ("finger", 1.0, 1.3), ("bought", 1.3, 1.7)]
+        repeatFinal.update(merged, timings: spans, matches: matches, repeats: repeats)
+        let copied = [CustomCommandUtterance(merged)]
+        precondition(repeatFinal.completed(through: 3.8, quietFinals: copied, matches: matches, repeats: repeats) == [lastTry])
+        precondition(repeatFinal.completed(through: 4.2, quietFinals: copied, matches: matches, repeats: repeats).isEmpty)
+        var laterSpeech = TimedCustomSpeech()
+        laterSpeech.update("Finger pot", timings: [("finger", 0.1, 0.5), ("pot", 0.5, 0.8)], matches: matches, repeats: repeats)
+        precondition(laterSpeech.completed(through: 3, quietFinals: [.init("Finger pot")], matches: matches, repeats: repeats).count == 1)
         var separateSentences = TimedCustomSpeech()
         separateSentences.update("Finger. Bot.", timings: split)
         precondition(separateSentences.completed(through: 5, quietFinals: [.init("Finger. Bot.")], matches: matches).isEmpty)

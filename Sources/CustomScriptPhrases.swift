@@ -12,6 +12,7 @@ struct CustomScriptPhrases {
 
     static let file = AppPaths.support.appendingPathComponent("CustomPhrases.json")
     private let commands: [String: Command]
+    private let longestKey: Int
     let entries: [Command]
     var count: Int { entries.count }
 
@@ -32,11 +33,47 @@ struct CustomScriptPhrases {
             }
         }
         self.commands = commands
+        longestKey = commands.keys.map(\.count).max() ?? 0
         self.entries = entries
     }
 
     func command(for utterance: String) -> Command? {
         commands[PhraseList.key(utterance)]
+    }
+
+    // Ethan can say the same command twice to help recognition. The whole
+    // run must consist of exact aliases of one saved command, with no other words.
+    func repeatedAttempt(in text: String) -> CustomCommandUtterance? {
+        let words = PhraseMatcher.words(text)
+        guard words.count >= 2, command(for: text) == nil else { return nil }
+        var context = StandaloneWake()
+        context.update(text, at: 0)
+        let sentenceEnds = context.sentenceStarts
+
+        func prefixes(at start: Int) -> [(end: Int, command: Command)] {
+            let stop = sentenceEnds.first(where: { $0 > start }) ?? words.count
+            var key = ""
+            var found: [(Int, Command)] = []
+            for index in start..<stop {
+                key += words[index]
+                if key.count > longestKey { break }
+                if let command = commands[key] { found.append((index + 1, command)) }
+            }
+            return found
+        }
+
+        for first in prefixes(at: 0) where first.end < words.count {
+            var reachable: Set<Int> = [first.end]
+            for start in first.end..<words.count where reachable.contains(start) {
+                for next in prefixes(at: start) where next.command == first.command {
+                    if next.end == words.count {
+                        return .init(words[start..<next.end].joined(separator: " "), wordRange: start..<next.end)
+                    }
+                    reachable.insert(next.end)
+                }
+            }
+        }
+        return nil
     }
 
     static func load(from file: URL = file) throws -> Self {
@@ -139,7 +176,9 @@ struct TimedCustomSpeech {
 
     // Nemotron's token clock can identify a pause when room noise prevents the
     // microphone from going quiet. Keep the same standalone pause and require real spans. — GPT-6.2 Sol
-    mutating func update(_ text: String, timings: [(word: String, start: Double, end: Double)]?) {
+    mutating func update(_ text: String, timings: [(word: String, start: Double, end: Double)]?,
+                         matches: (String) -> Bool = { _ in false },
+                         repeats: (String) -> CustomCommandUtterance? = { _ in nil }) {
         let words = PhraseMatcher.words(text)
         let range = words.indices
         guard let timings, timings.map(\.word) == words,
@@ -148,9 +187,17 @@ struct TimedCustomSpeech {
             return
         }
         hasTimings = true
+        if let attempt = repeats(text) {
+            // Reserve the full acoustic span, even though only the last alias is highlighted.
+            pending = [Segment(utterance: attempt, start: timings[0].start, end: timings.map(\.end).max()!)]
+            return
+        }
         var context = StandaloneWake()
         context.update(text, at: 0, timings: timings)
-        let audioBoundaries = DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: Self.groupGap)
+        // A pause is useful for separating a command from nearby speech. It
+        // must not split the words of a hypothesis that is already one exact
+        // standalone command. Written sentence boundaries still apply.
+        let audioBoundaries = matches(text) ? [] : DesktopSpeechBoundaries.indices(words: words, timings: timings, gap: Self.groupGap)
         let boundaries = Set([0, words.count] + audioBoundaries + context.sentenceStarts).sorted()
         pending = zip(boundaries, boundaries.dropFirst()).map { start, end in
             let spans = timings[start..<end]
@@ -175,7 +222,8 @@ struct TimedCustomSpeech {
     }
 
     mutating func completed(through decodedTime: Double, quietFinals: [CustomCommandUtterance],
-                            matches: (String) -> Bool = { _ in true }) -> [CustomCommandUtterance] {
+                            matches: (String) -> Bool = { _ in true },
+                            repeats: (String) -> CustomCommandUtterance? = { _ in nil }) -> [CustomCommandUtterance] {
         guard !usedFallback else { return [] }
         // The recognizer's quiet final can contain one exact command even when the
         // token clock split its words. Never re-run a previously emitted
@@ -188,6 +236,10 @@ struct TimedCustomSpeech {
                 usedFallback = true
                 return [exact]
             }
+        }
+        if !emittedMatch, let repeated = quietFinals.compactMap({ repeats($0.text) }).first {
+            usedFallback = true
+            return [repeated]
         }
         if !hasTimings {
             usedFallback = !quietFinals.isEmpty

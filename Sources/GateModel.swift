@@ -865,6 +865,9 @@ import SwiftUI
         listener.matchesCustomCommandPhrase = { [weak self] phrase in
             self?.customScriptPhrases?.command(for: phrase) != nil
         }
+        listener.repeatedCustomCommandAttempt = { [weak self] text in
+            self?.customScriptPhrases?.repeatedAttempt(in: text)
+        }
         listener.onCompletedCommandUtterance = { [weak self] utterance in
             self?.runCustomScript(for: utterance)
         }

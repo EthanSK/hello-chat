@@ -8,6 +8,8 @@
 - Nemotron's word times describe token emission. An offline reproduction put 640 ms between two words of one configured phrase, while the punctuation and the following word shared a frame. Use a separate grouping pause and sentence boundaries for custom commands. Keep the longer end-of-group confirmation and reject references across short gaps. The inert dispatch check uses the normal decoder, grouping, matcher and process launcher with a fixed harmless executable.
 - Custom-command highlighting uses the accepted word range from the recognizer with the shared exact-phrase color. Keep mentions of the same alias neutral. Verify that a mark refers to the visible transcript's word prefix so a revised or held transcript cannot inherit a mark for a different occurrence.
 - A recording with an 800 ms pause between words produced a 2.48-second token gap. When Nemotron finalizes one whole configured command after quiet, accept the complete final even if token grouping split it. Keep separate sentences, mentions, and matches already emitted from the same context from dispatching again.
+- When all recognized words already form one exact custom command, preserve that range in noisy rooms too. Use word gaps to separate nearby speech, not to split an exact command internally. Keep the existing end confirmation, sentence boundaries, and same-audio deduplication.
+- Ethan says a command sometimes twice to help recognition. A standalone run made entirely of exact aliases of the same saved command is one attempt. Reserve the full range and highlight its last recognized spelling. A later independent utterance can run again.
 
 ## 25 November 2026 — Bind a pending speed handoff before its title is ready
 
