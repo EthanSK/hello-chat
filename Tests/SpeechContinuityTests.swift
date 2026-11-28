@@ -2,6 +2,23 @@ import Foundation
 
 @main struct SpeechContinuityTests {
     static func main() async {
+        let live = SpeechFrameFreshness(liveSampleRate: 16_000)
+        precondition(live.maximumAge == 2.048)
+        precondition(live.accepts(capturedAt: 100, now: 101.45), "Preserve a complete short command burst")
+        precondition(!live.accepts(capturedAt: 100, now: 126), "A delivered frame can expire outside the stream")
+        precondition(!live.accepts(capturedAt: 100, now: .nan) && !live.accepts(capturedAt: .infinity, now: 101))
+        precondition(!live.accepts(capturedAt: 102, now: 101), "Future capture clocks cannot grant command permission")
+        precondition(SpeechFrameFreshness(liveSampleRate: nil).accepts(capturedAt: 100, now: 126), "Recorded fixtures retain their existing pacing")
+        precondition(SpeechFrameFreshness.spokenAt(capturedAt: 100, hostNow: 101, wallNow: 1000, modelAge: 0.2) == 998.8,
+                     "Receipts include queue/consume time as well as model-word age")
+        await delayedFrame(live)
+        var callScope = SpeechCallScope()
+        precondition(!callScope.observe("a", known: true))
+        precondition(!callScope.observe(nil, known: false), "Unknown does not fabricate an End")
+        precondition(callScope.observe("b", known: true), "A replacement still retires old controls after an intervening unknown")
+        precondition(!callScope.observe("b", known: true))
+        precondition(callScope.observe(nil, known: true), "A proven End retires unstarted Voice controls")
+        precondition(!callScope.observe("c", known: true), "A fresh initial call does not cancel its accepted wake")
         var timing = SpeechTimingTracker()
         _ = timing.update("hello", at: 1, supplied: nil)
         let later = timing.update("hello chat", at: 30, supplied: nil)
@@ -74,6 +91,9 @@ import Foundation
         var stalledWorker = AudioProgressWatchdog(now: 0)
         stalledWorker.captured(at: 14)
         precondition(stalledWorker.stalled(at: 15) == "processing")
+        stalledWorker.processed(at: 15.2)
+        precondition(stalledWorker.stalled(at: 15.35) == nil, "A completed local recovery makes the pending restart obsolete")
+        precondition(stalledWorker.stalled(at: 31) == "capture", "A separate later stall still has a recovery owner")
         var resumed = AudioProgressWatchdog(now: 50)
         resumed.captured(at: 60); resumed.processed(at: 60)
         precondition(resumed.stalled(at: 64) == nil, "New session resets timeout")
@@ -152,5 +172,57 @@ import Foundation
         recovery = SpeechRecovery() // Eligible dock/wake/manual restart.
         precondition(recovery.retry())
         print("Passed audio backlog recovery checks: bounded newest buffers, dropped-frame detection, one reset and continued processing. No capture, playback or Voice calls used.")
+    }
+
+    // Real AsyncStream backpressure and suspended consumer, with injected time and
+    // the production admission/freshness policy. No audio backend is opened. — GPT-6.1 Sol
+    static func delayedFrame(_ freshness: SpeechFrameFreshness) async {
+        let clock = Clock(), entered = Latch(), release = Latch(), recovered = Latch()
+        let (stream, input) = AsyncStream<(UInt64, Double)>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        let consumer = Task {
+            var boundary = SpeechContextBoundary(), continuity = SpeechContinuity()
+            var dispatched = 0, resets = 0
+            for await (sequence, capturedAt) in stream {
+                guard let admission = continuity.admit(sequence: sequence, capturedAt: capturedAt, boundary: &boundary) else { continue }
+                if admission.contextReset || admission.audioGap { resets += 1 }
+                guard freshness.accepts(capturedAt: capturedAt, now: clock.now) else { continue }
+                if sequence == 0 { await entered.open(); await release.wait() }
+                guard freshness.accepts(capturedAt: capturedAt, now: clock.now) else {
+                    boundary.invalidate(at: clock.now, nextSequence: 104)
+                    await recovered.open(); continue
+                }
+                dispatched += 1
+            }
+            return (dispatched, resets)
+        }
+        input.yield((0, 0)); await entered.wait()
+        clock.now = 26
+        for sequence in 1..<104 { input.yield((UInt64(sequence), 26)) }
+        await release.open(); await recovered.wait()
+        input.yield((104, 26)); input.finish()
+        let result = await consumer.value
+        precondition(result.0 == 1 && result.1 == 1, "Zero stale effects, one local reset, one fresh command after a 26-second held frame")
+        let cursor = SpeechCaptureCursor(clock: { clock.now })
+        _ = cursor.capture()
+        for level in 0..<1000 {
+            precondition(cursor.offerMeter(Double(level)) == (level == 0), "Only one pending meter task during a UI stall")
+        }
+        clock.now = 52
+        precondition(cursor.lastCapturedAt == 26 && cursor.takeMeter() == 999, "A delayed meter cannot renew capture time")
+        precondition(cursor.offerMeter(1), "The next real meter update may schedule again")
+    }
+}
+
+private actor Latch {
+    private var ready = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async { if !ready { await withCheckedContinuation { waiters.append($0) } } }
+    func open() { ready = true; let pending = waiters; waiters = []; pending.forEach { $0.resume() } }
+}
+private final class Clock: @unchecked Sendable {
+    private let lock = NSLock(); private var time = 0.0
+    var now: Double {
+        get { lock.lock(); defer { lock.unlock() }; return time }
+        set { lock.lock(); defer { lock.unlock() }; time = newValue }
     }
 }

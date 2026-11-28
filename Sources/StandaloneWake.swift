@@ -213,13 +213,14 @@ struct StandaloneWake {
             let range = match.start..<match.end
             let pattern = patternByRange[range].map { patterns[$0.index] }
             let bareSpeakerRestore = pattern?.isBareSpeakerRestore(context[range]) ?? false
-            let bareSpeakerSilence = pattern?.isBareSpeakerSilence ?? false
-            if bareSpeakerRestore || bareSpeakerSilence || pattern?.needsStandaloneUnsilence(context[range]) == true {
+            let bareSpeakerHush = pattern?.isBareSpeakerHush ?? false
+            let bareNavigation = pattern?.isBareNavigation ?? false
+            if bareSpeakerRestore || bareSpeakerHush || bareNavigation || pattern?.needsStandaloneUnsilence(context[range]) == true {
                 let (_, end) = contextBounds(start: match.start, end: match.end, directOnly: true)
                 var trailing = Array(context[match.end..<(bareSpeakerRestore ? context.count : end)])
-                // Shush stays immediate, including the existing explicit repeat syntax; unlike
+                // Shush and Unshush stay immediate, including the existing explicit repeat syntax; unlike
                 // bare restore it never waits for an utterance-end signal. — GPT-6.1 Sol
-                if bareSpeakerSilence, case .value(_, let used) = CommandRepetition.count(in: trailing, after: 0) {
+                if bareSpeakerHush || bareNavigation, case .value(_, let used) = CommandRepetition.count(in: trailing, after: 0) {
                     trailing.removeFirst(used)
                 }
                 if !isDirectCommand(start: match.start, end: match.end, allowEmbedded: embeddedCommand) || !trailing.allSatisfy({ $0 == "please" || $0 == "now" }) {
@@ -414,5 +415,18 @@ struct StandaloneWake {
         guard range.lowerBound >= 0, range.upperBound <= context.count, !range.isEmpty else { return false }
         return isDirectCommand(start: range.lowerBound, end: range.upperBound, allowEmbedded: allowEmbedded)
             && !isMention(start: range.lowerBound, end: range.upperBound, rejectNegated: true, directOnly: true)
+    }
+
+    // Settings must reject a control that could fire before a destination arrives.
+    // Preserve punctuation/leading context, but do not let later words hide that
+    // partial-command conflict. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+    func permitsDirectCommandPrefix(in range: Range<Int>) -> Bool {
+        guard range.lowerBound >= 0, range.upperBound <= context.count, !range.isEmpty else { return false }
+        var prefix = self
+        prefix.context = Array(context.prefix(range.upperBound))
+        prefix.sentenceStarts.removeAll { $0 >= range.upperBound }
+        prefix.desktopBoundaries.removeAll { $0 >= range.upperBound }
+        prefix.directAudioBoundaries.removeAll { $0 >= range.upperBound }
+        return prefix.permitsDirectCommand(in: range)
     }
 }

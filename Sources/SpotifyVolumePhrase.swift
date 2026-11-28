@@ -155,7 +155,7 @@ extension SpokenValuePhrase where Value == Int {
     // Extraction of the original Spotify numeric/unit/sign validation; existing
     // callers keep SpotifyVolumePhrase() and its volume result. — GPT-6.1 Sol
     init() { self.init(parse: Self.parseVolume) }
-    private static func parseVolume(_ text: String, _ words: [String], _ start: Int) -> (value: Int, end: Int)? {
+    fileprivate static func parseVolume(_ text: String, _ words: [String], _ start: Int) -> (value: Int, end: Int)? {
         let source = text as NSString
         let raw = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
         let spans = raw.matches(in: text, range: NSRange(location: 0, length: source.length)).map(\.range)
@@ -205,5 +205,26 @@ extension SpokenValuePhrase where Value == CodexSpeed {
         default: return nil
         }
         return (speed, end)
+    } }
+}
+
+// The presets and percentages share the same admitted occurrence, revisions and receipt.
+// “Normal” is a saved pre-Voice level, never a factory percentage. — GPT-6.1 Sol
+enum SpotifyVolumeChoice: Equatable {
+    case percent(Int), preset(SpotifyVolumePreset)
+    var receiptTarget: String {
+        switch self { case .percent(let value): return String(value); case .preset(let preset): return preset.rawValue }
+    }
+}
+typealias SpotifyCommandVolumePhrase = SpokenValuePhrase<SpotifyVolumeChoice>
+extension SpokenValuePhrase where Value == SpotifyVolumeChoice {
+    init() { self.init { text, words, start in
+        if let parsed = SpotifyVolumePhrase.parseVolume(text, words, start) { return (.percent(parsed.value), parsed.end) }
+        guard words.indices.contains(start) else { return nil }
+        switch words[start] {
+        case "normal": return (.preset(.normal), start + 1)
+        case "lower", "lowered": return (.preset(.lowered), start + 1)
+        default: return nil
+        }
     } }
 }

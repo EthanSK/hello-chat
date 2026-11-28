@@ -3,7 +3,7 @@
 import Foundation
 
 enum SpotifyControlError: Error {
-    case permissionRequired, unavailable, invalidReply, volumeChanged, appleEvent(Int32)
+    case permissionRequired, unavailable, voiceUnavailable, invalidReply, volumeChanged, appleEvent(Int32)
 }
 
 struct SpotifyVolumeOperationFailure: Error {
@@ -11,7 +11,9 @@ struct SpotifyVolumeOperationFailure: Error {
     let beforeDispatch: Bool
 }
 
+
 enum VoiceCallPresence: String { case active, inactive, unknown }
+enum SpotifyVolumePreset: String, Codable { case normal, lowered }
 
 enum SpotifyVolumePolicy {
     // Factory fallback only; a user's saved Maximum volume takes precedence.
@@ -167,10 +169,14 @@ struct SpotifyVolumeLease: Codable, Equatable {
     // One existing restore receipt owns both reasons, including restart recovery. — GPT-6.1 Sol
     var microphoneMuted: Bool?
     var outputSilenced: Bool?
+    // One optional preference within the existing lease, not another baseline store.
+    // Absent preserves older automatic mute/listen behavior. Preset leases use version3
+    // so older apps refuse recovery instead of silently losing a Normal override. — GPT-6.1 Sol
+    var preset: SpotifyVolumePreset?
 
     init(original: Int, applied: Int, confirmed: Bool = false, callIdentifier: String? = nil,
-         cap: Int = SpotifyVolumePolicy.maximumVolume) {
-        version = 2; self.original = original; self.applied = applied; self.confirmed = confirmed
+         cap: Int = SpotifyVolumePolicy.maximumVolume, preset: SpotifyVolumePreset? = nil) {
+        version = preset == nil ? 2 : 3; self.preset = preset; self.original = original; self.applied = applied; self.confirmed = confirmed
         self.callIdentifier = callIdentifier
         self.cap = cap
     }
@@ -178,7 +184,7 @@ struct SpotifyVolumeLease: Codable, Equatable {
     // during an active-call upgrade instead of treating recovery as corrupt.
     var appliedCap: Int { version == 1 ? 30 : cap ?? -1 }
     var valid: Bool {
-        (version == 1 || version == 2) && (0...100).contains(original) &&
+        (version == 1 || version == 2 || version == 3) && (0...100).contains(original) &&
             (0...100).contains(appliedCap) &&
             (applied == min(original, appliedCap) || (original > appliedCap && applied == appliedCap - 1))
     }
@@ -238,6 +244,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
             if var saved = lease ?? (preservingForCall
                 ? SpotifyVolumeLease(original: current, applied: current, confirmed: true, callIdentifier: callIdentifier, cap: 100) : nil) {
                 saved.mutePhase = .manualOverride
+                saved.preset = nil
                 if preservingForCall { saved.callIdentifier = callIdentifier }
                 try keep(saved)
             }
@@ -248,6 +255,42 @@ final class SpotifyVolumeSession: @unchecked Sendable {
         } catch {
             throw SpotifyVolumeOperationFailure(underlying: error, beforeDispatch: !dispatched)
         }
+    }
+
+    // Explicit presets retain the original baseline through repeated Normal/Lower cycles.
+    // Mic mute or output silence still takes priority over automatic lowering. — GPT-6.1 Sol
+    func setPreset(_ preset: SpotifyVolumePreset, callIdentifier: String?, microphoneMuted: Bool?,
+                   outputSilenced: Bool?, limit: Int, beforeWrite: (() throws -> Void)? = nil) throws -> Int {
+        var dispatched = false
+        do {
+            try load()
+            if let savedID = lease?.callIdentifier, let callIdentifier, savedID != callIdentifier {
+                _ = try reconcile(.inactive)
+            }
+            guard let current = try access.read(), (0...100).contains(current), (0...100).contains(limit) else {
+                throw SpotifyControlError.unavailable
+            }
+            let original = lease?.original ?? current
+            let microphoneMuted = microphoneMuted ?? lease?.microphoneMuted
+            let outputSilenced = outputSilenced ?? lease?.outputSilenced
+            let normal = preset == .normal || microphoneMuted == true || outputSilenced == true
+            let target = normal ? original : min(original, limit)
+            var next = SpotifyVolumeLease(original: original, applied: min(original, limit),
+                callIdentifier: callIdentifier, cap: limit, preset: preset)
+            next.microphoneMuted = microphoneMuted; next.outputSilenced = outputSilenced
+            next.previousApplied = current
+            if normal { next.mutePhase = .restoring }
+            try beforeWrite?()
+            try keep(next)
+            let actual: Int
+            if target == current { actual = current }
+            else { try beforeWrite?(); dispatched = true; actual = try access.write(target, current, true) }
+            next.confirmed = true; next.previousApplied = nil
+            if normal { next.mutePhase = .restored }
+            else { next = confirmedLease(next, applied: actual) }
+            try keep(next)
+            return actual
+        } catch { throw SpotifyVolumeOperationFailure(underlying: error, beforeDispatch: !dispatched) }
     }
 
     private func load() throws {
@@ -288,12 +331,12 @@ final class SpotifyVolumeSession: @unchecked Sendable {
                 let knownAudio = saved.microphoneMuted != nil || saved.outputSilenced != nil
                 let muted = saved.microphoneMuted == true || saved.outputSilenced == true
                     || (!knownAudio && saved.mutePhase != nil)
-                if muted {
+                if muted || saved.preset == .normal {
                     return try restoreWhileMuted(saved, current: current)
                 }
                 if limitEdited, saved.confirmed, saved.owns(current), saved.mutePhase == nil, saved.appliedCap != limit {
                     var updated = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, limit),
-                                                    callIdentifier: saved.callIdentifier, cap: limit)
+                                                    callIdentifier: saved.callIdentifier, cap: limit, preset: saved.preset)
                     updated.microphoneMuted = saved.microphoneMuted; updated.outputSilenced = saved.outputSilenced
                     updated.previousApplied = current
                     try keep(updated)
@@ -357,7 +400,7 @@ final class SpotifyVolumeSession: @unchecked Sendable {
         if saved.mutePhase == .restored || (saved.mutePhase == .restoring && current == saved.original) {
             guard current == saved.original else { return try preserveManualChange(saved) }
             var next = SpotifyVolumeLease(original: saved.original, applied: min(saved.original, limit),
-                                          callIdentifier: saved.callIdentifier, cap: limit)
+                                          callIdentifier: saved.callIdentifier, cap: limit, preset: saved.preset)
             next.microphoneMuted = saved.microphoneMuted; next.outputSilenced = saved.outputSilenced
             try keep(next)
             return try apply(next)
@@ -390,10 +433,13 @@ final class SpotifyVolumeSession: @unchecked Sendable {
     }
 
     private func confirm(_ saved: SpotifyVolumeLease, applied: Int) throws {
+        try keep(confirmedLease(saved, applied: applied))
+    }
+    private func confirmedLease(_ saved: SpotifyVolumeLease, applied: Int) -> SpotifyVolumeLease {
         var confirmed = SpotifyVolumeLease(original: saved.original, applied: applied, confirmed: true,
-                                          callIdentifier: saved.callIdentifier, cap: saved.appliedCap)
+                                          callIdentifier: saved.callIdentifier, cap: saved.appliedCap, preset: saved.preset)
         confirmed.microphoneMuted = saved.microphoneMuted; confirmed.outputSilenced = saved.outputSilenced
-        try keep(confirmed)
+        return confirmed
     }
 }
 

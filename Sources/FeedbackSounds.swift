@@ -62,6 +62,8 @@ struct VoiceEndFeedback {
         case spotifyVolume = "SpotifyVolume"
         case setSpeed = "SetSpeed"
         case customScript = "CustomScript"
+        case outputVolume = "OutputVolume"
+        case nextTrack = "NextTrack", back = "Back", forward = "Forward"
         case callDot = "CallDot", hangUpDot = "HangUpDot"
         case switchApp = "SwitchApp", openApp = "OpenApp", zoomIn = "ZoomIn", zoomOut = "ZoomOut", showVoice = "ShowVoice"
     }
@@ -137,6 +139,10 @@ extension PhraseSlot {
         case .playMusicPhrase: return .musicPlay
         case .spotifyVolumePhrase: return .spotifyVolume
         case .setSpeedPhrase: return .setSpeed
+        case .outputVolumePhrase: return .outputVolume
+        case .nextTrackPhrase: return .nextTrack
+        case .backPhrase: return .back
+        case .forwardPhrase: return .forward
         case .callDotPhrase: return .callDot
         case .hangUpDotPhrase: return .hangUpDot
         case .switchAppPhrase: return .switchApp

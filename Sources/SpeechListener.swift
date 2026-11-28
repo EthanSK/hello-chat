@@ -27,6 +27,10 @@ import CoreAudio
     var onConfigurationChange: (() -> Void)?
     var onDelay: (() -> Void)?
     var onRecovery: (() -> Void)?
+    var onStall: ((Double) -> Void)?
+    private(set) var resultCapturedAt: Double?
+    private(set) var resultInputAudioTime: Double?
+    private(set) var liveFrameDeadline: Double?
     private let diagnostics: Diagnostics?
     private var recordingProducer: Task<Void, Never>?
     private(set) var resultAudioSeconds = 0.0
@@ -50,6 +54,7 @@ import CoreAudio
     private var replyFinalizeRequested: Double?
     private var replyEndFinalize: ((Double) async throws -> SpeechUpdate?)?
     private var replyUsesAnalyzer = false
+    private var recoveringStaleAudio = false
     private var replyFinalizedThrough = -Double.infinity
     func discardPendingRecognition() {
         let mark = captureCursor.boundary()
@@ -98,6 +103,7 @@ import CoreAudio
     }
     private var continuation: AsyncStream<Frame>.Continuation?
     private var session = UUID()
+    func recovered(since time: Double) -> Bool { progress.recovered(since: time) }
 
     static func authorize() async throws {
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
@@ -198,10 +204,13 @@ import CoreAudio
                 if meterFrames >= framesPerUpdate {
                     meterFrames %= framesPerUpdate
                     let level = SpeechPCM.level(mono)
-                    Task { @MainActor [weak self] in if self?.session == token {
-                        self?.progress.captured(at: Diagnostics.now)
-                        self?.onLevel?(level)
-                    } }
+                    if captureCursor.offerMeter(level) {
+                        Task { @MainActor [weak self] in
+                            let latest = captureCursor.takeMeter()
+                            guard self?.session == token, let latest else { return }
+                            self?.onLevel?(latest)
+                        }
+                    }
                 }
             }
             let sampleRate = format.sampleRate, channelCount = format.channelCount
@@ -236,6 +245,7 @@ import CoreAudio
         if let capture { diagnostics?.record("speech.capture.route", numbers: ["current_device": Double(capture.currentDevice ?? 0)], info: ["engine_running": String(capture.isRunning)]) }
         processing = Task(priority: capture == nil ? .utility : .userInitiated) { [weak self] in
             var continuity = SpeechContinuity()
+            let freshness = SpeechFrameFreshness(liveSampleRate: capture == nil ? nil : format.sampleRate)
             var timing = SpeechTimingTracker()
             var customSpeech = TimedCustomSpeech()
             var frames = 0, textUpdates = 0, gaps = 0
@@ -248,6 +258,10 @@ import CoreAudio
                     guard let self, self.session == token else { break }
                     guard let admission = continuity.admit(sequence: frame.sequence, capturedAt: frame.capturedAt,
                                                            boundary: &self.contextBoundary) else { continue }
+                    guard freshness.accepts(capturedAt: frame.capturedAt, now: Diagnostics.now) else {
+                        self.discardStaleRecognition(capturedAt: frame.capturedAt, stage: "before-consume")
+                        continue
+                    }
                     let gap = admission.audioGap, boundaryReset = admission.contextReset
                     if boundaryReset || gap {
                         if gap {
@@ -255,13 +269,18 @@ import CoreAudio
                             self.diagnostics?.record("speech.audio_gap", numbers: ["missing_buffers": Double(continuity.missingFrames), "queue_capacity": Double(capacity), "context_reset": boundaryReset ? 1 : 0])
                         }
                         if !boundaryReset { self.onDelay?() }
+                        // Immediately retire the stale command context, including pending
+                        // repeats, before waiting for the same local decoder reset.
+                        if gap { self.onWaiting?() }
+                        self.replyFinalizeTask?.cancel(); self.replyFinalizeTask = nil
+                        if gap { self.onReplyInterruption?("recognition-audio-gap") }
                         let resetting = Diagnostics.now
                         try await worker.resetForDiscontinuity()
                         guard self.session == token else { break }
                         self.recognitionBoundary()
                         timing = SpeechTimingTracker()
                         customSpeech = TimedCustomSpeech()
-                        if !boundaryReset { self.onRecovery?() }
+                        if gap || self.recoveringStaleAudio { self.onRecovery?(); self.recoveringStaleAudio = false }
                         if gap { self.onReplyInterruption?("recognition-audio-gap") }
                         self.diagnostics?.record(boundaryReset ? "speech.context.discarded" : "speech.recovered", numbers: ["ms": (Diagnostics.now - resetting) * 1000])
                         if gap {
@@ -271,11 +290,19 @@ import CoreAudio
                             continue
                         }
                     }
+                    guard freshness.accepts(capturedAt: frame.capturedAt, now: Diagnostics.now) else {
+                        self.discardStaleRecognition(capturedAt: frame.capturedAt, stage: "after-reset")
+                        continue
+                    }
                     let consuming = Diagnostics.now
                     let queuedMS = (consuming - frame.capturedAt) * 1000
                     let result = try await worker.consume(frame.buffer)
                     guard self.session == token else { break }
                     guard self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) else { continue }
+                    guard freshness.accepts(capturedAt: frame.capturedAt, now: Diagnostics.now) else {
+                        self.discardStaleRecognition(capturedAt: frame.capturedAt, stage: "after-consume")
+                        continue
+                    }
                     let processMS = (Diagnostics.now - consuming) * 1000
                     frames += 1; queueMax = max(queueMax, queuedMS); processMax = max(processMax, processMS); processTotal += processMS
                     audioTotal += Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate
@@ -287,6 +314,9 @@ import CoreAudio
                     if result.lostAudio { self.onReplyInterruption?("recognition-audio-gap") }
                     modelAudioTime = result.audioTime
                     var publishedNativeFinal = false
+                    self.resultCapturedAt = frame.capturedAt
+                    self.resultInputAudioTime = result.inputAudioTime
+                    self.liveFrameDeadline = freshness.maximumAge.map { frame.capturedAt + $0 }
                     self.onAudioActivity?(SpeechPCM.level(frame.buffer), Double(frame.buffer.frameLength) / frame.buffer.format.sampleRate, modelAudioTime)
                     let handlingReply = self.needsReplyRecognition?() == true
                     if handlingReply {
@@ -302,7 +332,14 @@ import CoreAudio
                             let replyBatch = self.replySpeech.batch
                             self.replyFinalizedThrough = requested; self.replyFinalizeRequested = nil
                             do {
-                                if let final = try await finalize(modelTime), self.session == token,
+                                let final = try await finalize(modelTime)
+                                guard self.session == token else { break }
+                                guard self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) else { continue }
+                                guard freshness.accepts(capturedAt: frame.capturedAt, now: Diagnostics.now) else {
+                                    self.discardStaleRecognition(capturedAt: frame.capturedAt, stage: "after-finalize")
+                                    continue
+                                }
+                                if let final,
                                    self.replySpeech.batch == replyBatch, self.needsReplyRecognition?() == true,
                                    self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) {
                                     // Archive/display the same native final before consuming its
@@ -327,7 +364,12 @@ import CoreAudio
                             }
                         }
                     }
+                    guard self.session == token else { break }
                     guard self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) else { continue }
+                    guard freshness.accepts(capturedAt: frame.capturedAt, now: Diagnostics.now) else {
+                        self.discardStaleRecognition(capturedAt: frame.capturedAt, stage: "before-callbacks")
+                        continue
+                    }
                     if let text = result.text, !publishedNativeFinal {
                         textUpdates += 1
                         self.onText?(text, timing.update(text, at: modelAudioTime, supplied: result.wordTimings))
@@ -380,10 +422,17 @@ import CoreAudio
                     do { try await Task.sleep(nanoseconds: 5_000_000_000) }
                     catch { return }
                     guard let self, self.session == token else { return }
+                    // The heartbeat is the actual capture callback, never a delayed UI hop.
+                    if let captured = captureCursor.lastCapturedAt { self.progress.captured(at: captured) }
                     guard let stage = self.progress.stalled(at: Diagnostics.now) else { continue }
                     self.diagnostics?.record("speech.pipeline.stalled", info: ["stage": stage])
                     self.onDelay?()
-                    self.onConfigurationChange?()
+                    self.discardPendingRecognition()
+                    self.onReplyInterruption?("recognition-stalled")
+                    self.recognitionBoundary()
+                    self.onWaiting?()
+                    if let onStall = self.onStall { onStall(Diagnostics.now) }
+                    else { self.onConfigurationChange?() }
                     return
                 }
             }
@@ -429,6 +478,13 @@ import CoreAudio
         }
     }
     func waitForRecording() async { await recordingProducer?.value; await processing?.value }
+    private func discardStaleRecognition(capturedAt: Double, stage: String) {
+        recoveringStaleAudio = true
+        discardPendingRecognition()
+        recognitionBoundary()
+        onWaiting?(); onDelay?(); onReplyInterruption?("recognition-audio-gap")
+        diagnostics?.record("speech.audio.expired", numbers: ["age_ms": (Diagnostics.now - capturedAt) * 1_000], info: ["stage": stage])
+    }
     func waitUntilStopped() async { await cleanup?.value }
     private static func recordedChannel(_ buffer: AVAudioPCMBuffer, channels: Int) throws -> AVAudioPCMBuffer {
         guard (1...32).contains(channels), let source = buffer.floatChannelData?[0],

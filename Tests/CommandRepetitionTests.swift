@@ -152,6 +152,29 @@ import Foundation
             idle.begin(id: UUID(), range: 0..<2, repeats: true) { step in idle.finish(step, .submitted) }
         }
         let started = Date()
+        let delayed = RepeatedCommands(); var now = 100.0
+        delayed.clock = { now }; delayed.update(["next", "track"], timings: nil)
+        let delayedStep = delayed.begin(id: UUID(), range: 0..<2, repeats: false, firstDispatchBefore: 102) { _ in }!
+        precondition(delayed.shouldRun(delayedStep))
+        now = 126
+        precondition(!delayed.shouldRun(delayedStep), "A delayed first effect cannot use a fresh-looking receipt")
+        delayed.finish(delayedStep, .superseded)
+        let launched = RepeatedCommands(); launched.clock = { now }; launched.update(["fixture"], timings: nil)
+        let launching = launched.begin(id: UUID(), range: 0..<1, repeats: false, firstDispatchBefore: 127) { _ in }!
+        launched.didDispatch(launching); now = 150
+        precondition(launched.shouldRun(launching), "A real accepted app launch retains its bounded subsequent readiness workflow")
+        let nativePermit = launched.dispatchPermission(for: launching)!
+        launched.cancelPending()
+        precondition(!nativePermit.permits(), "The same thread-safe permit refuses native follow-up after cancellation")
+        now = 126
+        let repeated = RepeatedCommands(); repeated.clock = { now }
+        repeated.update(["next", "track", "two"], timings: nil)
+        var repeatSteps: [UUID] = []
+        let first = repeated.begin(id: UUID(), range: 0..<2, repeats: true, firstDispatchBefore: 127) { repeatSteps.append($0) }!
+        precondition(repeated.shouldRun(first)); repeated.finish(first, .submitted)
+        now = 150
+        precondition(repeatSteps.count == 2 && repeated.shouldRun(repeatSteps[1]), "An already-started explicit repeat sequence retains its ordinary lifetime")
+        repeated.finish(repeatSteps[1], .submitted)
         for _ in 0..<100000 { idle.poll() }
         print("100000 idle repeat polls after 256 completed commands: \(Date().timeIntervalSince(started)) seconds")
         print("Repeat-count parsing, every-action scheduling, default-on settings, partial revisions, End priority, async ownership and uncertain-action stops passed; no live effects.")
