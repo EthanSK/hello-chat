@@ -9,12 +9,12 @@ final class AgentControlIntegrationTests: XCTestCase {
         try requireIsolatedHome()
         let model = GateModel(enableSpotifyControl: false)
         let control = HAgentControl(model, zoom: InterfaceZoom(), updater: AppUpdater())
-        for name in ["output.volume.read", "output.volume", "spotify.volume.preset", "music.nextTrack", "desktop.navigate"] {
+        for name in ["output.volume.read", "output.volume", "spotify.volume.preset", "music.nextTrack", "desktop.navigate", "video.volume"] {
             XCTAssertNotNil(control.operations[name])
         }
         for (name, arguments) in [("output.volume", ["value": -1, "uid": "fixture"] as [String: Any]),
             ("output.volume", ["value": 30]), ("spotify.volume.preset", ["preset": "maximum"]),
-            ("desktop.navigate", ["direction": "previous-track"])] {
+            ("desktop.navigate", ["direction": "previous-track"]), ("video.volume", ["value": -1]), ("video.volume", ["value": 101]), ("video.volume", ["value": true]), ("video.volume", ["value": 2.5])] {
             let request = try HControlRequest(JSONSerialization.data(withJSONObject: ["version": 1, "id": UUID().uuidString,
                 "expiresAt": Date().timeIntervalSince1970 + 20, "operation": name, "arguments": arguments]))
             do { _ = try await control.handle(request); XCTFail("Invalid input reached an effect") }

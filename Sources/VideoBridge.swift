@@ -72,6 +72,7 @@ enum VideoBridgeAvailability: Equatable {
 }
 
 enum VideoCommandOutcome: Equatable {
+    case volume(Int)
     case changed
     case rewound(Double)
     case unchanged(String) // The extension's reason, such as already-paused or no-video.
@@ -84,11 +85,12 @@ enum VideoCommandOutcome: Equatable {
         switch self {
         case .changed, .rewound: return true
         case .unchanged(let reason): return reason == command.unchangedReason
-        case .unavailable, .rejected, .unconfirmed: return false
+        case .volume, .unavailable, .rejected, .unconfirmed: return false
         }
     }
     func summary(for command: VideoCommand) -> String {
         switch self {
+        case .volume(let value): return "YouTube volume · \(value)%"
         case .rewound(let seconds): return "Rewound the video by \(seconds.formatted(.number.precision(.fractionLength(0...1)))) seconds"
         case .changed: return command.successMessage
         case .unchanged("at-start"): return "The video is already at the start"
@@ -105,6 +107,7 @@ enum VideoCommandOutcome: Equatable {
     }
     var diagnostic: String {
         switch self {
+        case .volume(let value): return "volume:\(value)"
         case .rewound(let seconds): return "rewound:\(seconds)"
         case .changed: return "changed"
         case .unchanged(let reason): return "unchanged:\(reason)"
@@ -123,11 +126,17 @@ struct VideoBridgeReply: Equatable {
     var reason: String?
     var protocolVersion: Int?
     var movedSeconds: Double? = nil
+    var capabilities: [String]? = nil
+    var volumePercent: Int? = nil
+    var playing: Bool? = nil
+    var paused: Bool? = nil
+    var muted: Bool? = nil
+    var confirmed: Bool? = nil
 }
 
 protocol VideoBridgeTransport: AnyObject {
     var onReply: (@MainActor (VideoBridgeReply) -> Void)? { get set }
-    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?)
+    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?, volumePercent: Int?)
 }
 
 // Must match HelloChatVideoNotification in Agent Flow Bridge's AgentFlowBridgeShared.swift.
@@ -143,9 +152,10 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
             name: Self.reply, object: nil, suspensionBehavior: .deliverImmediately)
     }
     deinit { DistributedNotificationCenter.default().removeObserver(self) }
-    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?) {
+    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?, volumePercent: Int?) {
         var fields: [String: Any] = ["requestId": requestId, "action": action, "issuedAt": issuedAt]
         if let seconds { fields["seekSeconds"] = -seconds }
+        if let volumePercent { fields["volumePercent"] = volumePercent }
         DistributedNotificationCenter.default().postNotificationName(Self.request, object: nil,
             userInfo: fields, deliverImmediately: true)
     }
@@ -155,8 +165,25 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
         let reply = VideoBridgeReply(requestId: requestId, action: action, state: state,
             changed: (info["changed"] as? NSNumber)?.boolValue, reason: info["reason"] as? String,
             protocolVersion: (info["protocolVersion"] as? NSNumber)?.intValue,
-            movedSeconds: (info["movedSeconds"] as? NSNumber)?.doubleValue)
+            movedSeconds: (info["movedSeconds"] as? NSNumber)?.doubleValue,
+            capabilities: info["capabilities"] as? [String],
+            volumePercent: HControlNumber.integer(info["volumePercent"]),
+            playing: HControlNumber.boolean(info["playing"]), paused: HControlNumber.boolean(info["paused"]),
+            muted: HControlNumber.boolean(info["muted"]), confirmed: HControlNumber.boolean(info["confirmed"]))
         Task { @MainActor [weak self] in self?.onReply?(reply) }
+    }
+}
+
+private enum HControlNumber {
+    static func integer(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue.isFinite, number.doubleValue.rounded() == number.doubleValue,
+              (0...100).contains(number.doubleValue) else { return nil }
+        return number.intValue
+    }
+    static func boolean(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
     }
 }
 
@@ -175,12 +202,14 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
     private struct Pending {
         let action: String
         let sequence: Int
+        let volumePercent: Int?
         let completion: (@MainActor (VideoCommandOutcome) -> Void)?
         var cancelTimer: () -> Void = {}
     }
     private var pending: [String: Pending] = [:]
     private var sequence = 0
     private var appliedSequence = 0
+    private var supportsYouTubeVolume = false
     var pendingCount: Int { pending.count }
 
     init(transport: VideoBridgeTransport = DistributedVideoBridgeTransport(),
@@ -236,6 +265,18 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
         }
     }
 
+    // Capability is read from this exact fresh status reply; older bridge versions
+    // never receive an absolute-volume action. No fallback to a relative volume key. — GPT-6.1 Sol
+    func setYouTubeVolume(_ percent: Int, shouldSend: @escaping @MainActor () -> Bool = { true },
+                          completion: @escaping @MainActor (VideoCommandOutcome) -> Void) {
+        guard (0...100).contains(percent) else { completion(.rejected); return }
+        start(action: "status", completion: { [weak self] status in
+            guard let self, status == .unchanged("connected"), self.supportsYouTubeVolume else { completion(.unavailable); return }
+            guard shouldSend() else { completion(.rejected); return }
+            self.start(action: "setVolume", volumePercent: percent, completion: completion, timeout: Self.commandTimeout)
+        }, timeout: Self.statusTimeout)
+    }
+
     func probeRewind(custom: Bool = false, completion: @escaping @MainActor (Bool) -> Void) {
         start(action: custom ? "seekStatus" : "rewindStatus", completion: { outcome in
             completion(outcome == .unchanged(custom ? "custom-seek-supported" : "rewind-supported"))
@@ -256,10 +297,16 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
         switch (reply.state, entry.action == "status") {
         case ("available", true):
             apply(compatible ? .available : .unavailable(.incompatible), sequence: entry.sequence)
+            supportsYouTubeVolume = compatible && reply.capabilities?.contains("youtubeAbsoluteVolume") == true
             entry.completion?(compatible ? .unchanged("connected") : .unavailable)
         case ("done", false) where compatible:
             apply(.available, sequence: entry.sequence)
-            if reply.changed == true, let seconds = reply.movedSeconds, seconds.isFinite, seconds > 0 {
+            if entry.action == "setVolume" {
+                guard let expected = entry.volumePercent, reply.confirmed == true, reply.volumePercent == expected,
+                      reply.playing != nil, reply.paused != nil, reply.muted != nil,
+                      !(reply.playing == true && reply.paused == true) else { entry.completion?(.unconfirmed); return }
+                entry.completion?(.volume(expected))
+            } else if reply.changed == true, let seconds = reply.movedSeconds, seconds.isFinite, seconds > 0 {
                 entry.completion?(.rewound(seconds))
             } else {
                 entry.completion?(reply.changed == true ? .changed : .unchanged(reply.reason ?? "no-video"))
@@ -278,13 +325,13 @@ final class DistributedVideoBridgeTransport: NSObject, VideoBridgeTransport {
         }
     }
 
-    private func start(action: String, seconds: Int? = nil, completion: (@MainActor (VideoCommandOutcome) -> Void)?, timeout: TimeInterval) {
+    private func start(action: String, seconds: Int? = nil, volumePercent: Int? = nil, completion: (@MainActor (VideoCommandOutcome) -> Void)?, timeout: TimeInterval) {
         let id = makeID()
         sequence += 1
-        pending[id] = Pending(action: action, sequence: sequence, completion: completion)
+        pending[id] = Pending(action: action, sequence: sequence, volumePercent: volumePercent, completion: completion)
         let cancel = schedule(timeout) { [weak self] in self?.expire(id) }
         if pending[id] != nil { pending[id]?.cancelTimer = cancel } else { cancel() }
-        transport.post(requestId: id, action: action, issuedAt: now(), seconds: seconds)
+        transport.post(requestId: id, action: action, issuedAt: now(), seconds: seconds, volumePercent: volumePercent)
     }
 
     private func expire(_ id: String) {
