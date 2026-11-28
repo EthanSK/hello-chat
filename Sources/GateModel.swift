@@ -48,6 +48,14 @@ import SwiftUI
         }
     }
     private var outputVolumeRequests: [UUID: SpokenOutputVolume] = [:]
+    private final class SpokenYouTubeVolume {
+        var value: Int
+        var root: UUID?
+        var cuePlayed = false
+        var valid = true
+        init(_ value: Int) { self.value = value }
+    }
+    private var youtubeVolumeRequests: [UUID: SpokenYouTubeVolume] = [:]
     let outputVolumeCommands = SystemOutputVolumeCommands()
 
     private var finalValueFrame = false
@@ -143,7 +151,7 @@ import SwiftUI
                 Diagnostics.shared.record("command.history", numbers: ["spoken_at": spokenAt],
                                           info: ["receipt": id.uuidString, "command": title, "result": "Heard", "summary": summary])
                 var reserving = true
-                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(command), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true || [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue].contains(action), valueArgument: [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue].contains(action), discard: discard, command: command, firstDispatchBefore: dispatchBefore) { [weak self] step in
+                let step = repetitions.begin(id: id, range: range, repeats: CommandRepetition.enabled(command), requiresTimes: PhraseSlot(rawValue: action)?.isRewind == true || [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue, PhraseSlot.youtubeVolumePhrase.rawValue].contains(action), valueArgument: [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue, PhraseSlot.youtubeVolumePhrase.rawValue].contains(action), discard: discard, command: command, firstDispatchBefore: dispatchBefore) { [weak self] step in
                     if reserving { return } // The unqueued first action stays immediate; queued first actions use this callback later.
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -266,6 +274,24 @@ import SwiftUI
             }
         }
     }
+    private func requestYouTubeVolume(_ request: SpokenYouTubeVolume, receipt id: UUID) {
+        let percent = request.value
+        videoBridge.setYouTubeVolume(percent, shouldSend: { [weak self] in
+            guard let self else { return false }
+            return !self.quitting && request.valid && request.value == percent && self.repetitions.shouldRun(id) && self.commandAvailability.isEnabled(.youtubeVolumePhrase)
+        }) { [weak self] outcome in
+            guard let self else { return }
+            let confirmed = outcome == .volume(percent)
+            let phase: SpokenCommandJournal.Phase = confirmed ? .confirmed : (outcome == .rejected || outcome == .unavailable ? .failedBeforeDispatch : .unknown)
+            let message = confirmed ? "YouTube volume · \(percent)%" : "Couldn’t confirm YouTube volume. Check Agent Flow Bridge."
+            self.finishCommand(id, phase, message: message)
+            self.videoCommandStatus = message
+            if confirmed, request.valid, request.value == percent, !request.cuePlayed {
+                request.cuePlayed = true; self.feedback.play(PhraseSlot.youtubeVolumePhrase.cue)
+            }
+        }
+    }
+
     // Ethan's “Set volume thirty” binds to the output heard at admission. A route
     // change never redirects a queued/revised command to a different device. — GPT-6.1 Sol
     private func requestOutputVolume(_ request: SpokenOutputVolume, receipt id: UUID) {
@@ -412,6 +438,9 @@ import SwiftUI
     @Published var outputVolumePhrase = PhraseSlot.outputVolumePhrase.savedValue() {
         didSet { UserDefaults.standard.set(outputVolumePhrase, forKey: PhraseSlot.outputVolumePhrase.rawValue); updatePhrases() }
     }
+    @Published var youtubeVolumePhrase = PhraseSlot.youtubeVolumePhrase.savedValue() {
+        didSet { UserDefaults.standard.set(youtubeVolumePhrase, forKey: PhraseSlot.youtubeVolumePhrase.rawValue); updatePhrases() }
+    }
     @Published var nextTrackPhrase = PhraseSlot.nextTrackPhrase.savedValue() {
         didSet { UserDefaults.standard.set(nextTrackPhrase, forKey: PhraseSlot.nextTrackPhrase.rawValue); updatePhrases() }
     }
@@ -491,6 +520,7 @@ import SwiftUI
     private var showVoiceDetector = StandaloneWake()
     private var spotifyVolumeDetector = SpotifyCommandVolumePhrase()
     private var outputVolumeDetector = SpotifyVolumePhrase()
+    private var youtubeVolumeDetector = SpotifyVolumePhrase()
     private var dotPhraseDetectors = CommandPhraseDetectors<DotCallCommand.Action>()
     private var dotTasks: [UUID: Task<DotCallCommand.Result, Never>] = [:]
     private var dotTail: Task<DotCallCommand.Result, Never>?
@@ -734,6 +764,7 @@ import SwiftUI
         case .playMusicPhrase: return \.playMusicPhrase
         case .spotifyVolumePhrase: return \.spotifyVolumePhrase
         case .outputVolumePhrase: return \.outputVolumePhrase
+        case .youtubeVolumePhrase: return \.youtubeVolumePhrase
         case .nextTrackPhrase: return \.nextTrackPhrase
         case .backPhrase: return \.backPhrase
         case .forwardPhrase: return \.forwardPhrase
@@ -884,6 +915,7 @@ import SwiftUI
             self?.showVoiceDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.spotifyVolumeDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.outputVolumeDetector.audio(level: level, seconds: seconds, at: audioTime)
+            self?.youtubeVolumeDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.dotPhraseDetectors.audio(level: level, seconds: seconds, at: audioTime)
             self?.speakerOutputDetector.audio(level: level, seconds: seconds, at: audioTime)
             self?.appCommandDetector.audio(level: level, seconds: seconds, at: audioTime)
@@ -1356,6 +1388,7 @@ import SwiftUI
         repetitions.boundary()
         spotifyVolumeRequests.removeAll()
         outputVolumeRequests.values.forEach { $0.valid = false }; outputVolumeRequests.removeAll()
+        youtubeVolumeRequests.values.forEach { $0.valid = false }; youtubeVolumeRequests.removeAll()
         finalValueFrame = false
         for action in VoiceAudioAction.allCases { audioPhraseDetectors[action] = StandaloneWake() }
         videoPhraseDetectors.reset()
@@ -1365,6 +1398,7 @@ import SwiftUI
         showVoiceDetector.reset()
         spotifyVolumeDetector.reset()
         outputVolumeDetector.reset()
+        youtubeVolumeDetector.reset()
         dotPhraseDetectors.reset()
         speakerOutputDetector.reset()
         appCommandDetector.reset()
@@ -1930,6 +1964,7 @@ import SwiftUI
         showVoiceDetector.update(text, at: Diagnostics.now, timings: timings)
         spotifyVolumeDetector.update(text, at: Diagnostics.now, timings: timings)
         outputVolumeDetector.update(text, at: Diagnostics.now, timings: timings)
+        youtubeVolumeDetector.update(text, at: Diagnostics.now, timings: timings)
         dotPhraseDetectors.update(text, at: Diagnostics.now, timings: timings)
         speakerOutputDetector.update(text, at: Diagnostics.now, timings: timings)
         appCommandDetector.update(text, at: Diagnostics.now, timings: timings)
@@ -1959,7 +1994,7 @@ import SwiftUI
     private func checkStandaloneWake(utteranceEnded: Bool = false) {
         guard enabled, detectionRunning, !notificationReplies.interceptsSpeech else { return }
         defer {
-            if finalValueFrame { spotifyVolumeDetector.endUtterance(); outputVolumeDetector.endUtterance(); finalValueFrame = false }
+            if finalValueFrame { spotifyVolumeDetector.endUtterance(); outputVolumeDetector.endUtterance(); youtubeVolumeDetector.endUtterance(); finalValueFrame = false }
         }
         // Every listed phrase for a command shares its detector, occurrence count and sound.
         // A phrase listed for different commands keeps its first owner in PhraseConfiguration.
@@ -1977,6 +2012,7 @@ import SwiftUI
             showVoiceDetector.cancelPending(patterns: patterns(for: .showVoicePhrase), endPatterns: endPatterns)
             spotifyVolumeDetector.cancelPending(prefixes: patterns(for: .spotifyVolumePhrase), endPatterns: endPatterns)
             outputVolumeDetector.cancelPending(prefixes: patterns(for: .outputVolumePhrase), endPatterns: endPatterns)
+            youtubeVolumeDetector.cancelPending(prefixes: patterns(for: .youtubeVolumePhrase), endPatterns: endPatterns)
             dotPhraseDetectors.cancelPending(aliases: dotPatterns, endPatterns: endPatterns)
             speakerOutputDetector.cancelPending(patterns: activeSpeakerCommands.map(\.pattern), endPatterns: endPatterns)
             appCommandDetector.consumeAll(switchPrefixes: patterns(for: .switchAppPhrase), openPrefixes: patterns(for: .openAppPhrase))
@@ -2089,6 +2125,31 @@ import SwiftUI
                     onReserved: { request.root = $0 },
                     repeatAction: { [weak self] id in self?.requestOutputVolume(request, receipt: id) }) {
                     requestOutputVolume(request, receipt: id)
+                }
+            }
+        }
+        for command in youtubeVolumeDetector.poll(at: Diagnostics.now, prefixes: patterns(for: .youtubeVolumePhrase)) {
+            standaloneWake.cancelPending(patterns: wakePatterns, endPatterns: [command.pattern])
+            if command.revised {
+                guard let request = youtubeVolumeRequests[command.id], let root = request.root else { continue }
+                if command.invalid {
+                    request.valid = false; repetitionDetails[root] = nil
+                    repetitions.invalidateValue(root)
+                    continue
+                }
+                _ = repetitions.reviseValue(root, range: command.range, reapply: request.value != command.volume, finishingUtterance: finalValueFrame) {
+                    guard receipts.retarget(root, to: String(command.volume), revisingValue: true) else { return false }
+                    request.value = command.volume
+                    repetitionDetails[root] = nil
+                    return true
+                }
+            } else {
+                let request = SpokenYouTubeVolume(command.volume)
+                youtubeVolumeRequests[command.id] = request
+                if let id = reserveSpeech(PhraseSlot.youtubeVolumePhrase.rawValue, target: String(command.volume), range: command.range,
+                    onReserved: { request.root = $0 },
+                    repeatAction: { [weak self] id in self?.requestYouTubeVolume(request, receipt: id) }) {
+                    requestYouTubeVolume(request, receipt: id)
                 }
             }
         }

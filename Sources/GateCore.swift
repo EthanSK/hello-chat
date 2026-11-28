@@ -61,7 +61,7 @@ struct MicrophoneOwnership {
 enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
     case pauseVideoPhrase, playVideoPhrase, rewindVideoPhrase, rewindFivePhrase, rewindTenPhrase
-    case pauseMusicPhrase, playMusicPhrase, spotifyVolumePhrase, outputVolumePhrase, nextTrackPhrase
+    case pauseMusicPhrase, playMusicPhrase, spotifyVolumePhrase, outputVolumePhrase, youtubeVolumePhrase, nextTrackPhrase
     case callDotPhrase, hangUpDotPhrase
     case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase, backPhrase, forwardPhrase
     var id: String { rawValue }
@@ -83,6 +83,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .playMusicPhrase: return "Play music phrase"
         case .spotifyVolumePhrase: return "Spotify volume phrase"
         case .outputVolumePhrase: return "Output volume phrase"
+        case .youtubeVolumePhrase: return "YouTube volume phrase"
         case .nextTrackPhrase: return "Next track phrase"
         case .backPhrase: return "Back phrase"
         case .forwardPhrase: return "Forward phrase"
@@ -102,6 +103,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .rewindVideoPhrase: return "A phrase with a duration uses that duration."
         case .spotifyVolumePhrase: return "Say a phrase followed by a volume from 0 to 100."
         case .outputVolumePhrase: return "Say a phrase followed by a volume from 0 to 100."
+        case .youtubeVolumePhrase: return "Say a phrase followed by a volume from 0 to 100."
 
         default: return nil
         }
@@ -124,6 +126,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .playMusicPhrase: return "Play music"
         case .spotifyVolumePhrase: return "Spotify volume"
         case .outputVolumePhrase: return "Set volume"
+        case .youtubeVolumePhrase: return "YouTube volume"
         case .nextTrackPhrase: return "Next track"
         case .backPhrase: return "Back"
         case .forwardPhrase: return "Forward"
@@ -137,12 +140,13 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         }
     }
     // Browser-video phrases go through Agent Flow Bridge and never reach Codex Voice.
-    var controlsVideo: Bool { [.pauseVideoPhrase, .playVideoPhrase].contains(self) || isRewind }
+    var controlsVideo: Bool { [.pauseVideoPhrase, .playVideoPhrase, .youtubeVolumePhrase].contains(self) || isRewind }
     var isRewind: Bool { [.rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase].contains(self) }
     var settingsTitle: String {
         if isRewind { return "Rewind video" }
         if self == .spotifyVolumePhrase { return "Spotify volume" }
         if self == .outputVolumePhrase { return "Output volume" }
+        if self == .youtubeVolumePhrase { return "YouTube volume" }
         if self == .nextTrackPhrase { return "Next track" }
         if controlsMusic { return self == .pauseMusicPhrase ? "Pause music" : "Play music" }
         return action.settingsTitle
@@ -217,6 +221,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
             .nextTrackPhrase: ["Next track": ["Next song", "Skip track", "Skip song"]],
             .backPhrase: ["Back": ["Go back", "Navigate back"]],
             .forwardPhrase: ["Forward": ["Go forward", "Forth", "Go forth", "Navigate forward"]],
+            .youtubeVolumePhrase: ["YouTube volume": ["YouTube volume to", "Set YouTube volume", "Set YouTube volume to", "You tube volume"]],
             .outputVolumePhrase: ["Set volume": ["Set volume to", "Set the volume", "Set the volume to", "Change volume", "Change volume to", "System volume", "Computer volume"]],
             .callDotPhrase: ["Call Dot": ["Call my dot", "Call dots", "Call the dot"]],
             .hangUpDotPhrase: ["Hang up": ["Hang up Dot", "Hang up my dot", "Hang up the dot"]],
@@ -271,6 +276,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .pauseMusicPhrase, .playMusicPhrase: return .mediaPlayPause
         case .spotifyVolumePhrase: return .spotifyVolume
         case .outputVolumePhrase: return .outputVolume
+        case .youtubeVolumePhrase: return .youtubeVolume
         case .nextTrackPhrase: return .nextTrack
         case .backPhrase: return .back
         case .forwardPhrase: return .forward
@@ -285,7 +291,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
 }
 
 enum PhraseAction: String, CaseIterable {
-    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, outputVolume, nextTrack, back, forward, callDot, hangUpDot, app, zoomIn, zoomOut, showVoice
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, outputVolume, youtubeVolume, nextTrack, back, forward, callDot, hangUpDot, app, zoomIn, zoomOut, showVoice
     // Ethan’s “brackets Codex” identifies the four call audio rows in Home and their phrase editors.
     var settingsTitle: String {
         switch self {
@@ -303,6 +309,7 @@ enum PhraseAction: String, CaseIterable {
         case .mediaPlayPause: return "Music"
         case .spotifyVolume: return "Spotify volume"
         case .outputVolume: return "Output volume"
+        case .youtubeVolume: return "YouTube volume"
         case .nextTrack: return "Next track"
         case .back: return "Back"
         case .forward: return "Forward"

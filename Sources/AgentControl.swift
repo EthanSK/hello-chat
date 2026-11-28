@@ -224,6 +224,13 @@ import Foundation
             }
             return .init(result.confirms(command) ? .confirmed : (result == .unconfirmed ? .unknown : .unavailable), message: result.summary(for: command))
         }
+        add("video.volume", "action", ["value": .integer(0...100)]) { [model] request in
+            let percent = request.integer("value")
+            let result = await withCheckedContinuation { continuation in
+                model.videoBridge.setYouTubeVolume(percent, shouldSend: { request.current(at: Date().timeIntervalSince1970) }) { continuation.resume(returning: $0) }
+            }
+            return .init(result == .volume(percent) ? .confirmed : (result == .unconfirmed ? .unknown : .unavailable), message: result == .volume(percent) ? "YouTube volume · \(percent)%" : "Couldn’t confirm YouTube volume. Check Agent Flow Bridge.")
+        }
         add("video.refresh", "action") { [model] _ in model.refreshVideoBridge(); return .init(.accepted) }
         add("spotify.volume", "action", ["value": .integer(0...100)]) { [model] request in
             .init(.confirmed, try await model.spotifyVolume.setVolume(to: request.integer("value"), beforeWrite: request.checkExpiry))

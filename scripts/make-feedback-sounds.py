@@ -114,6 +114,7 @@ write("Silent", voice(0.26, lambda t: (1050.0 / 4 ** (t / 0.085)) if t < 0.085 e
 write("ShowVoice", hits(0.31, (0.035, 0.09, 0.205), (1746, 1556, 2093), WOOD, 43, 0.06))
 write("SpotifyVolume", hits(0.28, (0.0, 0.06, 0.15), (660, 880, 1100), BUBBLE, 35, 0.08))
 # Mac output volume has its own cue; no route, mute or live playback change. — GPT-6.1 Sol
+write("YouTubeVolume", hits(0.25, (0.0, 0.085), (659.25, 1318.5), WOOD, 30, 0.1))
 write("OutputVolume", hits(0.25, (0.0, 0.095), (784, 1174.66), WOOD, 30, 0.1))
 
 write("Rewind", hits(0.37, (0.0, 0.085, 0.185), (1397, 932, 740), SQUAREISH, 40, 0.1))

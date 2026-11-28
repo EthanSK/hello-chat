@@ -137,7 +137,7 @@ private final class Probe {
         check(!cancelledWorkspaceResult.0 && cancelledWorkspaceResult.1 == 0, "Cancellation after AX refusal prevents Launch Services")
 
         // Slots: four new canonical preferences after the unchanged Voice and Browser fields.
-        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase], "Existing fields are intact")
+        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase, .youtubeVolumePhrase], "Existing fields are intact")
         check(PhraseSlot.desktopSlots == [.outputVolumePhrase, .switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase, .backPhrase, .forwardPhrase], "Desktop fields follow them")
         check(PhraseSlot.desktopSlots.map(\.rawValue) == ["outputVolumePhrase", "switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase", "showVoicePhrase", "backPhrase", "forwardPhrase"], "Canonical preference names")
         check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Set volume", "Switch app", "Open app", "Zoom in", "Zoom out", "Show voice", "Back", "Forward"], "Defaults")
