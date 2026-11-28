@@ -135,6 +135,7 @@ struct TimedCustomSpeech {
     private var finals = CustomSpeechFinals()
     private var hasTimings = false
     private var usedFallback = false
+    private var emittedMatch = false
 
     // Nemotron's token clock can identify a pause when room noise prevents the
     // microphone from going quiet. Keep the same standalone pause and require real spans. — GPT-6.2 Sol
@@ -161,7 +162,9 @@ struct TimedCustomSpeech {
                 && ["say", "said", "saying", "called", "named", "mention", "mentioned",
                     "example", "phrase", "word", "words", "spelling", "the", "your", "my"].contains(words[start - 1])
             let rightReference = end < words.count && timings[end].start - timings[end - 1].end < SpeechOnset.pauseSeconds
-                && ["phrase", "command", "spelling", "is", "was", "works", "worked", "should"].contains(words[end])
+                && (["phrase", "command", "spelling", "is", "was", "works", "worked", "should"].contains(words[end])
+                    || words[end - 1] == "but"
+                    || (words[end - 1] == "both" && words[end] == "times"))
             let direct = context.permitsDirectCommand(in: start..<end)
                 && !negated && !leftReference && !rightReference
                 && !DesktopSpeechBoundaries.introducesQuotation(words: words, before: start, sentences: [])
@@ -171,17 +174,34 @@ struct TimedCustomSpeech {
         }
     }
 
-    mutating func completed(through decodedTime: Double, quietFinals: [CustomCommandUtterance]) -> [CustomCommandUtterance] {
+    mutating func completed(through decodedTime: Double, quietFinals: [CustomCommandUtterance],
+                            matches: (String) -> Bool = { _ in true }) -> [CustomCommandUtterance] {
         guard !usedFallback else { return [] }
+        // The recognizer's quiet final can contain one exact command even when the
+        // token clock split its words. Never re-run a previously emitted
+        // matching group from the same recognition context.
+        if !emittedMatch, let exact = quietFinals.first(where: { matches($0.text) }) {
+            var context = StandaloneWake()
+            context.update(exact.text, at: 0)
+            let wordCount = PhraseMatcher.words(exact.text).count
+            if !context.sentenceStarts.contains(where: { $0 > 0 && $0 < wordCount }) {
+                usedFallback = true
+                return [exact]
+            }
+        }
         if !hasTimings {
             usedFallback = !quietFinals.isEmpty
-            return quietFinals
+            return []
         }
         var outputs: [CustomCommandUtterance] = []
         while let first = pending.first,
               !quietFinals.isEmpty || decodedTime - first.end + 1e-9 >= SpeechOnset.pauseSeconds {
             pending.removeFirst()
-            if finals.accept(start: first.start, end: first.end), let utterance = first.utterance { outputs.append(utterance) }
+            if let utterance = first.utterance, matches(utterance.text),
+               finals.accept(start: first.start, end: first.end) {
+                emittedMatch = true
+                outputs.append(utterance)
+            }
         }
         return outputs
     }

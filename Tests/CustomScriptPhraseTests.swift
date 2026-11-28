@@ -7,18 +7,19 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: directory) }
         let script = directory.appendingPathComponent("fixture.sh")
         try Data("printf '%s\\n' \"$1\" >> result.txt\n".utf8).write(to: script)
-        let phrases = ["Fingerbot", "Fingerbots", "Fingerboard"]
+        let phrases = ["Fingerbot", "Fingerbots", "Fingerboard", "Fingerboards", "finger bought", "finger both", "finger but", "finger butt"]
         let entry: [String: Any] = [
             "name": "Fixture", "phrases": phrases, "executable": "/bin/sh",
             "arguments": [script.path, "one literal; argument"], "workingDirectory": directory.path
         ]
         let config = try CustomScriptPhrases(data: JSONSerialization.data(withJSONObject: [entry]))
         for form in ["Fingerbot", "Fingerbots", "finger bot", "finger bots.", "finger-bot", "finger-bots",
-                     "fingerboard", "Finger board"] {
+                     "fingerboard", "Finger board", "finger boards", "finger bought", "finger both", "finger but", "finger butt"] {
             precondition(config.command(for: form)?.name == "Fixture", form)
         }
         for mention in ["I said Finger bots", "Does fingerboard work?", "Finger bot is your command",
-                        "don't finger bot", "Finger bot twice", "finger bot finger bot"] {
+                        "don't finger bot", "Finger bot twice", "finger bot finger bot",
+                        "Finger but I need a pause", "I said finger butt", "Use your finger both times"] {
             precondition(config.command(for: mention) == nil, mention)
         }
         do {
@@ -101,6 +102,25 @@ import Foundation
         unaligned.update("Fingerbot", timings: [("fingerbot", 0.5, 0.5)])
         precondition(unaligned.completed(through: 4.0, quietFinals: []).isEmpty)
         precondition(unaligned.completed(through: 4.0, quietFinals: [CustomCommandUtterance("Fingerbot")]) == [CustomCommandUtterance("Fingerbot")])
+        let matches: (String) -> Bool = { config.command(for: $0) != nil }
+        let split = [("finger", 1.2, 1.44), ("bot", 3.92, 4.0)]
+        var distortedClock = TimedCustomSpeech()
+        distortedClock.update("Finger bot", timings: split)
+        precondition(distortedClock.completed(through: 3.8, quietFinals: [], matches: matches).isEmpty)
+        let final = CustomCommandUtterance("Finger bot")
+        precondition(distortedClock.completed(through: 4.7, quietFinals: [final], matches: matches) == [final])
+        precondition(distortedClock.completed(through: 5, quietFinals: [final], matches: matches).isEmpty)
+        var separateSentences = TimedCustomSpeech()
+        separateSentences.update("Finger. Bot.", timings: split)
+        precondition(separateSentences.completed(through: 5, quietFinals: [.init("Finger. Bot.")], matches: matches).isEmpty)
+        var alreadyEmitted = TimedCustomSpeech()
+        alreadyEmitted.update("Fingerbot", timings: first)
+        precondition(alreadyEmitted.completed(through: 4, quietFinals: [], matches: matches).count == 1)
+        precondition(alreadyEmitted.completed(through: 5, quietFinals: [.init("Fingerbot")], matches: matches).isEmpty)
+        var continuation = TimedCustomSpeech()
+        let clause = [("finger", 0.2, 0.4), ("but", 0.4, 0.6), ("i", 1.5, 1.6), ("paused", 1.6, 1.9)]
+        continuation.update("Finger but I paused", timings: clause)
+        precondition(continuation.completed(through: 5, quietFinals: [.init("Finger but I paused")], matches: matches).isEmpty)
         print("Custom phrases: exact forms, mentions, collisions, duplicate finals and one local fixture process passed")
     }
 }

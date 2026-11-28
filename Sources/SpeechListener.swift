@@ -12,6 +12,7 @@ import CoreAudio
     var onAudioActivity: ((Double, Double, Double) -> Void)?
     var onFrame: ((Bool) -> Void)?
     var onCompletedCommandUtterance: ((CustomCommandUtterance) -> Void)?
+    var matchesCustomCommandPhrase: ((String) -> Bool)?
     var onRecordedCommandUtterance: ((CustomCommandUtterance) -> Void)?
     var onUtteranceEnd: (() -> Void)?
     var onReplyRecognition: ((NotificationReplyCore.Recognition) -> Void)?
@@ -337,11 +338,11 @@ import CoreAudio
                     self.progress.processed(at: Diagnostics.now)
                     self.onFrame?(result.utteranceEnded)
                     let observeCommand = recording == nil ? self.onCompletedCommandUtterance : self.onRecordedCommandUtterance
-                    if let observeCommand {
+                    if let observeCommand, let matches = self.matchesCustomCommandPhrase {
                         var completed = result.completedCommandUtterances
                         if selectedModel == .nemotron560 {
                             if let text = result.text { customSpeech.update(text, timings: result.wordTimings) }
-                            completed = customSpeech.completed(through: result.audioTime, quietFinals: completed)
+                            completed = customSpeech.completed(through: result.audioTime, quietFinals: completed, matches: matches)
                         }
                         if !handlingReply, self.session == token,
                            self.contextBoundary.accepts(sequence: frame.sequence, capturedAt: frame.capturedAt) {

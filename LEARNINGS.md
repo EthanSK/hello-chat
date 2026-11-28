@@ -7,6 +7,7 @@
 - Nemotron decoded a configured phrase in steady room noise without reporting an utterance end. For custom scripts, use the existing pause duration on real decoded word spans as well as the microphone's quiet boundary. Use the complete group of words, reject quoted and negated requests, and consume each span once. The recorded custom-command check reports matches without launching their scripts.
 - Nemotron's word times describe token emission. An offline reproduction put 640 ms between two words of one configured phrase, while the punctuation and the following word shared a frame. Use a separate grouping pause and sentence boundaries for custom commands. Keep the longer end-of-group confirmation and reject references across short gaps. The inert dispatch check uses the normal decoder, grouping, matcher and process launcher with a fixed harmless executable.
 - Custom-command highlighting uses the accepted word range from the recognizer with the shared exact-phrase color. Keep mentions of the same alias neutral. Verify that a mark refers to the visible transcript's word prefix so a revised or held transcript cannot inherit a mark for a different occurrence.
+- A recording with an 800 ms pause between words produced a 2.48-second token gap. When Nemotron finalizes one whole configured command after quiet, accept the complete final even if token grouping split it. Keep separate sentences, mentions, and matches already emitted from the same context from dispatching again.
 
 ## 25 November 2026 — Bind a pending speed handoff before its title is ready
 

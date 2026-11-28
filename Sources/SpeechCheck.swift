@@ -42,6 +42,7 @@ struct SpeechCheckResult {
         var fixtureWordSpans: [[String: Any]] = []
         var fixtureHighlights: [String] = []
         if let customPhrases {
+            listener.matchesCustomCommandPhrase = { customPhrases.command(for: $0) != nil }
             listener.onRecordedCommandUtterance = { utterance in
                 guard let command = customPhrases.command(for: utterance.text) else { return }
                 var result: [String: Any] = ["command": "custom", "name": command.name, "utterance": utterance.text]
