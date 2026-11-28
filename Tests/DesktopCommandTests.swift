@@ -138,9 +138,9 @@ private final class Probe {
 
         // Slots: four new canonical preferences after the unchanged Voice and Browser fields.
         check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase], "Existing fields are intact")
-        check(PhraseSlot.desktopSlots == [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase, .setSpeedPhrase], "Desktop fields follow them")
-        check(PhraseSlot.desktopSlots.map(\.rawValue) == ["switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase", "showVoicePhrase", "setSpeedPhrase"], "Canonical preference names")
-        check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Switch app", "Open app", "Zoom in", "Zoom out", "Show voice", "Set speed"], "Defaults")
+        check(PhraseSlot.desktopSlots == [.outputVolumePhrase, .switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase, .backPhrase, .forwardPhrase, .setSpeedPhrase], "Desktop fields follow them")
+        check(PhraseSlot.desktopSlots.map(\.rawValue) == ["outputVolumePhrase", "switchAppPhrase", "openAppPhrase", "zoomInPhrase", "zoomOutPhrase", "showVoicePhrase", "backPhrase", "forwardPhrase", "setSpeedPhrase"], "Canonical preference names")
+        check(PhraseSlot.desktopSlots.map(\.defaultText) == ["Set volume", "Switch app", "Open app", "Zoom in", "Zoom out", "Show voice", "Back", "Forward", "Set speed"], "Defaults")
         check(PhraseSlot.switchAppPhrase.example != nil && PhraseSlot.openAppPhrase.example == nil && PhraseSlot.zoomInPhrase.example == nil,
               "The combined app setting carries one example")
         check(PhraseSlot.switchAppPhrase.label.hasSuffix("prefix") && PhraseSlot.openAppPhrase.label.hasSuffix("prefix"), "App commands are labelled as prefixes")
