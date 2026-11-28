@@ -95,6 +95,30 @@ struct SpeakerOutputSettings: Codable, Equatable {
         upgraded.save(to: defaults)
         return upgraded
     }
+    // Ethan wants requested dictionary additions in every build, not only his local settings.
+    // Add the Headset row once; conflicting/custom destinations and later deletions win. — GPT-6.1 Sol
+    func addingHeadsetDefault(in defaults: UserDefaults, avoiding otherPatterns: [PhrasePattern]) -> Self? {
+        let key = "speakerHeadsetDefault20261128"
+        guard !defaults.bool(forKey: key) else { return nil }
+        defer { defaults.set(true, forKey: key) }
+        var next = self
+        let output = "JLab GO Work Pop"
+        let index: Int
+        if let existing = next.destinations.firstIndex(where: { $0.output == output }) { index = existing }
+        else {
+            next.destinations.append(.init(id: UUID(uuidString: "8C59DC3D-E619-405A-A7E9-C82D78638359")!, names: "", output: output))
+            index = next.destinations.count - 1
+        }
+        for name in ["Headset", "Headphones", "JLab", output] where !Self.lines(next.destinations[index].names).contains(name) {
+            let before = next.destinations[index].names
+            next.destinations[index].names = ([before, name].filter { !$0.isEmpty }).joined(separator: "\n")
+            if next.issue != nil || next.conflictingPhrase(with: otherPatterns) != nil { next.destinations[index].names = before }
+        }
+        if next.destinations[index].names.isEmpty { next.destinations.remove(at: index) }
+        guard next != self else { return nil }
+        next.save(to: defaults)
+        return next
+    }
     static func lines(_ text: String) -> [String] {
         text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !PhraseMatcher.words($0).isEmpty }
     }
@@ -216,7 +240,17 @@ private struct SpeakerPhraseConflicts {
                 if let indices = bySpelling[compact] { candidates.formUnion(indices) }
             }
         }
-        let conflict = exactPrefixes.contains(words) || candidates.contains { !patterns[$0].matches(in: words).isEmpty }
+        let conflict = exactPrefixes.contains(words) || candidates.contains { index in
+            let pattern = patterns[index], matches = pattern.matches(in: words)
+            guard pattern.isBareNavigation else { return !matches.isEmpty }
+            // “Switch back to Kitchen” contains Back but cannot address navigation.
+            // Keep real leading/polite Back prefixes blocked before their destination
+            // arrives. Other commands retain their previous strict ownership.
+            // Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+            var detector = StandaloneWake()
+            detector.update(phrase, at: 0)
+            return matches.contains { detector.permitsDirectCommandPrefix(in: $0.start..<$0.end) }
+        }
         results[phrase] = conflict
         return conflict
     }
@@ -339,12 +373,12 @@ enum SpeakerOutput {
     }
     // The shared helper snapshots input before connecting Bluetooth, verifies routing, and restores
     // only known speaker-microphone takeovers. Never duplicate that policy in the app.
-    static func switchTo(_ output: String) -> SpeakerSwitchOutcome {
+    static func switchTo(_ output: String, dispatchBefore: Double? = nil) -> SpeakerSwitchOutcome {
         guard FileManager.default.isReadableFile(atPath: helper.path) else { return .failure("Audio switch helper not found.", beforeDispatch: true) }
         guard available().contains(output) else { return .failure("Output is unavailable or has a duplicate name.", beforeDispatch: true) }
-        return run(output, helper: helper)
+        return run(output, helper: helper, dispatchBefore: dispatchBefore)
     }
-    static func run(_ output: String, helper: URL) -> SpeakerSwitchOutcome {
+    static func run(_ output: String, helper: URL, dispatchBefore: Double? = nil) -> SpeakerSwitchOutcome {
         let process = Process(), pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = [helper.path, "--", output]
@@ -353,6 +387,9 @@ enum SpeakerOutput {
         // and block both the helper and H Chat's completion receipt. Found and fixed by GPT-6.1 Sol.
         process.standardError = FileHandle.nullDevice
         do {
+            guard dispatchBefore.map({ ProcessInfo.processInfo.systemUptime <= $0 }) != false else {
+                return .failure("The speaker request expired.", beforeDispatch: true)
+            }
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()

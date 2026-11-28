@@ -2,6 +2,25 @@
 // the total across streaming revisions, so “five” never becomes five more. — GPT-6.1 Sol
 import Foundation
 
+// Immutable ownership handed to off-main native writers. The scheduler changes
+// only this locked permission, never exposes its MainActor records across threads.
+// Capture-age expiry ends at the first real effect; cancellation remains separate. — GPT-6.1 Sol
+final class SpokenDispatchPermission: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = true
+    private var expires: Double?
+    private let clock: () -> Double
+    init(expires: Double?, clock: @escaping () -> Double) { self.expires = expires; self.clock = clock }
+    func permits() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return active && expires.map { clock() <= $0 } != false
+    }
+    var deadline: Double? { lock.lock(); defer { lock.unlock() }; return expires }
+    func didDispatch() { lock.lock(); defer { lock.unlock() }; expires = nil }
+    func invalidate() { lock.lock(); defer { lock.unlock() }; active = false }
+    func check() throws { if !permits() { throw CancellationError() } }
+}
+
 // One number vocabulary serves repeat counts and absolute command values. The
 // caller owns units and limits; zero is a volume, never a repeat count. — GPT-6.1 Sol
 enum CommandNumber {
@@ -101,6 +120,7 @@ enum CommandRepetition {
         var published: Progress?
         var acceptsRevisions = true
         var valueChanged = false
+        var dispatchPermission: SpokenDispatchPermission!
         init(id: UUID, command: String?, words: [String], range: Range<Int>, audio: Range<Double>?, repeats: Bool,
              requiresTimes: Bool, valueArgument: Bool, requested: Int, run: @escaping (UUID) -> Void) {
             self.id = id; self.command = command; self.words = words; self.range = range; self.audio = audio
@@ -133,10 +153,26 @@ enum CommandRepetition {
         publish(record, nil)
         return true
     }
-    func shouldRun(_ step: UUID) -> Bool { steps[step].map { $0.activeStep == step && !$0.stopped } ?? false }
+    func shouldRun(_ step: UUID) -> Bool {
+        steps[step].map { record in
+            record.activeStep == step && !record.stopped && record.dispatchPermission.permits()
+        } ?? false
+    }
+    var clock: () -> Double = { ProcessInfo.processInfo.systemUptime }
+    func dispatchDeadline(for step: UUID) -> Double? {
+        guard let record = steps[step], record.completed == 0 else { return nil }
+        return record.dispatchPermission.deadline
+    }
+    func dispatchPermission(for step: UUID) -> SpokenDispatchPermission? { steps[step]?.dispatchPermission }
+    func didDispatch(_ step: UUID) {
+        // A real first effect (such as launching Codex) owns its bounded follow-up
+        // readiness work; expiry must not interrupt an action already started.
+        steps[step]?.dispatchPermission.didDispatch()
+    }
     func invalidateValue(_ root: UUID) {
         guard let record = records.first(where: { $0.id == root }), record.valueArgument, !record.stopped else { return }
         record.stopped = true; record.stopOutcome = .unknown
+        record.dispatchPermission.invalidate()
         if !record.executing { publish(record, .unknown) }
     }
 
@@ -172,6 +208,7 @@ enum CommandRepetition {
     func cancelPending(command: String? = nil) {
         for record in records where !record.stopped && (command == nil || record.command == command) {
             record.stopped = true
+            record.dispatchPermission.invalidate()
             if !record.executing && record.completed < record.requested { publish(record, .superseded) }
         }
     }
@@ -191,7 +228,7 @@ enum CommandRepetition {
 
     @discardableResult func begin(id: UUID, range: Range<Int>, repeats: Bool, requiresTimes: Bool = false,
                                  valueArgument: Bool = false,
-                                 discard: Bool = false, command: String? = nil, run: @escaping (UUID) -> Void) -> UUID? {
+                                 discard: Bool = false, command: String? = nil, firstDispatchBefore: Double? = nil, run: @escaping (UUID) -> Void) -> UUID? {
         guard !records.contains(where: { $0.id == id }), range.lowerBound >= 0,
               range.upperBound <= words.count, !range.isEmpty else { return nil }
         // Keep all requested actions in spoken order; a later request cannot silently turn
@@ -208,6 +245,7 @@ enum CommandRepetition {
         } else { audio = nil }
         let record = Record(id: id, command: command, words: Array(words[range]), range: range, audio: audio,
                             repeats: repeats, requiresTimes: requiresTimes, valueArgument: valueArgument, requested: requested, run: run)
+        record.dispatchPermission = .init(expires: firstDispatchBefore, clock: clock)
         record.acceptsRevisions = !contextFinal
         records.append(record)
         if records.count > 256, let retired = records.firstIndex(where: { !$0.executing && ($0.stopped || $0.completed >= $0.requested) }) {
@@ -216,6 +254,7 @@ enum CommandRepetition {
         }
         if discard {
             record.stopped = true
+            record.dispatchPermission.invalidate()
             publish(record, .superseded)
             return nil
         }
@@ -256,12 +295,14 @@ enum CommandRepetition {
         }
         switch outcome {
         case .confirmed, .submitted:
+            record.dispatchPermission.didDispatch()
             record.completed += 1
             record.confirmed = record.confirmed && outcome == .confirmed
             if record.stopped { publish(record, .superseded) }
             else { advance(record) }
         default:
             record.stopped = true
+            record.dispatchPermission.invalidate()
             publish(record, record.completed > 0 ? .unknown : outcome)
         }
         poll()
@@ -289,6 +330,7 @@ enum CommandRepetition {
         case .value(let requested, _): value = requested
         case .invalid:
             record.stopped = true; record.stopOutcome = .unknown
+            record.dispatchPermission.invalidate()
             // The first run may still be in flight: never label it failed-before-dispatch.
             if !record.executing { publish(record, .unknown) }
             return
@@ -296,7 +338,7 @@ enum CommandRepetition {
         guard value != record.requested else { return }
         guard value >= record.completed + (record.executing ? 1 : 0) else {
             // A later lower ASR count cannot undo an already-sent action. Stop; never compensate.
-            record.stopped = true; record.stopOutcome = .unknown; publish(record, .unknown); return
+            record.stopped = true; record.dispatchPermission.invalidate(); record.stopOutcome = .unknown; publish(record, .unknown); return
         }
         record.requested = value
     }

@@ -80,6 +80,13 @@ import Foundation
         var launch = ModelBarVoiceLaunch()
         let now = Date(), other = VoicePeerCall(token: "\(UUID()):\(UUID()):999")!
         let state = VoicePeerReceipt(status: .active, call: good.call, startedAtMilliseconds: Int64(now.timeIntervalSince1970 * 1000) + 10)
+        var ordered = ModelBarVoiceLaunch()
+        ordered.arm(sent: now, pid: good.call.pid)
+        check(ordered.takeNavigation(.init(status: .unknown), at: now) == nil, "No Show Voice before genuine identity")
+        check(ordered.takeNavigation(state, at: now) == good.call, "Exact Show Voice is admitted before a unique title is required")
+        check(ordered.takeNavigation(state, at: now) == nil && ordered.pending?.call == good.call, "No replay of navigation while title/composer is pending")
+        check(ordered.take(state, at: now, composerReady: false) == nil, "Showing the correct chat alone does not authorize a speed read")
+        check(ordered.take(state, at: now, composerReady: true) == good.call, "Only the same ready chat reaches the speed action")
         check(launch.take(state, at: now) == nil, "An unrelated native call cannot arm automatic speed")
         launch.arm(sent: now, pid: good.call.pid)
         check(launch.take(.init(status: .unknown), at: now) == nil && launch.pending != nil, "Unknown metadata waits for the existing observer")

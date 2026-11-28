@@ -66,7 +66,7 @@ import Darwin
             let action = arguments[6], supplied = arguments[7]
             let supported = Set(PhraseSlot.allCases.map(\.rawValue) + VoiceAudioAction.allCases.map(\.rawValue) + ["app", "speakerOutput"])
             guard supported.contains(action), supplied.count <= 160,
-                  (action == "app" || action == "speakerOutput" || [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.setSpeedPhrase.rawValue].contains(action)) == !supplied.isEmpty else { print("invalid"); exit(2) }
+                  (action == "app" || action == "speakerOutput" || [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue, PhraseSlot.setSpeedPhrase.rawValue].contains(action)) == !supplied.isEmpty else { print("invalid"); exit(2) }
             let target: String
             switch action {
             case "app": target = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)).commandTarget(supplied)
@@ -74,6 +74,9 @@ import Darwin
                 guard let output = SpeakerOutputSettings.load().receiptTarget(supplied) else { print("unknownSpeaker"); return }
                 target = output
             case PhraseSlot.spotifyVolumePhrase.rawValue:
+                guard ["normal", "lowered"].contains(supplied) || (Int(supplied).map { (0...100).contains($0) && String($0) == supplied } == true) else { print("invalid"); exit(2) }
+                target = supplied
+            case PhraseSlot.outputVolumePhrase.rawValue:
                 guard let volume = Int(supplied), (0...100).contains(volume) else { print("invalid"); exit(2) }
                 target = String(volume)
             case PhraseSlot.setSpeedPhrase.rawValue:
@@ -587,7 +590,7 @@ struct MainView: View {
                             .accessibilityIdentifier("errorMessage")
                     }
                 }
-                Section("Commands") {
+                Section("Settings") {
                     Toggle(isOn: Binding(get: { model.listeningToggleOn }, set: { _ in model.toggle() })) {
                         HStack(spacing: 6) {
                             Text("Listening enabled")
@@ -637,6 +640,8 @@ struct MainView: View {
                     }
                     .disabled(model.busy || model.checkingSpeech || model.changingModel)
                     .accessibilityIdentifier("speechModelPicker")
+                }
+                Section("Commands") {
                     // Rows take value snapshots, so live transcript updates don't rebuild every command row.
                     PhraseFields(model: model, configuration: model.phraseConfiguration).equatable()
                     PhraseFields(model: model, configuration: model.phraseConfiguration, slots: PhraseSlot.dotSlots).equatable()
@@ -1102,7 +1107,11 @@ private extension PhraseSlot {
         case .setSpeedPhrase: return "Sets Standard, Fast or Ultrafast in the current Codex Voice chat through Model Bar. Your model, reasoning and ordinary new-chat defaults stay the same. Without a speed name, it does nothing."
         case .callDotPhrase: return "Opens Your dot in ChatGPT and starts a call. It won’t start while Codex Voice is active or its status is unknown. A Dot call that’s already active or opening is left alone."
         case .hangUpDotPhrase: return "Ends the Dot call shown in ChatGPT. If Dot call controls aren’t available, it does nothing."
-        case .spotifyVolumePhrase: return "Sets Spotify’s volume to the number you say, from 0 to 100. Spotify must already be running. Without a number, it does nothing. Your Maximum volume setting, system volume and playback aren’t changed."
+        case .nextTrackPhrase: return "Sends one Next Track media-key press to the current media session."
+        case .backPhrase: return "Sends the standard Back mouse button to the active app. The app decides how to handle it."
+        case .forwardPhrase: return "Sends the standard Forward mouse button to the active app. The app decides how to handle it."
+        case .outputVolumePhrase: return "Sets the current Mac output volume from 0 to 100. Microphone, alerts, playback and output selection aren’t changed. Outputs without software volume keep their own volume control."
+        case .spotifyVolumePhrase: return "Sets Spotify’s volume from 0 to 100. During Voice, Normal restores the saved pre-chat volume; Lower or Lowered uses your Voice volume limit. Spotify must already be running. System volume and playback aren’t changed."
         }
     }
 }
@@ -1144,7 +1153,7 @@ private struct RepeatCountToggle: View {
         switch command {
         case PhraseSlot.rewindVideoPhrase.rawValue:
             return first + " Always include “times”, since a number alone can be a distance."
-        case PhraseSlot.spotifyVolumePhrase.rawValue:
+        case PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue:
             return first + " Always include “times”, since a number alone is the volume."
         case PhraseSlot.pauseMusicPhrase.rawValue, PhraseSlot.playMusicPhrase.rawValue:
             return first + " Without a number, it runs once. Each run is another Play/Pause press, so an even number can leave playback as it was."
@@ -1247,6 +1256,30 @@ struct PhraseFields: View, Equatable {
     }
 }
 
+// The command gear and Settings compose the same Spotify controls and saved limit. — GPT-6.1 Sol
+private struct SpotifyVolumeSettings: View {
+    @ObservedObject var model: GateModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            let limit = $model.spotifyVolumeLimit.changes(in: 0...100)
+            Toggle("Lower volume during chat", isOn: $model.lowerSpotifyDuringChat)
+                .accessibilityIdentifier("lowerSpotifyDuringChat")
+            HStack {
+                Text("Voice volume limit")
+                Spacer()
+                TextField("Percent", value: limit, format: .number)
+                    .labelsHidden().multilineTextAlignment(.trailing).frame(width: 48)
+                    .accessibilityLabel("Spotify Voice volume limit percent").accessibilityIdentifier("spotifyVolumeLimit")
+                Text("%")
+                Stepper("Voice volume limit", value: limit, in: 0...100).labelsHidden()
+            }
+            Text("Normal uses the saved volume from before Voice lowered it. Lower or Lowered uses this limit. Muting the microphone or silencing Voice restores normal volume. A number is a manual choice that stays after the call.")
+                .foregroundStyle(.secondary)
+            SpotifyVolumeStatus(volume: model.spotifyVolume)
+        }
+    }
+}
+
 // Refactor of the existing phrase-row editor. All changes still use GateModel’s
 // main keys, extra rows, validation and slash-entry commit path. — GPT-6.1 Sol
 struct CommandPhrasesView: View {
@@ -1312,11 +1345,14 @@ struct CommandPhrasesView: View {
             if let first = slots.first {
                 RepeatCountToggle(command: first.rawValue, example: repeatExample(first))
             }
+            if slots.contains(.spotifyVolumePhrase) {
+                GroupBox("Voice Volume Presets") { SpotifyVolumeSettings(model: model).padding(4) }
+            }
             if !model.similarPhrases { AlternateSpellingsOffNote() }
             if slots.contains(.rewindVideoPhrase) {
                 RewindAmountField(seconds: $model.rewindVideoSeconds)
             }
-            if let slot = slots.first(where: { $0 == .switchAppPhrase || $0 == .spotifyVolumePhrase || $0 == .setSpeedPhrase }), let example = slot.example {
+            if let slot = slots.first(where: { $0 == .switchAppPhrase || $0 == .spotifyVolumePhrase || $0 == .outputVolumePhrase || $0 == .setSpeedPhrase }), let example = slot.example {
                 Text(example).font(.caption).foregroundStyle(.secondary)
             }
             ScrollViewReader { reader in
@@ -1381,7 +1417,7 @@ struct CommandPhrasesView: View {
         let phrase = model[keyPath: model.phraseKeyPath(for: slot)].trimmingCharacters(in: .whitespacesAndNewlines)
         let main = phrase.isEmpty ? slot.defaultText : phrase
         if slot == .switchAppPhrase { return main + " Chrome" }
-        if slot == .spotifyVolumePhrase { return main + " forty percent" }
+        if slot == .spotifyVolumePhrase || slot == .outputVolumePhrase { return main + " forty percent" }
         if slot == .setSpeedPhrase { return main + " Ultrafast" }
         return main
     }
@@ -1882,23 +1918,7 @@ struct SettingsView: View {
                 }.disabled(!model.soundEffects)
                 Text("Choose each command’s sound from its gear on Home.").foregroundStyle(.secondary)
             }
-            Section("Spotify") {
-                let limit = $model.spotifyVolumeLimit.changes(in: 0...100)
-                Toggle("Lower volume during chat", isOn: $model.lowerSpotifyDuringChat)
-                    .accessibilityIdentifier("lowerSpotifyDuringChat")
-                HStack {
-                    Text("Maximum volume")
-                    Spacer()
-                    TextField("Percent", value: limit, format: .number)
-                        .labelsHidden().multilineTextAlignment(.trailing).frame(width: 48)
-                        .accessibilityLabel("Spotify maximum volume percent").accessibilityIdentifier("spotifyVolumeLimit")
-                    Text("%")
-                    Stepper("Maximum volume", value: limit, in: 0...100).labelsHidden()
-                }
-                Text("Keeps Spotify at or below this volume during Voice. Restores the previous volume afterwards unless you changed the volume.")
-                    .foregroundStyle(.secondary)
-                SpotifyVolumeStatus(volume: model.spotifyVolume)
-            }
+            Section("Spotify") { SpotifyVolumeSettings(model: model) }
             Section("Transcript Archive") {
                 Toggle("Save transcripts", isOn: $model.saveTranscripts).accessibilityIdentifier("saveTranscripts")
                 Text("Saves local recognition as JSON with rough phrase timestamps. May include background speech. Audio isn't saved.").foregroundStyle(.secondary)

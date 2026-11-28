@@ -78,17 +78,61 @@ final class SpeechCaptureCursor: @unchecked Sendable {
     struct Mark { let sequence: UInt64; let capturedAt: Double }
     private let lock = NSLock()
     private var next: UInt64 = 0
+    private var latest: Double?
+    private var meter: Double?
     private let clock: () -> Double
     init(clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) { self.clock = clock }
     func capture() -> Mark {
         lock.lock(); defer { lock.unlock() }
         let mark = Mark(sequence: next, capturedAt: clock())
+        latest = mark.capturedAt
         next &+= 1
         return mark
     }
     func boundary() -> Mark {
         lock.lock(); defer { lock.unlock() }
         return Mark(sequence: next, capturedAt: clock())
+    }
+    var lastCapturedAt: Double? {
+        lock.lock(); defer { lock.unlock() }; return latest
+    }
+    // At most one pending UI meter task. The producer retains the current level
+    // and capture clock while MainActor is busy, rather than queuing old meters.
+    func offerMeter(_ level: Double) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let needsTask = meter == nil; meter = level; return needsTask
+    }
+    func takeMeter() -> Double? {
+        lock.lock(); defer { lock.unlock() }
+        defer { meter = nil }; return meter
+    }
+}
+
+// A delivered frame can outlive the bounded stream while its consumer is suspended.
+// Use the SAME existing live-buffer horizon at every asynchronous publication edge.
+// Found by GPT-6.2 Astra; implemented by GPT-6.1 Sol. — GPT-6.1 Sol
+struct SpeechFrameFreshness {
+    let maximumAge: Double?
+    init(liveSampleRate: Double?) {
+        maximumAge = liveSampleRate.map { Double(SpeechContinuity.liveBufferCount(sampleRate: $0)) * Double(SpeechContinuity.captureFrames) / $0 }
+    }
+    func accepts(capturedAt: Double, now: Double) -> Bool {
+        guard capturedAt.isFinite, now.isFinite, now >= capturedAt else { return false }
+        return maximumAge.map { now - capturedAt <= $0 } ?? true
+    }
+    static func spokenAt(capturedAt: Double?, hostNow: Double, wallNow: Double, modelAge: Double) -> Double {
+        wallNow - max(0, capturedAt.map { hostNow - $0 } ?? 0) - max(0, modelAge)
+    }
+}
+
+// Retain the last KNOWN call through an unknown read. A proven End/replacement
+// invalidates only unstarted Voice controls; the observer never toggles anything. — GPT-6.1 Sol
+struct SpeechCallScope {
+    private var call: String?
+    mutating func observe(_ next: String?, known: Bool) -> Bool {
+        guard known else { return false }
+        defer { call = next }
+        return call != nil && call != next
     }
 }
 
@@ -100,7 +144,8 @@ struct AudioProgressWatchdog {
     private var reported = false
     init(now: Double) { captureAt = now; processedAt = now }
     mutating func captured(at now: Double) { captureAt = now }
-    mutating func processed(at now: Double) { processedAt = now }
+    mutating func processed(at now: Double) { processedAt = now; reported = false }
+    func recovered(since time: Double) -> Bool { processedAt > time }
     mutating func stalled(at now: Double, timeout: Double = 15) -> String? {
         guard !reported, now - processedAt >= timeout else { return nil }
         reported = true

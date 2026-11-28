@@ -37,7 +37,10 @@ enum ModelBarVoiceSpeed {
         var title: (UUID) throws -> String = { try CodexChatSpeed.uniqueTitle(thread: $0, database: VoiceTimeline.databaseURL()) }
         var open: (VoicePeerCall) async -> Bool = { call in
             guard let url = URL(string: "codex://threads/" + call.thread.uuidString.lowercased()) else { return false }
-            return await VoiceBridge.openChat(call.pid, url)
+            // Ethan's requested sequence: Show Voice for this exact created call,
+            // make it active, then let NativePicker await its own composer before
+            // any speed read. Never inspect the previously selected pane. — GPT-6.1 Sol
+            return await VoiceBridge.openChat(call.pid, url, activate: true)
         }
         var read: (VoicePeerCall) async -> CodexChatSpeed.Result = { call in
             await Task.detached { CodexChatSpeed.perform(thread: call.thread, speed: nil, expectedCall: call) }.value
@@ -142,8 +145,18 @@ struct ModelBarVoiceLaunch {
     }
     private(set) var pending: (sent: Date, pid: Int32, call: VoicePeerCall?)?
     private(set) var readiness: Readiness = .notArmed
-    mutating func arm(sent: Date, pid: Int32) { pending = (sent, pid, nil); readiness = .armed }
-    mutating func cancel() { pending = nil; readiness = .notArmed }
+    private var navigationClaim: VoicePeerCall?
+    mutating func arm(sent: Date, pid: Int32) { pending = (sent, pid, nil); navigationClaim = nil; readiness = .armed }
+    mutating func cancel() { pending = nil; navigationClaim = nil; readiness = .notArmed }
+    // Identity comes before Show Voice; a title is only required for the later
+    // native composer read. Never wait for a title before showing the new chat.
+    // Each bound call gets one navigation admission, without replay on uncertainty. — GPT-6.1 Sol
+    mutating func takeNavigation(_ state: VoicePeerReceipt, at now: Date) -> VoicePeerCall? {
+        _ = take(state, at: now, composerReady: false)
+        guard readiness == .titlePending, let call = pending?.call, navigationClaim != call else { return nil }
+        navigationClaim = call
+        return call
+    }
     mutating func take(_ state: VoicePeerReceipt, at now: Date, composerReady: Bool = true) -> VoicePeerCall? {
         guard var pending else { readiness = .notArmed; return nil }
         guard (0...30).contains(now.timeIntervalSince(pending.sent)) else {

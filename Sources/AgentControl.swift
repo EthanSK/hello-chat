@@ -206,6 +206,17 @@ import Foundation
             let result = model.desktopCommands.toggleCurrentMedia { sent = true }
             return .init(sent ? .sent : .unavailable, message: result.message)
         }
+        add("music.nextTrack", "action") { [model] _ in
+            return model.sendNextTrack()
+        }
+        add("desktop.navigate", "action", ["direction": .oneOf(["back", "forward"])]) { request in
+            guard let direction = HistoryNavigation.Direction(rawValue: request.string("direction")),
+                  let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+                throw HControlFailure.unavailable("No active app is available.")
+            }
+            try request.checkExpiry()
+            return .init(HistoryNavigation().perform(direction, expectedPID: pid) ? .sent : .unavailable)
+        }
         add("video.control", "action", ["command": .oneOf(VideoCommand.allCases.map(\.rawValue))]) { [model] request in
             guard let command = VideoCommand(rawValue: request.string("command")) else { throw HControlFailure.invalid("Unknown video command.") }
             let result = await withCheckedContinuation { continuation in
@@ -216,6 +227,29 @@ import Foundation
         add("video.refresh", "action") { [model] _ in model.refreshVideoBridge(); return .init(.accepted) }
         add("spotify.volume", "action", ["value": .integer(0...100)]) { [model] request in
             .init(.confirmed, try await model.spotifyVolume.setVolume(to: request.integer("value"), beforeWrite: request.checkExpiry))
+        }
+        add("output.volume.read") { _ in
+            let state = try await Task.detached { try SystemOutputVolume().read() }.value
+            return .init(.confirmed, ["output": state.device.name, "uid": state.device.uid,
+                "adjustable": state.adjustable, "percent": state.percent as Any? ?? NSNull(),
+                "muted": state.muted as Any? ?? NSNull()])
+        }
+        add("output.volume", "action", ["value": .integer(0...100), "uid": .text]) { [model] request in
+            let device = try await Task.detached { try SystemOutputVolume().read().device }.value
+            guard device.uid == request.string("uid") else { throw HControlFailure.unavailable("Output changed. Read the current output first.") }
+            do {
+                let state = try await model.outputVolumeCommands.set(request.integer("value"), on: device, beforeWrite: request.checkExpiry)
+                return .init(.confirmed, ["output": device.name, "uid": device.uid, "percent": state.percent as Any? ?? NSNull()])
+            } catch let failure as SystemOutputVolume.OperationFailure {
+                if case SystemOutputVolume.Failure.unsupported(let name) = failure.underlying {
+                    return .init(.unavailable, message: "\(name) has no adjustable software volume. Use its volume control.")
+                }
+                return .init(failure.beforeDispatch ? .unavailable : .unknown, message: "Couldn’t confirm output volume.")
+            }
+        }
+        add("spotify.volume.preset", "action", ["preset": .oneOf(["normal", "lowered"])]) { [model] request in
+            guard let preset = SpotifyVolumePreset(rawValue: request.string("preset")) else { throw HControlFailure.invalid("Unknown volume preset.") }
+            return .init(.confirmed, try await model.spotifyVolume.setPreset(preset, beforeWrite: request.checkExpiry))
         }
         add("output.switch", "action", ["output": .text]) { [model] request in
             guard !model.switchingSpeakerOutput else { throw HControlFailure.unavailable("A speaker change is already running.") }

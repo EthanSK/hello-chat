@@ -150,6 +150,7 @@ import SwiftUI
             XCTAssertFalse(window.isVisible, "No Settings preview may cover a working display")
         }
         try capture(Form { DisabledCommandsSection(model: model) }.formStyle(.grouped), name: "disabled-empty", height: 180)
+        try capture(MainView(model: model, zoom: InterfaceZoom(), updater: AppUpdater()), name: "home-settings-commands", width: 480, height: 1500)
         for command in HomeCommand.all {
             if command == .speakerOutput {
                 try capture(SpeakerOutputEditor(initial: model.speakerOutputSettings, otherPatterns: [],
@@ -160,7 +161,7 @@ import SwiftUI
             }
         }
         for command in HomeCommand.all { model.setCommandEnabled(false, command: command) }
-        XCTAssertEqual(model.disabledCommands.count, 20)
+        XCTAssertEqual(model.disabledCommands.count, HomeCommand.all.count)
         try capture(Form { DisabledCommandsSection(model: model) }.formStyle(.grouped), name: "disabled-all", height: 900)
         let zoom = try XCTUnwrap(HomeCommand.containing(.zoomInPhrase))
         try capture(CommandPhrasesView(model: model, slots: zoom.slots), name: "editor-disabled-zoom", width: 520, height: 600)

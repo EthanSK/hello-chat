@@ -215,6 +215,32 @@ enum SpotifyVolumeControl {
         }
     }
 
+    func setPreset(_ preset: SpotifyVolumePreset, beforeWrite: (() throws -> Void)? = nil) async throws -> Int {
+        guard enabled, presence == .active else {
+            throw SpotifyVolumeOperationFailure(underlying: SpotifyControlError.voiceUnavailable, beforeDispatch: true)
+        }
+        generation += 1
+        let generation = self.generation, session = self.session, call = callIdentifier
+        let microphoneMuted = self.microphoneMuted, outputSilenced = self.outputSilenced
+        let limit = SpotifyVolumePolicy.limit()
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async { [weak self] in
+                let result = Swift.Result { try session.setPreset(preset, callIdentifier: call,
+                    microphoneMuted: microphoneMuted, outputSilenced: outputSilenced,
+                    limit: limit, beforeWrite: beforeWrite) }
+                Task { @MainActor [weak self] in
+                    if let self, self.generation == generation {
+                        if case .success(let volume) = result {
+                            self.permissionRequired = false
+                            self.message = "Spotify volume · \(volume)%"
+                        }
+                    }
+                    continuation.resume(with: result)
+                }
+            }
+        }
+    }
+
     private func reconcile(limitEdited: Bool = false) {
         let limit = SpotifyVolumePolicy.limit()
         let state = enabled ? presence : .inactive

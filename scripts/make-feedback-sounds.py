@@ -113,6 +113,8 @@ write("Silent", voice(0.26, lambda t: (1050.0 / 4 ** (t / 0.085)) if t < 0.085 e
 # A rising two-note bell acknowledges opening the active Voice conversation.
 write("ShowVoice", hits(0.31, (0.035, 0.09, 0.205), (1746, 1556, 2093), WOOD, 43, 0.06))
 write("SpotifyVolume", hits(0.28, (0.0, 0.06, 0.15), (660, 880, 1100), BUBBLE, 35, 0.08))
+# Mac output volume has its own cue; no route, mute or live playback change. — GPT-6.1 Sol
+write("OutputVolume", hits(0.25, (0.0, 0.095), (784, 1174.66), WOOD, 30, 0.1))
 
 write("Rewind", hits(0.37, (0.0, 0.085, 0.185), (1397, 932, 740), SQUAREISH, 40, 0.1))
 write("RewindFive", hits(0.39, (0.0, 0.065, 0.23), (880, 698, 523), SQUAREISH, 38, 0.1))
@@ -127,3 +129,8 @@ write("NotificationReplyAccepted", hits(0.18, (0.0,), (1046.5,), SPRING, 35, 0.1
 
 # A distinct ascending three-note cue after the requested chat speed is confirmed. — GPT-6.1 Sol
 write("SetSpeed", hits(0.24, (0.0, 0.065, 0.13), (493.88, 739.99, 1108.73), WOOD, 28, 0.09))
+
+# Separate native output/navigation/media commands, generated without playing anything. — GPT-6.1 Sol
+write("NextTrack", hits(0.24, (0.0, 0.065, 0.13), (523, 784, 1046), SPRING, 30, 0.08))
+write("Back", hits(0.23, (0.0, 0.1), (1174.66, 784), WOOD, 35, 0.09))
+write("Forward", hits(0.23, (0.0, 0.1), (784, 1174.66), WOOD, 35, 0.09))
