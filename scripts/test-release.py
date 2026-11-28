@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import plistlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,6 +27,47 @@ feeds = load("release_feed", "create-appcast.py")
 
 
 class Releases(unittest.TestCase):
+    def test_signed_source_rejects_new_public_work_dirty_code_and_unrecorded_floor(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            origin = root / 'origin'
+            peer = root / 'peer'
+
+            def git(repo, *args):
+                return subprocess.check_output(['git', '-C', repo, *args],
+                                               text=True, stderr=subprocess.DEVNULL).strip()
+
+            origin.mkdir()
+            git(origin, 'init', '-b', 'main')
+            git(origin, 'config', 'user.name', 'Release fixture')
+            git(origin, 'config', 'user.email', 'release@example.invalid')
+            info = {'CFBundleIdentifier': 'com.ethansk.HeyChat',
+                    'CFBundleShortVersionString': '1.9.5', 'CFBundleVersion': '1133'}
+            (origin / 'Info.plist').write_bytes(plistlib.dumps(info))
+            git(origin, 'add', 'Info.plist')
+            git(origin, 'commit', '-m', 'Common version')
+            git(root, 'clone', str(origin), str(peer))
+            installed = root / 'InstalledInfo.plist'
+            installed.write_bytes(plistlib.dumps(info))
+            self.assertEqual(versions.verify_local_release_source(peer, installed), git(peer, 'rev-parse', 'HEAD'))
+
+            installed.write_bytes(plistlib.dumps(dict(info, CFBundleVersion='1134')))
+            with self.assertRaisesRegex(RuntimeError, 'installed H Chat build floor'):
+                versions.verify_local_release_source(peer, installed)
+            installed.write_bytes(plistlib.dumps(info))
+            (peer / 'Sources').mkdir()
+            dirty = peer / 'Sources/Voice.swift'
+            dirty.write_text('// Uncommitted runtime source')
+            with self.assertRaisesRegex(RuntimeError, 'Commit H Chat build inputs'):
+                versions.verify_local_release_source(peer, installed)
+            dirty.unlink()
+
+            git(origin, 'commit', '--allow-empty', '-m', 'Peer update')
+            with self.assertRaisesRegex(RuntimeError, 'Reconcile origin/main'):
+                versions.verify_local_release_source(peer, installed)
+            git(peer, 'merge', '--ff-only', 'origin/main')
+            self.assertEqual(versions.verify_local_release_source(peer, installed), git(origin, 'rev-parse', 'HEAD'))
+
     def test_bundle_advertises_the_existing_command_receipt_protocol(self):
         info = plistlib.loads((Path(__file__).resolve().parent.parent / 'Info.plist').read_bytes())
         self.assertIs(type(info.get('HChatCommandReceiptVersion')), int)
