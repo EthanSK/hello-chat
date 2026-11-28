@@ -56,7 +56,7 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/VoicePeerPriorityTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StartupSpeech.swift Tests/StartupSpeechTests.swift -o "$build_dir/StartupSpeechTests"
 "$build_dir/StartupSpeechTests" "$build_dir/StartupSpeechChecks.noindex"
-swiftc -swift-version 5 -parse-as-library Sources/SpeechModel.swift Tests/SpeechModelTests.swift -o "$build_dir/SpeechModelTests" -framework AVFoundation
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/SpeechPreparationGate.swift Sources/CustomScriptPhrases.swift Sources/SpeechModel.swift Tests/SpeechModelTests.swift -o "$build_dir/SpeechModelTests" -framework AVFoundation
 "$build_dir/SpeechModelTests"
 swiftc -swift-version 5 -parse-as-library Sources/TranscriptViewport.swift Tests/TranscriptViewportTests.swift -o "$build_dir/TranscriptViewportTests"
 "$build_dir/TranscriptViewportTests"

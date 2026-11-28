@@ -77,6 +77,8 @@ Read [LEARNINGS.md](../../../LEARNINGS.md) before fragile changes. Inspect the a
 
 ## Installation and release
 
+- User-requested — 2026-11-28: Before making any H Chat changes, check for updates from another machine. Fetch the Git remote, check the relevant peer checkout and its owner for unpublished work, and reconcile the requested changes through the existing `development-workflow/references/worktrees.md` Git procedure. Preserve both Macs’ work and each Mac’s settings. Verify the running build’s source and installation separately using [RELEASE.md](../../../RELEASE.md).
+
 - User-corrected — 2026-11-14: for Ethan’s authorized local updates, follow the shared `development-workflow/references/local-installation.md` local-first rule. Review and build a viable local batch, preserve the existing Developer ID identity, entitlements and updater trust, then install it through H Chat’s safe detach/flush path. Full tests, Apple notarisation, public release and download verification follow local use unless a specific demonstrated platform restriction requires otherwise. `RELEASE.md` owns public qualification, not a blanket gate before local installation. Do not use an ad-hoc replacement or end an external Voice call to hurry an update.
 
 - Establish the exact source commit, bundle version and build before handing an artifact to an installer. Coordinate one installation owner; never race copies or change an artifact another task is signing/installing.
