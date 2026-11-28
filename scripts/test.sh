@@ -91,6 +91,8 @@ swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCor
 "$build_dir/PhraseListTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/VideoBridge.swift Tests/VideoBridgeTests.swift -o "$build_dir/VideoBridgeTests" -framework Combine
 "$build_dir/VideoBridgeTests"
+swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/SpotifyVolumePhrase.swift Sources/SpotifyVolumeSession.swift Sources/VideoBridge.swift Tests/YouTubeVolumeTests.swift -o "$build_dir/YouTubeVolumeTests" -framework Combine
+"$build_dir/YouTubeVolumeTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/DesktopSession.swift Sources/AppCommands.swift Sources/AppActivation.swift Sources/DesktopCommands.swift Sources/Diagnostics.swift Tests/DesktopCommandTests.swift -o "$build_dir/DesktopCommandTests" -framework AppKit -framework ApplicationServices
 "$build_dir/DesktopCommandTests"
 swiftc -swift-version 5 -parse-as-library Sources/AppPaths.swift Sources/GateCore.swift Sources/CommandRepetition.swift Sources/StandaloneWake.swift Sources/StartupSpeech.swift Sources/SpokenCommandJournal.swift Sources/SpeakerOutput.swift Sources/DesktopSession.swift Sources/AppCommands.swift Sources/AppActivation.swift Sources/DesktopCommands.swift Sources/HistoryNavigation.swift Sources/Diagnostics.swift Tests/NavigationMediaTests.swift -o "$build_dir/NavigationMediaTests" -framework AppKit -framework ApplicationServices

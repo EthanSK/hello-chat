@@ -66,7 +66,7 @@ import Darwin
             let action = arguments[6], supplied = arguments[7]
             let supported = Set(PhraseSlot.allCases.map(\.rawValue) + VoiceAudioAction.allCases.map(\.rawValue) + ["app", "speakerOutput"])
             guard supported.contains(action), supplied.count <= 160,
-                  (action == "app" || action == "speakerOutput" || [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue, PhraseSlot.setSpeedPhrase.rawValue].contains(action)) == !supplied.isEmpty else { print("invalid"); exit(2) }
+                  (action == "app" || action == "speakerOutput" || [PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue, PhraseSlot.youtubeVolumePhrase.rawValue, PhraseSlot.setSpeedPhrase.rawValue].contains(action)) == !supplied.isEmpty else { print("invalid"); exit(2) }
             let target: String
             switch action {
             case "app": target = AppNameSpellings(saved: UserDefaults.standard.object(forKey: AppNameSpellings.defaultsKey)).commandTarget(supplied)
@@ -76,7 +76,7 @@ import Darwin
             case PhraseSlot.spotifyVolumePhrase.rawValue:
                 guard ["normal", "lowered"].contains(supplied) || (Int(supplied).map { (0...100).contains($0) && String($0) == supplied } == true) else { print("invalid"); exit(2) }
                 target = supplied
-            case PhraseSlot.outputVolumePhrase.rawValue:
+            case PhraseSlot.outputVolumePhrase.rawValue, PhraseSlot.youtubeVolumePhrase.rawValue:
                 guard let volume = Int(supplied), (0...100).contains(volume) else { print("invalid"); exit(2) }
                 target = String(volume)
             case PhraseSlot.setSpeedPhrase.rawValue:
@@ -1110,6 +1110,7 @@ private extension PhraseSlot {
         case .nextTrackPhrase: return "Sends one Next Track media-key press to the current media session."
         case .backPhrase: return "Sends the standard Back mouse button to the active app. The app decides how to handle it."
         case .forwardPhrase: return "Sends the standard Forward mouse button to the active app. The app decides how to handle it."
+        case .youtubeVolumePhrase: return "Sets the chosen YouTube player’s volume from 0 to 100 through Agent Flow. Playing, paused and mute states stay the same. Requires the updated bridge and extension."
         case .outputVolumePhrase: return "Sets the current Mac output volume from 0 to 100. Microphone, alerts, playback and output selection aren’t changed. Outputs without software volume keep their own volume control."
         case .spotifyVolumePhrase: return "Sets Spotify’s volume from 0 to 100. During Voice, Normal restores the saved pre-chat volume; Lower or Lowered uses your Voice volume limit. Spotify must already be running. System volume and playback aren’t changed."
         }
@@ -1153,7 +1154,7 @@ private struct RepeatCountToggle: View {
         switch command {
         case PhraseSlot.rewindVideoPhrase.rawValue:
             return first + " Always include “times”, since a number alone can be a distance."
-        case PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue:
+        case PhraseSlot.spotifyVolumePhrase.rawValue, PhraseSlot.outputVolumePhrase.rawValue, PhraseSlot.youtubeVolumePhrase.rawValue:
             return first + " Always include “times”, since a number alone is the volume."
         case PhraseSlot.pauseMusicPhrase.rawValue, PhraseSlot.playMusicPhrase.rawValue:
             return first + " Without a number, it runs once. Each run is another Play/Pause press, so an even number can leave playback as it was."
@@ -1352,7 +1353,7 @@ struct CommandPhrasesView: View {
             if slots.contains(.rewindVideoPhrase) {
                 RewindAmountField(seconds: $model.rewindVideoSeconds)
             }
-            if let slot = slots.first(where: { $0 == .switchAppPhrase || $0 == .spotifyVolumePhrase || $0 == .outputVolumePhrase || $0 == .setSpeedPhrase }), let example = slot.example {
+            if let slot = slots.first(where: { $0 == .switchAppPhrase || $0 == .spotifyVolumePhrase || $0 == .outputVolumePhrase || $0 == .youtubeVolumePhrase || $0 == .setSpeedPhrase }), let example = slot.example {
                 Text(example).font(.caption).foregroundStyle(.secondary)
             }
             ScrollViewReader { reader in
@@ -1417,7 +1418,7 @@ struct CommandPhrasesView: View {
         let phrase = model[keyPath: model.phraseKeyPath(for: slot)].trimmingCharacters(in: .whitespacesAndNewlines)
         let main = phrase.isEmpty ? slot.defaultText : phrase
         if slot == .switchAppPhrase { return main + " Chrome" }
-        if slot == .spotifyVolumePhrase || slot == .outputVolumePhrase { return main + " forty percent" }
+        if slot == .spotifyVolumePhrase || slot == .outputVolumePhrase || slot == .youtubeVolumePhrase { return main + " forty percent" }
         if slot == .setSpeedPhrase { return main + " Ultrafast" }
         return main
     }

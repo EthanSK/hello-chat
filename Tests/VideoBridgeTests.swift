@@ -6,7 +6,7 @@ private final class FakeTransport: VideoBridgeTransport {
     var onReply: (@MainActor (VideoBridgeReply) -> Void)?
     var posts: [(requestId: String, action: String, issuedAt: Int)] = []
     var lastSeconds: Int?
-    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?) { lastSeconds = seconds; posts.append((requestId, action, issuedAt)) }
+    func post(requestId: String, action: String, issuedAt: Int, seconds: Int?, volumePercent: Int?) { lastSeconds = seconds; posts.append((requestId, action, issuedAt)) }
 }
 
 private final class FakeTimers {
@@ -60,7 +60,7 @@ private final class FakeTimers {
         check(spellings.allSatisfy { PhraseMatcher.equivalent($0, to: "Pause video", similar: true) }, "Every displayed spelling is accepted")
         do { _ = try PhraseDictionary.parse("Play video", for: .pauseVideoPhrase); preconditionFailure("Opposite default accepted") }
         catch { checks += 1 }
-        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase], "Video slots follow the Voice slots")
+        check(PhraseSlot.voiceSlots.count == 7 && PhraseSlot.videoSlots == [.pauseVideoPhrase, .playVideoPhrase, .rewindVideoPhrase, .rewindFivePhrase, .rewindTenPhrase, .youtubeVolumePhrase], "Video slots follow the Voice slots")
 
         for command in [VideoCommand.rewindFive, .rewindTen] {
             let phrase = command.slot.defaultText
