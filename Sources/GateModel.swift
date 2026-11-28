@@ -1920,7 +1920,18 @@ import SwiftUI
                 self.modelBarLaunchTask = nil
                 if self.modelBarReadinessChanged { self.applyPendingModelBarSpeed() }
             }
-            let state = await Task.detached { VoicePeerControl.localStatus() }.value
+            var state = await Task.detached { VoicePeerControl.localStatus() }.value
+            // Show the genuinely identified new chat before requiring its rendered
+            // title/composer. The previous gate could wait on an unopened chat.
+            // Ethan's requested startup ordering. — GPT-6.1 Sol
+            if let call = self.modelBarLaunch.takeNavigation(state, at: Date()) {
+                guard await ModelBarVoiceSpeed.Environment().open(call) else {
+                    self.modelBarLaunch.cancel()
+                    Diagnostics.shared.record("voice.model_bar.after_launch", info: ["outcome": "navigation-unconfirmed"])
+                    return
+                }
+                state = await Task.detached { VoicePeerControl.localStatus() }.value
+            }
             let titleReady = await Task.detached {
                 state.call.flatMap { try? CodexChatSpeed.uniqueTitle(thread: $0.thread, database: VoiceTimeline.databaseURL()) } != nil
             }.value
