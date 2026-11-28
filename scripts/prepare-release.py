@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import subprocess
 import tempfile
 import urllib.request
 
@@ -61,6 +62,27 @@ def record_local_release(source: Path, baseline: Path, built: Path) -> None:
         os.replace(temporary, source)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def verify_local_release_source(root: Path, installed: Path) -> str:
+    """Reject signed builds from a stale Git base or an unrecorded build floor."""
+    def git(*args: str) -> str:
+        return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+
+    git('fetch', '--no-tags', 'origin', 'refs/heads/main:refs/remotes/origin/main')
+    head = git('rev-parse', 'HEAD')
+    if subprocess.run(['git', 'merge-base', '--is-ancestor', 'origin/main', head], cwd=root).returncode:
+        raise RuntimeError('Reconcile origin/main through Git before building a signed H Chat update.')
+    if git('status', '--porcelain', '--untracked-files=normal', '--', 'Info.plist',
+           'Package.swift', 'Package.resolved', 'Sources', 'Resources', 'scripts'):
+        raise RuntimeError('Commit H Chat build inputs before signing so the release records their exact revision.')
+    if installed.exists():
+        source = plistlib.loads((root / 'Info.plist').read_bytes())
+        previous = plistlib.loads(installed.read_bytes())
+        local_release_info(source, previous)
+        if int(source['CFBundleVersion']) < int(previous['CFBundleVersion']):
+            raise RuntimeError('Reconcile the installed H Chat build floor in Git before signing its replacement.')
+    return head
 
 
 def main() -> None:

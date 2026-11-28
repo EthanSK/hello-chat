@@ -26,6 +26,13 @@ fi
 # build as the new source floor. Found and fixed by GPT-6.1 Sol.
 local_release=false
 if [[ -z "${HELLOCHAT_RELEASE_TAG:-}" ]]; then
+  source_commit="$(python3 - <<'PY'
+from pathlib import Path
+import runpy
+verify = runpy.run_path('scripts/prepare-release.py')['verify_local_release_source']
+print(verify(Path.cwd(), Path('/Applications/HelloChat.app/Contents/Info.plist')))
+PY
+)"
   cp Info.plist "$build_dir/SourceInfo.plist"
   local_release=true
 fi
@@ -78,7 +85,7 @@ cp Info.plist "$app/Contents/Info.plist"
 if $local_release; then
   python3 scripts/prepare-release.py --local --plist "$app/Contents/Info.plist" \
     --installed-plist /Applications/HelloChat.app/Contents/Info.plist \
-    --commit "$(git rev-parse HEAD)" --output "$build_dir/local-release-manifest.json"
+    --commit "$source_commit" --output "$build_dir/local-release-manifest.json"
 else
   [[ "$HELLOCHAT_RELEASE_TAG" == "v$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" ]] || { echo 'Allocated release tag differs from source version.' >&2; exit 1; }
 fi
@@ -119,6 +126,9 @@ else
 fi
 codesign --verify --deep --strict "$app"
 if $local_release; then
+  [[ "$(git rev-parse HEAD)" == "$source_commit" ]] || { echo 'H Chat source changed during compilation. Rebuild before installing.' >&2; exit 1; }
+  [[ -z "$(git status --porcelain --untracked-files=normal -- Info.plist Package.swift Package.resolved Sources Resources scripts)" ]] ||
+    { echo 'H Chat build inputs changed during compilation. Rebuild before installing.' >&2; exit 1; }
   python3 - Info.plist "$build_dir/SourceInfo.plist" "$app/Contents/Info.plist" <<'PY'
 from pathlib import Path
 import runpy, sys
