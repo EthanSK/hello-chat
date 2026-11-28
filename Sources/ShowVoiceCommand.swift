@@ -22,7 +22,8 @@ enum ShowVoiceCommand {
         recent: () async -> VoiceTimeline.RecentChat = {
             await Task.detached { VoiceTimeline.mostRecentChat(database: VoiceTimeline.databaseURL()) }.value
         },
-        open: (Int32?, URL) async -> Bool = openThread
+        open: (Int32?, URL) async -> Bool = openThread,
+        valid: () -> Bool = { true }
     ) async -> Outcome {
         var current = await resolve()
         var previous: VoiceTimeline.RecentChat = .none
@@ -48,7 +49,7 @@ enum ShowVoiceCommand {
             pid = nil
             outcome = .openedPrevious
         } else { return .unknown }
-        guard let link = URL(string: "codex://threads/" + thread.uuidString.lowercased()) else { return .unknown }
+        guard valid(), !Task.isCancelled, let link = URL(string: "codex://threads/" + thread.uuidString.lowercased()) else { return .unknown }
         return await open(pid, link) ? outcome : .failed
     }
 

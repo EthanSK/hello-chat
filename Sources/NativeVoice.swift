@@ -11,6 +11,7 @@ import Foundation
     private(set) var resolvedCall = false
     var preserveCallOnCancellation = false
     var beforeRemoteDispatch: (() throws -> Void)?
+    var didLaunchApplication: (() -> Void)?
     var prepareNewCall: (() async -> Void)?
     var sentAt: Date?
     var defaultsExecutable: URL?
@@ -192,6 +193,7 @@ import Foundation
             diagnostics?.record("voice.application.launch_requested")
             try opening.beforeRemoteDispatch?()
             try await launch()
+            opening.didLaunchApplication?()
             try checkStartAllowed()
             state = await snapshot()
             if let pid = state.pid { lastObservedPID = pid }
@@ -221,6 +223,7 @@ import Foundation
                 diagnostics?.record("voice.application.relaunch_after_exit")
                 try opening.beforeRemoteDispatch?()
                 try await launch()
+                opening.didLaunchApplication?()
                 try checkStartAllowed()
                 state = await snapshot()
                 continue

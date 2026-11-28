@@ -4,7 +4,7 @@ import Foundation
 @main enum CommandAvailabilityTests {
     static func main() {
         let commands = HomeCommand.all
-        precondition(commands.count == 19)
+        precondition(commands.count == 23)
         precondition(Set(commands.map(\.id)).count == commands.count)
         precondition(Set(commands.flatMap(\.slots)) == Set(PhraseSlot.allCases), "Every current phrase slot inherits a command switch")
         precondition(commands.last == .speakerOutput)

@@ -60,6 +60,10 @@ import Foundation
         do { _ = try await guarded.setAudio(.unmuteMicrophone, beforeShortcut: currentSession); fatalError("Replaced call received a toggle") }
         catch is CancellationError { }
         precondition(guardedSends == 1)
+        let expiredSpeech = SpokenDispatchPermission(expires: 100, clock: { 126 })
+        do { _ = try await guarded.setAudio(.silenceSpeakers, beforeShortcut: expiredSpeech.check); fatalError("Expired speech reached a native toggle") }
+        catch is CancellationError { }
+        precondition(guardedSends == 1, "The actual NativeVoice guard refuses a 26-second stale first effect")
         let unavailableDesktop = NativeVoice(transport: .init(snapshot: { fatalError("No UI read") },
             send: { _, _ in fatalError("Locked desktop must not receive an audio key") },
             activate: { _ in fatalError("No activation") }, startSession: { .locked },

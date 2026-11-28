@@ -71,12 +71,14 @@ struct MediaPlayPauseShortcut {
         post(events)
         return .success(()) // Submission only: macOS chooses the current media session.
     }
-    static func events() -> [CGEvent]? {
+    static func events() -> [CGEvent]? { events(key: 16) }
+    static func nextTrackEvents() -> [CGEvent]? { events(key: 17) }
+    private static func events(key: Int) -> [CGEvent]? {
         let events = [0x0A, 0x0B].compactMap { state in
             NSEvent.otherEvent(with: .systemDefined, location: .zero,
                 modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(state << 8)),
                 timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
-                subtype: 8, data1: (16 << 16) | (state << 8), data2: -1)?.cgEvent
+                subtype: 8, data1: (key << 16) | (state << 8), data2: -1)?.cgEvent
         }
         return events.count == 2 ? events : nil
     }
@@ -104,6 +106,7 @@ struct DesktopCommandResult: Equatable {
         var sleep: (Double) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
         var zoom = ZoomShortcut()
         var mediaPlayPause = MediaPlayPauseShortcut()
+        var mediaNextTrack = MediaPlayPauseShortcut(makeEvents: MediaPlayPauseShortcut.nextTrackEvents)
     }
     static let catalogLifetime: TimeInterval = 120
     static let confirmationChecks = 10
@@ -138,13 +141,13 @@ struct DesktopCommandResult: Equatable {
     // `dispatched` runs once, when macOS accepts the switch/open request or the zoom keys are sent:
     // before front-app confirmation, and never for ignored, unresolved, blocked or cancelled work.
     // Switch app and Open app share this one action; the candidate's section only picks its sound.
-    func perform(_ candidate: AppCommandCandidate, spellings: AppNameSpellings = .init(), dispatched: () -> Void = {}) async -> DesktopCommandResult {
+    func perform(_ candidate: AppCommandCandidate, spellings: AppNameSpellings = .init(), valid: () -> Bool = { true }, dispatched: () -> Void = {}) async -> DesktopCommandResult {
         if let unavailable = unavailable() { return unavailable }
         if let decision = AppCommandPlanner.decideRunning(candidate, running: environment.running(), spellings: spellings) {
-            return await carry(decision, dispatched: dispatched)
+            return await carry(decision, valid: valid, dispatched: dispatched)
         }
         let installed = await installedApps()
-        return await carry(AppCommandPlanner.decide(candidate, running: environment.running(), installed: installed, spellings: spellings), dispatched: dispatched)
+        return await carry(AppCommandPlanner.decide(candidate, running: environment.running(), installed: installed, spellings: spellings), valid: valid, dispatched: dispatched)
     }
 
     func repetitionCandidate(_ candidate: AppCommandCandidate, spellings: AppNameSpellings) async -> AppCommandCandidate {
@@ -179,17 +182,18 @@ struct DesktopCommandResult: Equatable {
         }
     }
 
-    func toggleCurrentMedia(dispatched: () -> Void = {}) -> DesktopCommandResult {
-        switch environment.mediaPlayPause.perform() {
+    func toggleCurrentMedia(nextTrack: Bool = false, dispatched: () -> Void = {}) -> DesktopCommandResult {
+        let key = nextTrack ? "Next Track" : "Play/Pause"
+        switch (nextTrack ? environment.mediaNextTrack : environment.mediaPlayPause).perform() {
         case .success:
             dispatched()
-            return DesktopCommandResult(message: "Sent Play/Pause to the current media session", diagnostic: "sent")
+            return DesktopCommandResult(message: "Sent \(key) to the current media session", diagnostic: "sent")
         case .failure(.desktopUnavailable(let state)):
             return DesktopCommandResult(message: state.message, diagnostic: "session-\(state.rawValue)")
         case .failure(.accessibilityPermissionMissing):
             return DesktopCommandResult(message: "Allow Accessibility for Hello Chat, then try again.", diagnostic: "accessibility")
         case .failure(.eventCreationFailed):
-            return DesktopCommandResult(message: "Couldn't send Play/Pause.", diagnostic: "event-failed")
+            return DesktopCommandResult(message: "Couldn't send \(key).", diagnostic: "event-failed")
         }
     }
 

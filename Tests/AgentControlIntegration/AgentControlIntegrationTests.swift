@@ -5,6 +5,25 @@ import XCTest
 @testable import HelloChat
 
 final class AgentControlIntegrationTests: XCTestCase {
+    @MainActor func testNewVolumeAndDesktopOperationsRefuseInvalidInputBeforeEffects() async throws {
+        try requireIsolatedHome()
+        let model = GateModel(enableSpotifyControl: false)
+        let control = HAgentControl(model, zoom: InterfaceZoom(), updater: AppUpdater())
+        for name in ["output.volume.read", "output.volume", "spotify.volume.preset", "music.nextTrack", "desktop.navigate"] {
+            XCTAssertNotNil(control.operations[name])
+        }
+        for (name, arguments) in [("output.volume", ["value": -1, "uid": "fixture"] as [String: Any]),
+            ("output.volume", ["value": 30]), ("spotify.volume.preset", ["preset": "maximum"]),
+            ("desktop.navigate", ["direction": "previous-track"])] {
+            let request = try HControlRequest(JSONSerialization.data(withJSONObject: ["version": 1, "id": UUID().uuidString,
+                "expiresAt": Date().timeIntervalSince1970 + 20, "operation": name, "arguments": arguments]))
+            do { _ = try await control.handle(request); XCTFail("Invalid input reached an effect") }
+            catch HControlFailure.invalid {}
+        }
+        do { _ = try await model.spotifyVolume.setPreset(.normal); XCTFail("No active configured Voice owner") }
+        catch let failure as SpotifyVolumeOperationFailure { XCTAssertTrue(failure.beforeDispatch) }
+        await model.notificationReplies.shutdown()
+    }
     @MainActor func testNotificationSpellingsUseSharedStoreAndRevision() async throws {
         try requireIsolatedHome()
         let keys = [NotificationReplyCore.Commands.replySpellingKey, NotificationReplyCore.Commands.endReplySpellingKey, NotificationReplyCore.Commands.cancelReplySpellingKey, NotificationReplyCore.Commands.stopSpeakingSpellingKey]
@@ -89,6 +108,22 @@ final class AgentControlIntegrationTests: XCTestCase {
         do { _ = try await perform("settings.bringHomeForward", ["value": true, "revision": revision]); XCTFail("Stale settings applied") }
         catch HControlFailure.conflict {}
         UserDefaults.standard.removeObject(forKey: "bringHomeForward")
+    }
+
+    @MainActor func testNavigationRetainsNonactivatingHomePreference() throws {
+        try requireIsolatedHome()
+        _ = NSApplication.shared
+        let prior = UserDefaults.standard.object(forKey: "bringHomeForward")
+        defer { UserDefaults.standard.set(prior, forKey: "bringHomeForward") }
+        UserDefaults.standard.set(true, forKey: "bringHomeForward")
+        let model = GateModel(enableSpotifyControl: false)
+        let window = PhraseTestWindow(contentRect: NSRect(x: -20000, y: -20000, width: 100, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        model.phraseWindow.attach(window)
+        _ = model.reserveSpeech(PhraseSlot.backPhrase.rawValue, range: 0..<1, repeatAction: { _ in XCTFail("No navigation belongs in this fixture") })
+        XCTAssertEqual(window.raises, 1)
+        XCTAssertFalse(window.isKeyWindow)
     }
 
     @MainActor private final class PhraseTestWindow: NSWindow {

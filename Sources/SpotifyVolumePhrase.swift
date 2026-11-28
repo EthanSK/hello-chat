@@ -1,19 +1,19 @@
 import Foundation
 
-// Ethan's “Spotify volume then the number” is an absolute player value, not
-// repetition. Its prefix owns one receipt while ASR completes the value; no
-// silence or utterance-end gate is added. — GPT-6.1 Sol
-struct SpotifyVolumePhrase {
+// Refactor of SpotifyVolumePhrase: share its existing occurrence/revision handling
+// with typed spoken values. Value parsing stays with each command; no new silence
+// or utterance-end gate is added. — GPT-6.1 Sol
+struct SpokenValuePhrase<Value: Equatable> {
     struct Command {
         let id: UUID
-        let volume: Int
+        let value: Value
         let range: Range<Int>
         let pattern: PhrasePattern
         var count = 1
         var revised = false
         var invalid = false
     }
-    private struct Occurrence { let id = UUID(); var prefix: Range<Int>; var audio: Range<Double>?; var volume: Int?; var count = 1; var range: Range<Int>?; var finalized = false; var cancelled = false }
+    private struct Occurrence { let id = UUID(); var prefix: Range<Int>; var audio: Range<Double>?; var value: Value?; var count = 1; var range: Range<Int>?; var finalized = false; var cancelled = false }
     private var detector = StandaloneWake()
     private var text = ""
     private var words: [String] = []
@@ -21,7 +21,9 @@ struct SpotifyVolumePhrase {
     private var admitted: [Occurrence] = []
     private var timings: [(word: String, start: Double, end: Double)]?
 
-    mutating func reset() { self = Self() }
+    private let parse: (String, [String], Int) -> (value: Value, end: Int)?
+    init(parse: @escaping (String, [String], Int) -> (value: Value, end: Int)?) { self.parse = parse }
+    mutating func reset() { self = Self(parse: parse) }
     mutating func audio(level: Double, seconds: Double, at time: Double) { detector.audio(level: level, seconds: seconds, at: time) }
     mutating func update(_ text: String, at time: Double, timings: [(word: String, start: Double, end: Double)]?) {
         let next = PhraseMatcher.words(text)
@@ -85,18 +87,18 @@ struct SpotifyVolumePhrase {
             guard !occurrence.cancelled, !occurrence.finalized else { continue }
             guard let candidate = candidates.first(where: { $0.range.lowerBound == occurrence.prefix.lowerBound }),
                   detector.permitsDirectCommand(in: candidate.range) else {
-                if let previous = occurrence.volume {
+                if let previous = occurrence.value {
                     admitted[index].cancelled = true
-                    result.append(Command(id: occurrence.id, volume: previous, range: occurrence.prefix,
+                    result.append(Command(id: occurrence.id, value: previous, range: occurrence.prefix,
                         pattern: PhrasePattern(text: words[occurrence.prefix].joined(separator: " "), similar: false), revised: true, invalid: true))
                 }
                 continue
             }
             guard
-                  occurrence.volume != candidate.volume || occurrence.count != candidate.count || occurrence.range != candidate.range else { continue }
-            let revised = occurrence.volume != nil
-            occurrence.volume = candidate.volume; occurrence.count = candidate.count; occurrence.range = candidate.range; admitted[index] = occurrence
-            result.append(Command(id: occurrence.id, volume: candidate.volume, range: candidate.range, pattern: candidate.pattern, count: candidate.count, revised: revised))
+                  occurrence.value != candidate.value || occurrence.count != candidate.count || occurrence.range != candidate.range else { continue }
+            let revised = occurrence.value != nil
+            occurrence.value = candidate.value; occurrence.count = candidate.count; occurrence.range = candidate.range; admitted[index] = occurrence
+            result.append(Command(id: occurrence.id, value: candidate.value, range: candidate.range, pattern: candidate.pattern, count: candidate.count, revised: revised))
         }
         return result
     }
@@ -129,13 +131,36 @@ struct SpotifyVolumePhrase {
     }
 
     private func commands(prefixes: [PhrasePattern]) -> [Command] {
+        var seen = Set<Range<Int>>()
+        return prefixes.flatMap { $0.matches(in: words, timings: timings) }.compactMap { match in
+            guard let parsed = parse(text, words, match.end), parsed.end > match.end, parsed.end <= words.count else { return nil }
+            let range = match.start..<parsed.end
+            guard seen.insert(range).inserted else { return nil }
+            let requested: Int
+            if case .value(let value, let used) = CommandRepetition.count(in: words, after: parsed.end), words[parsed.end + used - 1] == "times" { requested = value }
+            else { requested = 1 }
+            return Command(id: UUID(), value: parsed.value, range: range,
+                           pattern: PhrasePattern(text: words[range].joined(separator: " "), similar: false), count: requested)
+        }
+    }
+}
+
+typealias SpotifyVolumePhrase = SpokenValuePhrase<Int>
+
+extension SpokenValuePhrase.Command where Value == Int {
+    var volume: Int { value }
+}
+
+extension SpokenValuePhrase where Value == Int {
+    // Extraction of the original Spotify numeric/unit/sign validation; existing
+    // callers keep SpotifyVolumePhrase() and its volume result. — GPT-6.1 Sol
+    init() { self.init(parse: Self.parseVolume) }
+    fileprivate static func parseVolume(_ text: String, _ words: [String], _ start: Int) -> (value: Int, end: Int)? {
         let source = text as NSString
         let raw = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
         let spans = raw.matches(in: text, range: NSRange(location: 0, length: source.length)).map(\.range)
-        guard spans.count == words.count else { return [] }
-        var seen = Set<Range<Int>>()
-        return prefixes.flatMap { $0.matches(in: words, timings: timings) }.compactMap { match in
-            var valueStart = match.end
+        guard spans.count == words.count else { return nil }
+            var valueStart = start
             if ["to", "two", "too"].contains(words[safe: valueStart] ?? ""), CommandNumber.read(words, at: valueStart + 1) != nil { valueStart += 1 }
             guard let number = CommandNumber.read(words, at: valueStart), (0...100).contains(number.value) else { return nil }
             var end = valueStart + number.words
@@ -158,13 +183,27 @@ struct SpotifyVolumePhrase {
                 let pendingCount = hasUnit && CommandNumber.read(words, at: end).map { end + $0.words == words.count } == true
                 guard repeated || pendingCount || (CommandNumber.read(words, at: end) == nil && !invalidUnits.contains(words[end])) else { return nil }
             }
-            let range = match.start..<end
-            guard seen.insert(range).inserted else { return nil }
-            let requested: Int
-            if case .value(let value, let used) = CommandRepetition.count(in: words, after: end), words[end + used - 1] == "times" { requested = value }
-            else { requested = 1 }
-            return Command(id: UUID(), volume: number.value, range: range,
-                           pattern: PhrasePattern(text: words[range].joined(separator: " "), similar: false), count: requested)
-        }
+        return (number.value, end)
     }
+}
+
+// The presets and percentages share the same admitted occurrence, revisions and receipt.
+// “Normal” is a saved pre-Voice level, never a factory percentage. — GPT-6.1 Sol
+enum SpotifyVolumeChoice: Equatable {
+    case percent(Int), preset(SpotifyVolumePreset)
+    var receiptTarget: String {
+        switch self { case .percent(let value): return String(value); case .preset(let preset): return preset.rawValue }
+    }
+}
+typealias SpotifyCommandVolumePhrase = SpokenValuePhrase<SpotifyVolumeChoice>
+extension SpokenValuePhrase where Value == SpotifyVolumeChoice {
+    init() { self.init { text, words, start in
+        if let parsed = SpotifyVolumePhrase.parseVolume(text, words, start) { return (.percent(parsed.value), parsed.end) }
+        guard words.indices.contains(start) else { return nil }
+        switch words[start] {
+        case "normal": return (.preset(.normal), start + 1)
+        case "lower", "lowered": return (.preset(.lowered), start + 1)
+        default: return nil
+        }
+    } }
 }

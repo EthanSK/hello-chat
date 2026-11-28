@@ -232,13 +232,17 @@ struct VoiceTimeline {
                     self.onSessionStarted?(Date(timeIntervalSince1970: Double(started) / 1_000))
                 }
                 let result = self.tracker.observe(evidence.0)
-                self.installAccessibilityObserver(pid: evidence.1, callElements: evidence.2, audioElements: evidence.4)
-                self.installFileObservers()
+                // Publish known call ownership before remote registration can suspend.
+                // Found by GPT-6.2 Astra; fixed by GPT-6.1 Sol. — GPT-6.1 Sol
                 for var observation in result.observations {
                     observation.observedAt = evidence.3
                     self.onChange?(observation)
                 }
                 self.refreshAgain = self.refreshAgain || result.readAgain
+                guard !Task.isCancelled, self.started, self.generation == generation else { break }
+                await self.installAccessibilityObserver(pid: evidence.1, callElements: evidence.2, audioElements: evidence.4)
+                guard !Task.isCancelled, self.started, self.generation == generation else { break }
+                self.installFileObservers()
             } while self.refreshAgain && !Task.isCancelled && self.started
             if self.generation == generation { self.refreshTask = nil }
         }
@@ -266,7 +270,7 @@ struct VoiceTimeline {
         }
     }
 
-    private func installAccessibilityObserver(pid: pid_t?, callElements: [AXUIElement], audioElements: [AXUIElement]) {
+    private func installAccessibilityObserver(pid: pid_t?, callElements: [AXUIElement], audioElements: [AXUIElement]) async {
         guard let pid, AXIsProcessTrusted() else { removeAccessibilityObserver(); return }
         if observedPID != pid {
             removeAccessibilityObserver()
@@ -280,32 +284,31 @@ struct VoiceTimeline {
             CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .commonModes)
         }
         guard let observer else { return }
-        // Window and call-control notifications cover manually opened and
-        // temporary chats too. Rebind replaced controls after each real read.
-        let root = AXUIElementCreateApplication(pid)
-        let windows = VoiceBridge.attribute(kAXWindowsAttribute, root) as? [AXUIElement] ?? []
-        let elements = [root] + windows + callElements
-        let notifications = [kAXWindowCreatedNotification, kAXUIElementDestroyedNotification,
-                             kAXFocusedWindowChangedNotification, kAXLayoutChangedNotification, "AXChildrenChanged",
-                             "AXLoadComplete", "AXLayoutComplete"]
-        for (element, name) in registrations { AXObserverRemoveNotification(observer, element, name) }
+        // The existing refresh task serializes rebinding, but remote AX work must
+        // not stall speech frames or UI. A stopped/replaced observer sheds only its
+        // own late registrations. Found and fixed by GPT-6.1 Sol. — GPT-6.1 Sol
+        let previous = registrations, expectedGeneration = generation
         registrations.removeAll()
-        for element in elements {
-            let names = notifications + (observesAudioState && audioElements.contains(where: { CFEqual($0, element) })
-                ? [kAXValueChangedNotification, kAXTitleChangedNotification] : [])
-            for name in names {
-                if AXObserverAddNotification(observer, element, name as CFString,
-                    Unmanaged.passUnretained(self).toOpaque()) == .success {
-                    registrations.append((element, name as CFString))
-                }
-            }
+        let entries = await VoiceObserverRegistration().replace(observer: observer, pid: pid,
+            previous: previous, call: callElements, audio: audioElements, readAudio: observesAudioState,
+            context: Unmanaged.passUnretained(self).toOpaque())
+        guard started, generation == expectedGeneration, observedPID == pid,
+              self.observer.map({ CFEqual($0, observer) }) == true else {
+            await Task.detached(priority: .utility) {
+                for (element, name) in entries { AXObserverRemoveNotification(observer, element, name) }
+            }.value
+            return
         }
+        registrations = entries
     }
 
     private func removeAccessibilityObserver() {
         if let observer {
-            for (element, name) in registrations { AXObserverRemoveNotification(observer, element, name) }
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+            let retiring = registrations
+            // Detach the run-loop callback synchronously; only this retired observer's
+            // remote removals continue off-main. — GPT-6.1 Sol
+            Task { await VoiceObserverRegistration().retire(observer: observer, entries: retiring) }
         }
         registrations.removeAll(); observer = nil; observedPID = nil
     }

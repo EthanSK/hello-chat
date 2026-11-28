@@ -61,9 +61,9 @@ struct MicrophoneOwnership {
 enum PhraseSlot: String, CaseIterable, Identifiable {
     case wakePhrase, sleepPhrase, mutePhrase, unmutePhrase, silentPhrase, silencePhrase, unsilencePhrase
     case pauseVideoPhrase, playVideoPhrase, rewindVideoPhrase, rewindFivePhrase, rewindTenPhrase
-    case pauseMusicPhrase, playMusicPhrase, spotifyVolumePhrase
+    case pauseMusicPhrase, playMusicPhrase, spotifyVolumePhrase, outputVolumePhrase, nextTrackPhrase
     case callDotPhrase, hangUpDotPhrase
-    case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase
+    case switchAppPhrase, openAppPhrase, zoomInPhrase, zoomOutPhrase, showVoicePhrase, backPhrase, forwardPhrase
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -82,6 +82,10 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .pauseMusicPhrase: return "Pause music phrase"
         case .playMusicPhrase: return "Play music phrase"
         case .spotifyVolumePhrase: return "Spotify volume phrase"
+        case .outputVolumePhrase: return "Output volume phrase"
+        case .nextTrackPhrase: return "Next track phrase"
+        case .backPhrase: return "Back phrase"
+        case .forwardPhrase: return "Forward phrase"
         case .callDotPhrase: return "Call Dot phrase"
         case .hangUpDotPhrase: return "Hang up Dot phrase"
         case .switchAppPhrase, .openAppPhrase: return "App prefix"
@@ -97,6 +101,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .switchAppPhrase: return "Say a phrase followed by an app name."
         case .rewindVideoPhrase: return "A phrase with a duration uses that duration."
         case .spotifyVolumePhrase: return "Say a phrase followed by a volume from 0 to 100."
+        case .outputVolumePhrase: return "Say a phrase followed by a volume from 0 to 100."
 
         default: return nil
         }
@@ -118,6 +123,10 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .pauseMusicPhrase: return "Pause music"
         case .playMusicPhrase: return "Play music"
         case .spotifyVolumePhrase: return "Spotify volume"
+        case .outputVolumePhrase: return "Set volume"
+        case .nextTrackPhrase: return "Next track"
+        case .backPhrase: return "Back"
+        case .forwardPhrase: return "Forward"
         case .callDotPhrase: return "Call Dot"
         case .hangUpDotPhrase: return "Hang up"
         case .switchAppPhrase: return "Switch app"
@@ -133,14 +142,16 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
     var settingsTitle: String {
         if isRewind { return "Rewind video" }
         if self == .spotifyVolumePhrase { return "Spotify volume" }
+        if self == .outputVolumePhrase { return "Output volume" }
+        if self == .nextTrackPhrase { return "Next track" }
         if controlsMusic { return self == .pauseMusicPhrase ? "Pause music" : "Play music" }
         return action.settingsTitle
     }
-    var controlsMusic: Bool { [.pauseMusicPhrase, .playMusicPhrase, .spotifyVolumePhrase].contains(self) }
+    var controlsMusic: Bool { [.pauseMusicPhrase, .playMusicPhrase, .spotifyVolumePhrase, .nextTrackPhrase].contains(self) }
     // Desktop phrases act on Mac apps and never reach Codex Voice either.
     var controlsDot: Bool { [.callDotPhrase, .hangUpDotPhrase].contains(self) }
     static let dotSlots = allCases.filter(\.controlsDot)
-    var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase].contains(self) }
+    var controlsDesktop: Bool { [.switchAppPhrase, .openAppPhrase, .zoomInPhrase, .zoomOutPhrase, .showVoicePhrase, .outputVolumePhrase, .backPhrase, .forwardPhrase].contains(self) }
     // Ethan wants the Voice speaker-silence command first. This changes presentation only;
     // declaration/detection order and all existing saved command identities stay intact. — GPT-6.1 Sol
     static let voiceSlots: [Self] = {
@@ -190,7 +201,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
                             "Silent speakers": ["Silent the speakers"], "Silent speaker": ["Silent the speaker"],
                             // Keep “shush” and its repeated-h transcriptions in one editable dictionary,
                             // bounded by the existing 120-character spelling limit. No global fuzzy rule. — GPT-6.1 Sol
-                            "Shush": ["Shoosh"] + (2...119).map { "S" + String(repeating: "h", count: $0) }
+                            "Shush": ["Shoosh", "Shut up"] + (2...119).map { "S" + String(repeating: "h", count: $0) }
                                 + (2...116).map { "Shus" + String(repeating: "h", count: $0) }],
             .silencePhrase: ["Silence Chat": ["Silence Chatt"], "Silence speakers": ["Silence the speakers"],
                              "Silence speaker": ["Silence the speaker"]],
@@ -198,11 +209,15 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
                                "Unsilent speaker": ["Unsilent the speaker"], "Unsilence speakers": ["Unsilence the speakers", "Unsilenced speakers", "Unsilenced the speakers"],
                                "Unsilence speaker": ["Unsilence the speaker", "Unsilenced speaker", "Unsilenced the speaker"]],
             .pauseVideoPhrase: ["Pause video": ["Pause vid", "Paws vid"]],
-            .playVideoPhrase: ["Play video": ["Play vid", "Resume the video", "Resume this video"]],
+            .playVideoPhrase: ["Play video": ["Play vid", "Play a video", "Resume the video", "Resume this video"]],
             .rewindVideoPhrase: ["Rewind video": ["Rewind the video", "Rewind this video", "Rewind vid"]],
             .pauseMusicPhrase: ["Pause music": ["Pause the music", "Paws music", "Paws the music"]],
             .playMusicPhrase: ["Play music": ["Play the music", "Resume music", "Resume the music"]],
             .spotifyVolumePhrase: ["Spotify volume": ["Spotify volume to", "Set Spotify volume", "Set Spotify volume to", "Spot ify volume"]],
+            .nextTrackPhrase: ["Next track": ["Next song", "Skip track", "Skip song"]],
+            .backPhrase: ["Back": ["Go back", "Navigate back"]],
+            .forwardPhrase: ["Forward": ["Go forward", "Forth", "Go forth", "Navigate forward"]],
+            .outputVolumePhrase: ["Set volume": ["Set volume to", "Set the volume", "Set the volume to", "Change volume", "Change volume to", "System volume", "Computer volume"]],
             .callDotPhrase: ["Call Dot": ["Call my dot", "Call dots", "Call the dot"]],
             .hangUpDotPhrase: ["Hang up": ["Hang up Dot", "Hang up my dot", "Hang up the dot"]],
             .switchAppPhrase: ["Switch app": ["Switch apps", "Switch the app"], "Switch up": ["Switch upp"],
@@ -226,6 +241,11 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
                 "Go back \(numeral) seconds": ["Go back \(numeral) secs"],
             ]
         }
+        // Ethan's paired “unshush” uses the same bounded spelling family, with no
+        // second fuzzy matcher or a live Voice toggle during configuration. — GPT-6.1 Sol
+        rows[.unsilencePhrase, default: [:]]["Unshush"] = (rows[.silentPhrase]?["Shush"] ?? [])
+            .filter { PhraseList.key($0) != "shutup" }.map { "Un" + $0 }
+            .filter { $0.count <= 120 }
         return rows.mapValues { forms in Dictionary(uniqueKeysWithValues: forms.map { (PhraseList.key($0.key), $0.value) }) }
     }()
     func savedValue(in defaults: UserDefaults = .standard) -> String {
@@ -250,6 +270,10 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
         case .rewindTenPhrase: return .rewindTen
         case .pauseMusicPhrase, .playMusicPhrase: return .mediaPlayPause
         case .spotifyVolumePhrase: return .spotifyVolume
+        case .outputVolumePhrase: return .outputVolume
+        case .nextTrackPhrase: return .nextTrack
+        case .backPhrase: return .back
+        case .forwardPhrase: return .forward
         case .callDotPhrase: return .callDot
         case .hangUpDotPhrase: return .hangUpDot
         case .switchAppPhrase, .openAppPhrase: return .app
@@ -261,7 +285,7 @@ enum PhraseSlot: String, CaseIterable, Identifiable {
 }
 
 enum PhraseAction: String, CaseIterable {
-    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, callDot, hangUpDot, app, zoomIn, zoomOut, showVoice
+    case wake, end, muteMicrophone, unmuteMicrophone, silenceSpeakers, unsilenceSpeakers, pauseVideo, playVideo, rewind, rewindFive, rewindTen, mediaPlayPause, spotifyVolume, outputVolume, nextTrack, back, forward, callDot, hangUpDot, app, zoomIn, zoomOut, showVoice
     // Ethan’s “brackets Codex” identifies the four call audio rows in Home and their phrase editors.
     var settingsTitle: String {
         switch self {
@@ -278,6 +302,10 @@ enum PhraseAction: String, CaseIterable {
         case .rewindTen: return "Rewind video 10 seconds"
         case .mediaPlayPause: return "Music"
         case .spotifyVolume: return "Spotify volume"
+        case .outputVolume: return "Output volume"
+        case .nextTrack: return "Next track"
+        case .back: return "Back"
+        case .forward: return "Forward"
         case .callDot: return "Call Dot (ChatGPT)"
         case .hangUpDot: return "Hang up Dot (ChatGPT)"
         case .app: return "Switch app"
@@ -369,7 +397,8 @@ enum PhraseList {
             // The short forms require an exact app name or spelling. Show voice has its own slot.
             ("appShowPrefixDefaults20261121", [(.openAppPhrase, ["Show app", "Show me", "Show", "Open"])]),
             // Add once after older rows; deletion and custom primary phrases stay effective. — GPT-6.1 Sol
-            ("speakerShushPhrase20261127", [(.silentPhrase, ["Shush"])])
+            ("speakerShushPhrase20261127", [(.silentPhrase, ["Shush"])]),
+            ("speakerUnshushPhrase20261128", [(.unsilencePhrase, ["Unshush"])])
         ]
         for batch in batches where !defaults.bool(forKey: batch.key) {
             let saved = defaults.object(forKey: defaultsKey)
@@ -604,7 +633,12 @@ struct PhrasePattern: Equatable {
     }
     // The short “shush” family addresses Voice directly; quoted examples and unrelated
     // words must not silence it. Existing longer speaker phrases keep their policy. — GPT-6.1 Sol
-    var isBareSpeakerSilence: Bool { slot?.action == .silenceSpeakers && PhraseList.key(text) == "shush" }
+    // Formerly isBareSpeakerSilence; both directions share the direct-only guard. — GPT-6.1 Sol
+    var isBareSpeakerHush: Bool {
+        (slot?.action == .silenceSpeakers && PhraseList.key(text) == "shush")
+            || (slot?.action == .unsilenceSpeakers && PhraseList.key(text) == "unshush")
+    }
+    var isBareNavigation: Bool { slot == .backPhrase || slot == .forwardPhrase }
     func isBareSpeakerRestore(_ words: ArraySlice<String>) -> Bool {
         guard slot == .unsilencePhrase else { return false }
         let spoken = words.joined()
